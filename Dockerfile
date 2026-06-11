@@ -6,8 +6,9 @@ ARG RUNTIME_IMAGE=alpine:3.21
 
 FROM ${NODE_IMAGE} AS frontend-build
 WORKDIR /src/frontend
-RUN corepack enable
+RUN corepack enable && corepack prepare pnpm@10.33.0 --activate
 COPY frontend/package.json frontend/pnpm-lock.yaml ./
+COPY frontend/pnpm-workspace.yaml ./
 RUN pnpm install --frozen-lockfile
 COPY frontend/ ./
 RUN pnpm build
