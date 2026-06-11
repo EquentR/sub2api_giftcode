@@ -1,9 +1,9 @@
 <template>
   <el-container class="app-shell">
-    <el-aside width="240px" class="app-sidebar">
+    <el-aside v-if="layout.sidebarVisible" width="240px" class="app-sidebar">
       <div class="brand">
-        <div class="brand-title">sub2api</div>
-        <div class="brand-subtitle">兑换码系统</div>
+        <div class="brand-title">{{ branding.title }}</div>
+        <div class="brand-subtitle">{{ branding.subtitle }}</div>
       </div>
 
       <el-menu
@@ -44,9 +44,19 @@
           <div class="muted">{{ subtitle }}</div>
         </div>
         <div class="header-actions">
-          <el-tag v-if="session.user" type="info" effect="light">{{ session.user.username }}</el-tag>
+          <el-tooltip :content="layout.sidebarVisible ? '隐藏侧边栏' : '显示侧边栏'" placement="bottom">
+            <el-button
+              class="sidebar-toggle"
+              :icon="layout.sidebarVisible ? Fold : Expand"
+              :aria-label="layout.sidebarVisible ? '隐藏侧边栏' : '显示侧边栏'"
+              circle
+              plain
+              @click="layout.toggleSidebar"
+            />
+          </el-tooltip>
+          <el-tag v-if="session.user" type="info" effect="light">{{ sessionUserLabel }}</el-tag>
           <el-tag v-if="session.isAdmin" type="success" effect="light">管理员</el-tag>
-          <el-button :icon="SwitchButton" @click="onLogout">退出登录</el-button>
+          <el-button class="logout-button" :icon="SwitchButton" @click="onLogout">退出登录</el-button>
         </div>
       </el-header>
       <el-main class="page">
@@ -57,11 +67,14 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick } from 'vue'
+import { computed, nextTick, watchEffect } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { DataLine, House, Operation, Setting, SwitchButton, Wallet } from '@element-plus/icons-vue'
+import { DataLine, Expand, Fold, House, Operation, Setting, SwitchButton, Wallet } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
+import { useBrandingStore } from '@/stores/branding'
+import { useLayoutStore } from '@/stores/layout'
 import { useSessionStore } from '@/stores/session'
+import { formatUserDisplayName } from '@/utils/user-display'
 
 const props = defineProps<{
   title: string
@@ -69,10 +82,19 @@ const props = defineProps<{
 }>()
 
 const session = useSessionStore()
+const branding = useBrandingStore()
+const layout = useLayoutStore()
 const router = useRouter()
 const route = useRoute()
 
 const subtitle = computed(() => props.subtitle ?? '')
+const sessionUserLabel = computed(() => formatUserDisplayName(session.user))
+
+watchEffect(() => {
+  const brandTitle = branding.title.trim()
+  const pageTitle = props.title.trim()
+  document.title = brandTitle ? `${brandTitle} · ${pageTitle}` : pageTitle
+})
 
 async function onLogout() {
   await session.signOut()
@@ -134,7 +156,16 @@ async function onMenuSelect(index: string) {
 .header-actions {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 10px;
+}
+
+.sidebar-toggle {
+  flex: 0 0 auto;
+}
+
+.logout-button {
+  white-space: nowrap;
 }
 
 @media (max-width: 900px) {
@@ -184,6 +215,7 @@ async function onMenuSelect(index: string) {
 
   .header-actions {
     gap: 6px;
+    justify-content: flex-end;
   }
 
   .header-actions :deep(.el-tag) {
@@ -198,10 +230,6 @@ async function onMenuSelect(index: string) {
 @media (max-width: 520px) {
   .app-header {
     display: grid;
-  }
-
-  .header-actions :deep(.el-button) {
-    width: 100%;
   }
 }
 </style>

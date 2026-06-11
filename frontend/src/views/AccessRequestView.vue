@@ -120,6 +120,7 @@ import { createAccessRequest, listAccessRequests } from '@/api/access'
 import { listBalanceTiers, listRedeemCodes } from '@/api/redeem'
 import type { AccessRequest, BalanceTier, RedeemCode } from '@/api/types'
 import { formatTierDisplay } from '@/utils/tiers'
+import { copyText } from '@/utils/clipboard'
 
 const loading = ref(false)
 const loadingCore = ref(false)
@@ -219,8 +220,10 @@ async function submit() {
 
 async function copyLatestCode() {
   if (!latestCode.value) return
-  await navigator.clipboard.writeText(latestCode.value.code)
-  ElMessage.success('已复制')
+  const copied = await copyText(latestCode.value.code)
+  if (copied) {
+    ElMessage.success('已复制')
+  }
 }
 
 function refreshWhenVisible() {

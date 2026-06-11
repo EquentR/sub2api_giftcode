@@ -110,6 +110,12 @@ export interface DashboardStats {
   last_sync_at?: string | null
 }
 
+export interface SiteBranding {
+  title: string
+  subtitle: string
+  mail_subject_prefix: string
+}
+
 export interface RedeemIssueResponse {
   request: RedeemRequest
   code?: RedeemCode | null

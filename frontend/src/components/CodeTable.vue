@@ -39,14 +39,17 @@ import { CopyDocument } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import StatusTag from './StatusTag.vue'
 import type { RedeemCode } from '@/api/types'
+import { copyText } from '@/utils/clipboard'
 
 defineProps<{
   codes: RedeemCode[]
 }>()
 
 async function copy(text: string) {
-  await navigator.clipboard.writeText(text)
-  ElMessage.success('已复制')
+  const copied = await copyText(text)
+  if (copied) {
+    ElMessage.success('已复制')
+  }
 }
 
 function formatTime(value?: string | null) {

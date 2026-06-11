@@ -5,6 +5,7 @@ import 'element-plus/dist/index.css'
 import './style.css'
 import App from './App.vue'
 import router from './router'
+import { useBrandingStore } from './stores/branding'
 import { useSessionStore } from './stores/session'
 import { applyEmbeddedContext, parseEmbeddedLaunchContext, stripEmbeddedLaunchParams } from './utils/embedded'
 
@@ -20,6 +21,9 @@ async function bootstrap() {
   app.use(pinia)
   app.use(ElementPlus)
   app.use(router)
+
+  const branding = useBrandingStore()
+  await branding.bootstrap()
 
   const session = useSessionStore()
   await session.bootstrap(embeddedContext)

@@ -1,7 +1,8 @@
 <template>
   <div class="login-page">
     <div class="login-panel surface section">
-      <div class="login-brand">sub2api 兑换码系统</div>
+      <div class="login-brand">{{ branding.title }}</div>
+      <div class="login-brand-subtitle">{{ branding.subtitle }}</div>
       <el-alert
         v-if="session.embeddedLaunchError"
         :title="session.embeddedLaunchError"
@@ -28,13 +29,15 @@
 </template>
 
 <script setup lang="ts">
-import { computed, reactive } from 'vue'
+import { computed, reactive, watchEffect } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { SwitchButton } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
+import { useBrandingStore } from '@/stores/branding'
 import { useSessionStore } from '@/stores/session'
 
 const session = useSessionStore()
+const branding = useBrandingStore()
 const router = useRouter()
 const route = useRoute()
 
@@ -47,9 +50,13 @@ const subtitle = computed(() => {
   if (session.embeddedMode) {
     return session.embeddedLaunchError
       ? '嵌入式登录未完成，你仍然可以直接登录。'
-      : '正在连接你的 sub2api 会话。'
+      : `正在连接你的 ${branding.title} 会话。`
   }
-  return '使用你已有的 sub2api 账号登录。'
+  return `使用你已有的 ${branding.title} 账号登录。`
+})
+
+watchEffect(() => {
+  document.title = `${branding.title} · 登录`
 })
 
 async function onSubmit() {
@@ -84,5 +91,11 @@ async function onSubmit() {
   font-size: 22px;
   font-weight: 700;
   margin-bottom: 6px;
+}
+
+.login-brand-subtitle {
+  margin-bottom: 14px;
+  color: #6b7280;
+  font-size: 13px;
 }
 </style>

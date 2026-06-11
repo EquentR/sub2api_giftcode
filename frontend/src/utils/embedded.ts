@@ -65,3 +65,7 @@ export function applyEmbeddedContext(context: EmbeddedLaunchContext | null) {
     document.documentElement.style.colorScheme = context.theme.toLowerCase() === 'dark' ? 'dark' : 'light'
   }
 }
+
+export function isEmbeddedDocument() {
+  return typeof document !== 'undefined' && document.documentElement.dataset.embedded === 'true'
+}

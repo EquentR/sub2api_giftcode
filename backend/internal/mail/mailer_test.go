@@ -8,9 +8,9 @@ import (
 
 func TestApprovalEmailIncludesLink(t *testing.T) {
 	m := New(Config{SubjectPrefix: "[demo]"})
-	subject, body := m.ApprovalEmail(42, "alice", "alice@example.com", "$120", 120, 95, "please", "http://localhost/confirm?token=abc")
-	require.Contains(t, subject, "42")
-	require.Contains(t, subject, "兑换码审批申请")
+	subject, body := m.ApprovalEmail("Acme Billing", "[Acme]", 42, "alice", "alice@example.com", "$120", 120, 95, "please", "http://localhost/confirm?token=abc")
+	require.Equal(t, "[Acme] 兑换码审批申请 #42", subject)
+	require.Contains(t, body, "Acme Billing 兑换码审批申请")
 	require.Contains(t, body, "alice@example.com")
 	require.Contains(t, body, "alice")
 	require.Contains(t, body, "please")

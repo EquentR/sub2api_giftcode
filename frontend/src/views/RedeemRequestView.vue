@@ -4,7 +4,7 @@
       <div class="toolbar">
         <div>
           <div style="font-weight: 700">已发放兑换码</div>
-          <div class="muted">复制后到 sub2api 中使用。</div>
+          <div class="muted">复制后到 {{ branding.title }} 中使用。</div>
         </div>
         <el-button :icon="CopyDocument" type="primary" @click="copyIssued">复制兑换码</el-button>
       </div>
@@ -105,8 +105,11 @@ import StatusTag from '@/components/StatusTag.vue'
 import { createRedeemRequest, listBalanceTiers, listRedeemCodes, listRedeemRequests } from '@/api/redeem'
 import type { BalanceTier, RedeemCode, RedeemRequest } from '@/api/types'
 import { formatTierAmount, formatTierDisplay, formatTierPayAmount } from '@/utils/tiers'
+import { copyText } from '@/utils/clipboard'
+import { useBrandingStore } from '@/stores/branding'
 
 const loading = ref(false)
+const branding = useBrandingStore()
 const tiers = ref<BalanceTier[]>([])
 const requests = ref<RedeemRequest[]>([])
 const codes = ref<RedeemCode[]>([])
@@ -168,8 +171,10 @@ async function submit() {
 
 async function copyIssued() {
   if (!issuedCode.value) return
-  await navigator.clipboard.writeText(issuedCode.value.code)
-  ElMessage.success('已复制')
+  const copied = await copyText(issuedCode.value.code)
+  if (copied) {
+    ElMessage.success('已复制')
+  }
 }
 
 onMounted(loadAll)

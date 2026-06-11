@@ -74,8 +74,19 @@ func (m *Mailer) SendApprovalEmail(ctx context.Context, to, subject, body string
 	return nil
 }
 
-func (m *Mailer) ApprovalEmail(requestID int64, requestorUsername, requestorEmail, tierLabel string, amount, payAmountCny float64, note, approvalURL string) (string, string) {
-	subject := fmt.Sprintf("%s 兑换码审批申请 #%d", m.cfg.SubjectPrefix, requestID)
+func (m *Mailer) ApprovalEmail(brandTitle, subjectPrefix string, requestID int64, requestorUsername, requestorEmail, tierLabel string, amount, payAmountCny float64, note, approvalURL string) (string, string) {
+	brandTitle = strings.TrimSpace(brandTitle)
+	if brandTitle == "" {
+		brandTitle = "sub2api"
+	}
+	subjectPrefix = strings.TrimSpace(subjectPrefix)
+	if subjectPrefix == "" {
+		subjectPrefix = m.cfg.SubjectPrefix
+	}
+	if strings.TrimSpace(subjectPrefix) == "" {
+		subjectPrefix = fmt.Sprintf("[%s]", brandTitle)
+	}
+	subject := fmt.Sprintf("%s 兑换码审批申请 #%d", subjectPrefix, requestID)
 	trimmedNote := strings.TrimSpace(note)
 	if trimmedNote == "" {
 		trimmedNote = "无"
@@ -85,7 +96,7 @@ func (m *Mailer) ApprovalEmail(requestID int64, requestorUsername, requestorEmai
 		tierLabel = fmt.Sprintf("%.0f 美元", amount)
 	}
 	body := strings.Join([]string{
-		"sub2api 兑换码审批申请",
+		brandTitle + " 兑换码审批申请",
 		"",
 		fmt.Sprintf("申请编号: %d", requestID),
 		fmt.Sprintf("申请人: %s", requestorUsername),

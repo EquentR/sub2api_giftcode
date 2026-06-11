@@ -82,7 +82,7 @@
       <div class="toolbar">
         <div>
           <div style="font-weight: 700">最近兑换码</div>
-          <div class="muted">可以直接复制后到 sub2api 使用。</div>
+          <div class="muted">可以直接复制后到 {{ branding.title }} 使用。</div>
         </div>
       </div>
       <CodeTable :codes="redeemCodes.slice(0, 10)" />
@@ -101,8 +101,10 @@ import StatusTag from '@/components/StatusTag.vue'
 import { listAccessRequests } from '@/api/access'
 import { listBalanceTiers, listRedeemCodes } from '@/api/redeem'
 import type { AccessRequest, BalanceTier, RedeemCode } from '@/api/types'
+import { useBrandingStore } from '@/stores/branding'
 
 const router = useRouter()
+const branding = useBrandingStore()
 const accessRequests = ref<AccessRequest[]>([])
 const tiers = ref<BalanceTier[]>([])
 const redeemCodes = ref<RedeemCode[]>([])

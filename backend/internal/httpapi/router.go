@@ -22,6 +22,7 @@ func NewRouter(cfg *config.RuntimeConfig, service *app.Service) *gin.Engine {
 
 	api := r.Group("/api")
 	{
+		api.GET("/site-branding", handlers.GetSiteBranding)
 		api.POST("/auth/login", handlers.Login)
 		api.POST("/auth/embedded/login", handlers.EmbeddedLogin)
 		api.POST("/auth/logout", authRequired(cfg, service), handlers.Logout)
@@ -44,6 +45,7 @@ func NewRouter(cfg *config.RuntimeConfig, service *app.Service) *gin.Engine {
 
 		admin := api.Group("/admin", authRequired(cfg, service), adminRequired())
 		{
+			admin.PUT("/site-branding", handlers.UpdateSiteBranding)
 			admin.GET("/stats", handlers.Stats)
 			admin.GET("/users", handlers.ListUsers)
 			admin.GET("/users/:id/redeem-codes", handlers.ListUserRedeemCodes)

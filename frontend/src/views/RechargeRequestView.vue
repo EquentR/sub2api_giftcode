@@ -5,7 +5,7 @@
         <div>
           <div class="eyebrow">Recharge</div>
           <h1>充值兑换申请</h1>
-          <p>选择合适的充值档位，提交后由管理员审批并发放兑换码。</p>
+          <p>选择合适的充值档位，提交后由管理员审批并发放兑换码。提交审批后请主动联系管理员付款！</p>
         </div>
         <div class="wallet-card">
           <span>本次预计到账</span>
@@ -162,6 +162,7 @@ import StatusTag from '@/components/StatusTag.vue'
 import { createAccessRequest, listAccessRequests } from '@/api/access'
 import { listBalanceTiers, listRedeemCodes, listRedeemRequests } from '@/api/redeem'
 import type { AccessRequest, BalanceTier, RedeemCode, RedeemRequest } from '@/api/types'
+import { copyText } from '@/utils/clipboard'
 
 const loading = ref(false)
 const loadingCore = ref(false)
@@ -297,8 +298,10 @@ async function submit() {
 }
 
 async function copyCode(code: string) {
-  await navigator.clipboard.writeText(code)
-  ElMessage.success('已复制')
+  const copied = await copyText(code)
+  if (copied) {
+    ElMessage.success('已复制')
+  }
 }
 
 function isCodeUsed(code: RedeemCode) {

@@ -1,5 +1,26 @@
 <template>
   <AppLayout title="管理总览" subtitle="查看用户、申请和已发放的兑换码">
+    <div class="surface section" style="margin-bottom: 16px">
+      <div class="toolbar">
+        <div>
+          <div style="font-weight: 700">站点品牌</div>
+          <div class="muted">这些内容会同步到侧边栏、登录页、浏览器标题和邮件主题。</div>
+        </div>
+        <el-button type="primary" :loading="savingBranding" @click="saveBranding">保存设置</el-button>
+      </div>
+      <el-form :model="brandingForm" label-position="top" class="branding-form">
+        <el-form-item label="左侧栏标题">
+          <el-input v-model="brandingForm.title" />
+        </el-form-item>
+        <el-form-item label="左侧栏副标题">
+          <el-input v-model="brandingForm.subtitle" />
+        </el-form-item>
+        <el-form-item label="邮件主题前缀">
+          <el-input v-model="brandingForm.mail_subject_prefix" placeholder="留空则自动使用标题" />
+        </el-form-item>
+      </el-form>
+    </div>
+
     <div class="grid-stats" style="margin-bottom: 16px">
       <div class="stat"><div class="label">用户数</div><div class="value">{{ stats?.total_users ?? 0 }}</div></div>
       <div class="stat"><div class="label">待处理</div><div class="value">{{ stats?.pending_access_requests ?? 0 }}</div></div>
@@ -40,18 +61,27 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { Operation, Refresh, Setting } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import AppLayout from '@/components/AppLayout.vue'
 import StatusTag from '@/components/StatusTag.vue'
+import { updateSiteBranding } from '@/api/branding'
 import { listUsers, stats as fetchStats } from '@/api/admin'
 import type { DashboardStats, UserSummary } from '@/api/types'
+import { useBrandingStore } from '@/stores/branding'
 
 const router = useRouter()
+const branding = useBrandingStore()
 const users = ref<UserSummary[]>([])
 const stats = ref<DashboardStats | null>(null)
+const savingBranding = ref(false)
+const brandingForm = reactive({
+  title: branding.title,
+  subtitle: branding.subtitle,
+  mail_subject_prefix: branding.mailSubjectPrefix,
+})
 
 async function loadAll() {
   try {
@@ -63,9 +93,40 @@ async function loadAll() {
   }
 }
 
+async function saveBranding() {
+  savingBranding.value = true
+  try {
+    const updated = await updateSiteBranding({
+      title: brandingForm.title,
+      subtitle: brandingForm.subtitle,
+      mail_subject_prefix: brandingForm.mail_subject_prefix,
+    })
+    branding.applyBranding(updated)
+    brandingForm.title = branding.title
+    brandingForm.subtitle = branding.subtitle
+    brandingForm.mail_subject_prefix = branding.mailSubjectPrefix
+    ElMessage.success('品牌设置已保存')
+  } catch (error: any) {
+    ElMessage.error(error?.message ?? '保存品牌设置失败')
+  } finally {
+    savingBranding.value = false
+  }
+}
+
 function viewCodes(userId: number) {
   router.push({ name: 'admin-access', query: { user_id: String(userId) } })
 }
 
 onMounted(loadAll)
 </script>
+
+<style scoped>
+.branding-form {
+  display: grid;
+  gap: 8px;
+}
+
+.branding-form :deep(.el-form-item) {
+  margin-bottom: 0;
+}
+</style>

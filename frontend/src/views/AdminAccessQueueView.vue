@@ -112,6 +112,7 @@ import CodeTable from '@/components/CodeTable.vue'
 import StatusTag from '@/components/StatusTag.vue'
 import { approveAccessRequest, listAccessRequests, listBalanceTiers, listRedeemCodes, listUserRedeemCodes, rejectAccessRequest } from '@/api/admin'
 import type { AccessRequest, BalanceTier, RedeemCode } from '@/api/types'
+import { copyText } from '@/utils/clipboard'
 
 
 const route = useRoute()
@@ -201,8 +202,10 @@ function closeReview() {
 
 async function copyIssued() {
   if (!issuedCode.value) return
-  await navigator.clipboard.writeText(issuedCode.value.code)
-  ElMessage.success('已复制')
+  const copied = await copyText(issuedCode.value.code)
+  if (copied) {
+    ElMessage.success('已复制')
+  }
 }
 
 function tierNameById(id: number) {

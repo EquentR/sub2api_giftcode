@@ -49,6 +49,12 @@ type RedeemRequestCreateRequest struct {
 	Note   string `json:"note"`
 }
 
+type SiteBrandingRequest struct {
+	Title             string `json:"title" binding:"required"`
+	Subtitle          string `json:"subtitle"`
+	MailSubjectPrefix string `json:"mail_subject_prefix"`
+}
+
 type BalanceTierRequest struct {
 	ID           int64   `json:"id"`
 	Amount       float64 `json:"amount" binding:"required,gt=0"`

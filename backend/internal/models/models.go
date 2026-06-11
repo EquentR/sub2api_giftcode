@@ -96,3 +96,9 @@ type SyncState struct {
 	Value     string    `json:"value"`
 	UpdatedAt time.Time `json:"updated_at"`
 }
+
+type SiteBranding struct {
+	Title             string `json:"title"`
+	Subtitle          string `json:"subtitle"`
+	MailSubjectPrefix string `json:"mail_subject_prefix"`
+}

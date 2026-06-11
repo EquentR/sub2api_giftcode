@@ -4,7 +4,7 @@
       <div class="toolbar">
         <div>
           <div style="font-weight: 700">同步状态</div>
-          <div class="muted">最近一次与 sub2api 的本地同步时间。</div>
+          <div class="muted">最近一次与 {{ branding.title }} 的本地同步时间。</div>
         </div>
         <div style="display: flex; gap: 8px">
           <el-button :icon="Refresh" @click="loadAll">刷新</el-button>
@@ -31,9 +31,11 @@ import AppLayout from '@/components/AppLayout.vue'
 import TierEditor from '@/components/TierEditor.vue'
 import { listBalanceTiers, syncRedeemCodes, updateBalanceTiers, stats as fetchStats } from '@/api/admin'
 import type { BalanceTier, DashboardStats } from '@/api/types'
+import { useBrandingStore } from '@/stores/branding'
 
 const tiers = ref<BalanceTier[]>([])
 const stats = ref<DashboardStats | null>(null)
+const branding = useBrandingStore()
 
 const enabledCount = computed(() => tiers.value.filter((tier) => tier.enabled).length)
 

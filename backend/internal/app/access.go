@@ -62,7 +62,12 @@ func (s *Service) CreateAccessRequest(ctx context.Context, sessionID string, tie
 	}
 	req.ID = id
 	approvalURL := s.approvalConfirmURL(token)
-	subject, body := s.mailer.ApprovalEmail(req.ID, req.RequestorUsername, req.RequestorEmail, tier.Label, req.Amount, req.PayAmountCny, req.Note, approvalURL)
+	branding := defaultSiteBranding()
+	if current, brandErr := s.GetSiteBranding(ctx); brandErr == nil && current != nil {
+		branding = current
+	}
+	subjectPrefix := effectiveMailSubjectPrefix(branding.Title, branding.MailSubjectPrefix)
+	subject, body := s.mailer.ApprovalEmail(branding.Title, subjectPrefix, req.ID, req.RequestorUsername, req.RequestorEmail, tier.Label, req.Amount, req.PayAmountCny, req.Note, approvalURL)
 	if err := s.mailer.SendApprovalEmail(ctx, s.cfg.Mail.AdminToAddress, subject, body); err != nil {
 		req.NotificationStatus = "failed"
 		req.NotificationError = err.Error()
