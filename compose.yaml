@@ -1,0 +1,13 @@
+services:
+  sub2api-giftcode:
+    image: ghcr.io/equentr/sub2api_giftcode:latest
+    container_name: sub2api-giftcode
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+      - sub2api-giftcode-data:/app/data
+
+volumes:
+  sub2api-giftcode-data:

@@ -1,0 +1,5 @@
+bin/
+*.db
+*.sqlite
+*.sqlite3
+coverage.out

@@ -1,0 +1,742 @@
+<template>
+  <AppLayout title="充值兑换申请" subtitle="选择充值档位，审批通过后自动下发兑换码">
+    <div class="recharge-page">
+      <section class="recharge-hero">
+        <div>
+          <div class="eyebrow">Recharge</div>
+          <h1>充值兑换申请</h1>
+          <p>选择合适的充值档位，提交后由管理员审批并发放兑换码。</p>
+        </div>
+        <div class="wallet-card">
+          <span>本次预计到账</span>
+          <strong>{{ selectedTier ? `${formatMoney(selectedTier.amount)} USD` : '-' }}</strong>
+          <small>{{ selectedTier ? `实付 ${formatCny(selectedTier.pay_amount_cny)}` : '请选择充值档位' }}</small>
+        </div>
+      </section>
+
+      <div class="recharge-layout">
+        <section class="tier-section">
+          <div class="section-heading">
+            <div>
+              <h2>选择充值档位</h2>
+              <p>到账金额为兑换码面额，实付金额为本次充值金额。</p>
+            </div>
+            <el-button :icon="Refresh" :loading="loadingData" @click="() => loadAll()">刷新</el-button>
+          </div>
+
+          <div v-loading="loadingCore" class="tier-grid">
+            <button
+              v-for="tier in enabledTiers"
+              :key="tier.id"
+              class="tier-card"
+              :class="{ active: form.tierId === tier.id }"
+              type="button"
+              @click="selectTier(tier.id)"
+            >
+              <span class="tier-name">{{ tier.label || `档位 #${tier.id}` }}</span>
+              <strong>{{ formatCny(tier.pay_amount_cny) }}</strong>
+              <span>到账 {{ formatMoney(tier.amount) }} 美元</span>
+            </button>
+            <div v-if="!enabledTiers.length && !loadingCore" class="empty-state">暂无可选充值档位</div>
+          </div>
+
+          <div class="status-panel">
+            <div class="section-heading compact">
+              <div>
+                <h2>申请状态</h2>
+                <p>最近的申请和发码结果会显示在这里。</p>
+              </div>
+            </div>
+            <div v-if="accessRequestRows.length" class="request-list">
+              <div v-for="row in accessRequestRows" :key="row.request.id" class="request-item">
+                <div class="request-main">
+                  <div>
+                    <strong>{{ tierNameById(row.request.tier_id) }}</strong>
+                    <span>{{ formatMoney(row.request.amount) }} 美元 · {{ formatCny(row.request.pay_amount_cny) }}</span>
+                    <small>{{ formatTime(row.request.created_at) }}</small>
+                  </div>
+                  <StatusTag :status="row.request.status" />
+                </div>
+
+                <div v-if="row.codes.length" class="request-codes">
+                  <div
+                    v-for="code in row.codes"
+                    :key="code.id"
+                    class="code-item"
+                    :class="{ used: isCodeUsed(code) }"
+                  >
+                    <div class="code-meta">
+                      <code>{{ code.code }}</code>
+                      <span>{{ formatMoney(code.value) }} 美元 · {{ formatTime(code.created_at) }}</span>
+                    </div>
+                    <div class="code-actions">
+                      <StatusTag :status="code.status" />
+                      <el-button text :icon="CopyDocument" @click="copyCode(code.code)">复制</el-button>
+                    </div>
+                  </div>
+                </div>
+                <div v-else class="request-code-empty">{{ codeEmptyText(row.request.status) }}</div>
+              </div>
+            </div>
+            <div v-else class="empty-state small">还没有提交过充值申请</div>
+
+            <div v-if="unlinkedCodes.length" class="request-list legacy-codes">
+              <div class="request-item">
+                <div class="request-main">
+                  <div>
+                    <strong>历史兑换码</strong>
+                    <span>未找到关联申请的兑换码</span>
+                  </div>
+                  <StatusTag status="issued" />
+                </div>
+                <div class="request-codes">
+                  <div
+                    v-for="code in unlinkedCodes"
+                    :key="code.id"
+                    class="code-item"
+                    :class="{ used: isCodeUsed(code) }"
+                  >
+                    <div class="code-meta">
+                      <code>{{ code.code }}</code>
+                      <span>{{ formatMoney(code.value) }} 美元 · {{ formatTime(code.created_at) }}</span>
+                    </div>
+                    <div class="code-actions">
+                      <StatusTag :status="code.status" />
+                      <el-button text :icon="CopyDocument" @click="copyCode(code.code)">复制</el-button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <aside class="submit-panel">
+          <div class="summary-card">
+            <h2>申请确认</h2>
+            <div class="summary-line">
+              <span>当前选择</span>
+              <strong>{{ selectedTierName }}</strong>
+            </div>
+            <div class="summary-line">
+              <span>到账金额</span>
+              <strong>{{ selectedTier ? `${formatMoney(selectedTier.amount)} 美元` : '-' }}</strong>
+            </div>
+            <div class="summary-line">
+              <span>实付金额</span>
+              <strong>{{ selectedTier ? formatCny(selectedTier.pay_amount_cny) : '-' }}</strong>
+            </div>
+            <label class="note-label" for="recharge-note">备注</label>
+            <el-input
+              id="recharge-note"
+              v-model="form.note"
+              type="textarea"
+              :rows="4"
+              maxlength="500"
+              show-word-limit
+              placeholder="可填写付款信息、订单号或其他补充说明"
+            />
+            <el-button
+              class="submit-button"
+              type="primary"
+              :loading="loading"
+              :disabled="!enabledTiers.length || !form.tierId"
+              @click="submit"
+            >
+              提交充值申请
+            </el-button>
+          </div>
+        </aside>
+      </div>
+    </div>
+  </AppLayout>
+</template>
+
+<script setup lang="ts">
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { useRoute } from 'vue-router'
+import { CopyDocument, Refresh } from '@element-plus/icons-vue'
+import { ElMessage } from 'element-plus'
+import AppLayout from '@/components/AppLayout.vue'
+import StatusTag from '@/components/StatusTag.vue'
+import { createAccessRequest, listAccessRequests } from '@/api/access'
+import { listBalanceTiers, listRedeemCodes, listRedeemRequests } from '@/api/redeem'
+import type { AccessRequest, BalanceTier, RedeemCode, RedeemRequest } from '@/api/types'
+
+const loading = ref(false)
+const loadingCore = ref(false)
+const loadingCodes = ref(false)
+const tiers = ref<BalanceTier[]>([])
+const items = ref<AccessRequest[]>([])
+const redeemRequests = ref<RedeemRequest[]>([])
+const codes = ref<RedeemCode[]>([])
+let refreshTimer: number | undefined
+
+const route = useRoute()
+const form = reactive({
+  tierId: 0,
+  note: '',
+})
+
+const enabledTiers = computed(() => tiers.value.filter((tier) => tier.enabled))
+const tierMap = computed(() => new Map(tiers.value.map((tier) => [tier.id, tier])))
+const selectedTier = computed(() => tierMap.value.get(form.tierId) ?? null)
+const selectedTierName = computed(() => selectedTier.value?.label?.trim() || (selectedTier.value ? `档位 #${selectedTier.value.id}` : '-'))
+const redeemRequestMap = computed(() => new Map(redeemRequests.value.map((request) => [request.id, request])))
+const codesByAccessRequestId = computed(() => {
+  const groups = new Map<number, RedeemCode[]>()
+  for (const code of codes.value) {
+    const accessRequestId = redeemRequestMap.value.get(code.request_id)?.access_request_id
+    if (!accessRequestId) continue
+    const group = groups.get(accessRequestId) ?? []
+    group.push(code)
+    groups.set(accessRequestId, group)
+  }
+  return groups
+})
+const accessRequestRows = computed(() => items.value.slice(0, 5).map((request) => ({
+  request,
+  codes: codesByAccessRequestId.value.get(request.id) ?? [],
+})))
+const unlinkedCodes = computed(() => codes.value.filter((code) => !redeemRequestMap.value.get(code.request_id)?.access_request_id))
+const loadingData = computed(() => loadingCore.value || loadingCodes.value)
+
+type LoadAllOptions = {
+  silent?: boolean
+}
+
+async function loadAll(options: LoadAllOptions = {}) {
+  await Promise.all([loadCoreData(options), loadCodes(options)])
+}
+
+async function loadCoreData(options: LoadAllOptions = {}) {
+  if (!options.silent) {
+    loadingCore.value = true
+  }
+  try {
+    const [tierData, requestData] = await Promise.all([
+      listBalanceTiers(),
+      listAccessRequests(),
+    ])
+    tiers.value = tierData
+    items.value = requestData
+    syncDefaultTier()
+  } catch (error: any) {
+    if (!options.silent) {
+      ElMessage.error(error?.message ?? '加载充值申请失败')
+    }
+  } finally {
+    if (!options.silent) {
+      loadingCore.value = false
+    }
+  }
+}
+
+async function loadCodes(options: LoadAllOptions = {}) {
+  if (!options.silent) {
+    loadingCodes.value = true
+  }
+  try {
+    const [requestData, codeData] = await Promise.all([
+      listRedeemRequests(),
+      listRedeemCodes(),
+    ])
+    redeemRequests.value = requestData
+    codes.value = codeData
+  } catch (error: any) {
+    if (!options.silent) {
+      ElMessage.error(error?.message ?? '加载兑换码失败')
+    }
+  } finally {
+    if (!options.silent) {
+      loadingCodes.value = false
+    }
+  }
+}
+
+function selectTier(tierId: number) {
+  form.tierId = tierId
+}
+
+function tierById(id: number) {
+  return tierMap.value.get(id)
+}
+
+function tierNameById(id: number) {
+  const tier = tierById(id)
+  if (!tier) return `#${id}`
+  return tier.label?.trim() || `#${id}`
+}
+
+function syncDefaultTier() {
+  if (!enabledTiers.value.length) {
+    form.tierId = 0
+    return
+  }
+  if (!enabledTiers.value.some((tier) => tier.id === form.tierId)) {
+    form.tierId = enabledTiers.value[0].id
+  }
+}
+
+async function submit() {
+  if (!form.tierId) {
+    ElMessage.warning('请选择充值档位')
+    return
+  }
+  loading.value = true
+  try {
+    await createAccessRequest(form.tierId, form.note)
+    ElMessage.success('充值申请已提交')
+    form.note = ''
+    await loadAll()
+  } catch (error: any) {
+    ElMessage.error(error?.message ?? '提交充值申请失败')
+  } finally {
+    loading.value = false
+  }
+}
+
+async function copyCode(code: string) {
+  await navigator.clipboard.writeText(code)
+  ElMessage.success('已复制')
+}
+
+function isCodeUsed(code: RedeemCode) {
+  return code.status === 'used'
+}
+
+function codeEmptyText(status: string) {
+  if (status === 'consumed' || status === 'approved') return '暂无关联兑换码'
+  if (status === 'rejected') return '申请未通过'
+  if (status === 'expired') return '申请已过期'
+  return '审批通过后会在这里显示兑换码'
+}
+
+function refreshWhenVisible() {
+  if (document.visibilityState === 'hidden') return
+  void loadAll({ silent: true })
+}
+
+function refreshFromMenu(event: Event) {
+  const targetPath = event instanceof CustomEvent ? event.detail?.path : ''
+  if (targetPath && targetPath !== route.path) return
+  void loadAll()
+}
+
+function formatMoney(value: number) {
+  return Number(value).toFixed(0)
+}
+
+function formatCny(value: number) {
+  return `¥${Number(value).toFixed(0)}`
+}
+
+function formatTime(value?: string | null) {
+  if (!value) return '-'
+  return new Date(value).toLocaleString()
+}
+
+watch(
+  () => route.fullPath,
+  () => {
+    void loadAll()
+  },
+  { immediate: true },
+)
+
+onMounted(() => {
+  window.addEventListener('focus', refreshWhenVisible)
+  window.addEventListener('giftcode:refresh-current-view', refreshFromMenu)
+  document.addEventListener('visibilitychange', refreshWhenVisible)
+  refreshTimer = window.setInterval(() => {
+    void loadAll({ silent: true })
+  }, 15000)
+})
+
+onBeforeUnmount(() => {
+  window.removeEventListener('focus', refreshWhenVisible)
+  window.removeEventListener('giftcode:refresh-current-view', refreshFromMenu)
+  document.removeEventListener('visibilitychange', refreshWhenVisible)
+  if (refreshTimer !== undefined) {
+    window.clearInterval(refreshTimer)
+  }
+})
+</script>
+
+<style scoped>
+.recharge-page {
+  --recharge-side-width: 340px;
+  display: grid;
+  gap: 16px;
+}
+
+.recharge-hero {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) var(--recharge-side-width);
+  gap: 16px;
+  align-items: stretch;
+}
+
+.recharge-hero > div:first-child,
+.wallet-card,
+.tier-section,
+.summary-card,
+.status-panel {
+  border: 1px solid #dfe7f1;
+  border-radius: 8px;
+  background: #fff;
+}
+
+.recharge-hero > div:first-child {
+  padding: 24px;
+}
+
+.eyebrow {
+  margin-bottom: 8px;
+  color: #1d6fd0;
+  font-size: 12px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+h1,
+h2,
+h3 {
+  margin: 0;
+  letter-spacing: 0;
+}
+
+h1 {
+  font-size: 30px;
+  line-height: 1.15;
+}
+
+h2 {
+  font-size: 17px;
+}
+
+h3 {
+  font-size: 15px;
+}
+
+p {
+  margin: 8px 0 0;
+  color: #64748b;
+}
+
+.wallet-card {
+  display: grid;
+  align-content: center;
+  padding: 22px;
+  color: #fff;
+  background: linear-gradient(135deg, #123a5a, #247a8a);
+  box-shadow: 0 16px 34px rgba(15, 23, 42, 0.16);
+}
+
+.wallet-card span,
+.wallet-card small {
+  opacity: 0.86;
+}
+
+.wallet-card strong {
+  margin: 8px 0 2px;
+  font-size: 34px;
+  line-height: 1.1;
+}
+
+.recharge-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) var(--recharge-side-width);
+  gap: 16px;
+  align-items: start;
+}
+
+.tier-section,
+.status-panel,
+.summary-card {
+  padding: 16px;
+}
+
+.section-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.section-heading.compact {
+  margin-bottom: 10px;
+}
+
+.tier-grid {
+  min-height: 140px;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 12px;
+}
+
+.tier-card {
+  min-height: 128px;
+  display: grid;
+  gap: 6px;
+  justify-items: start;
+  align-content: center;
+  padding: 16px;
+  border: 1px solid #dfe7f1;
+  border-radius: 8px;
+  background: #fff;
+  color: #1f2937;
+  text-align: left;
+  cursor: pointer;
+}
+
+.tier-card.active {
+  border-color: #1d6fd0;
+  box-shadow: inset 0 0 0 1px #1d6fd0;
+}
+
+.tier-card:hover {
+  border-color: #7db1ee;
+}
+
+.tier-name {
+  font-size: 15px;
+  font-weight: 800;
+}
+
+.tier-card strong {
+  color: #c2410c;
+  font-size: 28px;
+  line-height: 1.1;
+}
+
+.tier-card span:last-child {
+  color: #64748b;
+}
+
+.submit-panel {
+  display: grid;
+  gap: 12px;
+  position: sticky;
+  top: 16px;
+}
+
+.summary-line {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 0;
+  border-bottom: 1px solid #edf2f7;
+}
+
+.summary-line span {
+  color: #64748b;
+}
+
+.note-label {
+  display: block;
+  margin: 14px 0 6px;
+  color: #64748b;
+  font-size: 13px;
+}
+
+.submit-button {
+  width: 100%;
+  margin-top: 12px;
+}
+
+.status-panel {
+  margin-top: 16px;
+}
+
+.request-list {
+  display: grid;
+  gap: 8px;
+}
+
+.request-item {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid #edf2f7;
+  border-radius: 8px;
+}
+
+.request-main {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.request-main > div {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.request-main span,
+.request-main small {
+  color: #64748b;
+}
+
+.request-codes {
+  display: grid;
+  gap: 8px;
+  padding-top: 10px;
+  border-top: 1px solid #edf2f7;
+}
+
+.code-item,
+.code-actions {
+  display: flex;
+  align-items: center;
+}
+
+.code-item {
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid #edf2f7;
+  border-radius: 8px;
+  background: #fbfcfe;
+}
+
+.code-meta {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.code-meta code {
+  color: #0f172a;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  font-weight: 800;
+  overflow-wrap: anywhere;
+}
+
+.code-meta span {
+  color: #64748b;
+  font-size: 13px;
+}
+
+.code-item.used .code-meta code {
+  color: #64748b;
+  text-decoration: line-through;
+}
+
+.code-actions {
+  flex: 0 0 auto;
+  gap: 8px;
+}
+
+.request-code-empty {
+  padding-top: 10px;
+  border-top: 1px solid #edf2f7;
+  color: #94a3b8;
+  font-size: 13px;
+}
+
+.legacy-codes {
+  margin-top: 8px;
+}
+
+.empty-state {
+  display: grid;
+  place-items: center;
+  min-height: 120px;
+  color: #64748b;
+  border: 1px dashed #cfd9e6;
+  border-radius: 8px;
+  background: #fbfcfe;
+}
+
+.empty-state.small {
+  min-height: 72px;
+}
+
+@media (max-width: 900px) {
+  .recharge-page {
+    gap: 12px;
+  }
+
+  .recharge-hero,
+  .recharge-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .recharge-hero > div:first-child {
+    display: none;
+  }
+
+  .wallet-card {
+    min-height: 132px;
+    border-radius: 12px;
+  }
+
+  .wallet-card strong {
+    font-size: 32px;
+  }
+
+  .section-heading {
+    align-items: flex-start;
+  }
+
+  .tier-section,
+  .summary-card,
+  .status-panel {
+    padding: 14px;
+  }
+
+  .tier-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+  }
+
+  .tier-card {
+    min-height: 104px;
+    padding: 12px;
+  }
+
+  .tier-card strong {
+    font-size: 22px;
+  }
+
+  .submit-panel {
+    position: static;
+  }
+
+  .summary-card {
+    position: sticky;
+    bottom: 0;
+    z-index: 5;
+    box-shadow: 0 -12px 28px rgba(15, 23, 42, 0.1);
+  }
+
+  .request-main,
+  .code-item {
+    align-items: flex-start;
+  }
+}
+
+@media (max-width: 520px) {
+  .section-heading {
+    display: grid;
+  }
+
+  .section-heading :deep(.el-button) {
+    width: 100%;
+  }
+
+  .tier-grid {
+    grid-template-columns: 1fr 1fr;
+  }
+  .request-main,
+  .code-item,
+  .code-actions {
+    align-items: stretch;
+    display: grid;
+  }
+}
+</style>

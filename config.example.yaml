@@ -1,0 +1,23 @@
+app:
+  listen_addr: "0.0.0.0:8080"
+  base_url: "http://127.0.0.1:8080"
+  # Leave empty when the backend serves the built frontend from the same origin.
+  frontend_url: ""
+  static_dir: "/app/public"
+database:
+  driver: "sqlite"
+  path: "/app/data/giftcode.db"
+sub2api:
+  base_url: "http://127.0.0.1:8081"
+  admin_api_key: "admin-xxxxxxxx"
+mail:
+  smtp_host: "smtp.example.com"
+  smtp_port: 587
+  smtp_username: "mailer@example.com"
+  smtp_password: "change-me"
+  from_address: "mailer@example.com"
+  admin_to_address: "admin@example.com"
+session:
+  cookie_secret: "change-me"
+sync:
+  interval_seconds: 300
