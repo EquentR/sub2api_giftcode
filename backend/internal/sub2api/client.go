@@ -39,18 +39,41 @@ type AuthLoginResult struct {
 }
 
 type RedeemCode struct {
-	ID        int64      `json:"id"`
-	Code      string     `json:"code"`
-	Type      string     `json:"type"`
-	Value     float64    `json:"value"`
-	Status    string     `json:"status"`
-	UsedBy    *int64     `json:"used_by"`
-	UsedAt    *time.Time `json:"used_at"`
-	CreatedAt time.Time  `json:"created_at"`
-	ExpiresAt *time.Time `json:"expires_at,omitempty"`
-	GroupID   *int64     `json:"group_id"`
-	Notes     *string    `json:"notes,omitempty"`
-	User      *User      `json:"user,omitempty"`
+	ID           int64      `json:"id"`
+	Code         string     `json:"code"`
+	Type         string     `json:"type"`
+	Value        float64    `json:"value"`
+	Status       string     `json:"status"`
+	UsedBy       *int64     `json:"used_by"`
+	UsedAt       *time.Time `json:"used_at"`
+	CreatedAt    time.Time  `json:"created_at"`
+	ExpiresAt    *time.Time `json:"expires_at,omitempty"`
+	GroupID      *int64     `json:"group_id"`
+	ValidityDays int        `json:"validity_days"`
+	Notes        *string    `json:"notes,omitempty"`
+	User         *User      `json:"user,omitempty"`
+}
+
+type Group struct {
+	ID               int64     `json:"id"`
+	Name             string    `json:"name"`
+	Description      string    `json:"description"`
+	Platform         string    `json:"platform"`
+	RateMultiplier   float64   `json:"rate_multiplier"`
+	Status           string    `json:"status"`
+	SubscriptionType string    `json:"subscription_type"`
+	DailyLimitUSD    *float64  `json:"daily_limit_usd"`
+	WeeklyLimitUSD   *float64  `json:"weekly_limit_usd"`
+	MonthlyLimitUSD  *float64  `json:"monthly_limit_usd"`
+	CreatedAt        time.Time `json:"created_at"`
+	UpdatedAt        time.Time `json:"updated_at"`
+}
+
+type GenerateRedeemCodesInput struct {
+	Type         string
+	Value        float64
+	GroupID      *int64
+	ValidityDays int
 }
 
 type envelope struct {
@@ -119,12 +142,18 @@ func (c *Client) Me(ctx context.Context, accessToken string) (*User, error) {
 	return &out, nil
 }
 
-func (c *Client) GenerateRedeemCodes(ctx context.Context, idempotencyKey string, codeType string, value float64) ([]RedeemCode, error) {
+func (c *Client) GenerateRedeemCodes(ctx context.Context, idempotencyKey string, input GenerateRedeemCodesInput) ([]RedeemCode, error) {
 	var out []RedeemCode
 	reqBody := map[string]any{
 		"count": 1,
-		"type":  codeType,
-		"value": value,
+		"type":  input.Type,
+		"value": input.Value,
+	}
+	if input.GroupID != nil {
+		reqBody["group_id"] = *input.GroupID
+	}
+	if input.ValidityDays != 0 {
+		reqBody["validity_days"] = input.ValidityDays
 	}
 	if err := c.postJSON(ctx, "/api/v1/admin/redeem-codes/generate", map[string]string{
 		"x-api-key":       c.AdminAPIKey,
@@ -135,12 +164,20 @@ func (c *Client) GenerateRedeemCodes(ctx context.Context, idempotencyKey string,
 	return out, nil
 }
 
+func (c *Client) ListGroupsAll(ctx context.Context) ([]Group, error) {
+	var out []Group
+	if err := c.getJSONWithHeaders(ctx, "/api/v1/admin/groups/all", map[string]string{"x-api-key": c.AdminAPIKey}, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *Client) ListRedeemCodes(ctx context.Context, search string, pageSize int) ([]RedeemCode, error) {
 	if pageSize <= 0 {
 		pageSize = 50
 	}
 	var out paginatedEnvelope[RedeemCode]
-	path := fmt.Sprintf("/api/v1/admin/redeem-codes?type=balance&search=%s&page=1&page_size=%d", url.QueryEscape(search), pageSize)
+	path := fmt.Sprintf("/api/v1/admin/redeem-codes?search=%s&page=1&page_size=%d", url.QueryEscape(search), pageSize)
 	if err := c.getJSONWithHeaders(ctx, path, map[string]string{"x-api-key": c.AdminAPIKey}, &out); err != nil {
 		return nil, err
 	}

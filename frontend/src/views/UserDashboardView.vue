@@ -27,15 +27,15 @@
       <div class="toolbar">
         <div>
           <div style="font-weight: 700">可选档位</div>
-          <div class="muted">这里同时显示到账金额和实付金额。</div>
+          <div class="muted">这里同时显示余额金额、订阅内容和实付金额。</div>
         </div>
       </div>
       <el-table :data="enabledTiers" stripe size="small" style="width: 100%">
         <el-table-column prop="label" label="档位" min-width="180">
           <template #default="{ row }">{{ row.label || '-' }}</template>
         </el-table-column>
-        <el-table-column prop="amount" label="到账金额" width="140">
-          <template #default="{ row }">{{ Number(row.amount).toFixed(0) }} 美元</template>
+        <el-table-column label="内容" width="160">
+          <template #default="{ row }">{{ tierContent(row) }}</template>
         </el-table-column>
         <el-table-column prop="pay_amount_cny" label="实付金额" width="140">
           <template #default="{ row }">{{ Number(row.pay_amount_cny).toFixed(0) }} 人民币</template>
@@ -55,8 +55,8 @@
         <el-table-column label="档位" min-width="160">
           <template #default="{ row }">{{ tierNameById(row.tier_id) }}</template>
         </el-table-column>
-        <el-table-column label="到账金额" width="130">
-          <template #default="{ row }">{{ Number(row.amount).toFixed(0) }} 美元</template>
+        <el-table-column label="内容" width="130">
+          <template #default="{ row }">{{ requestContent(row) }}</template>
         </el-table-column>
         <el-table-column label="实付金额" width="130">
           <template #default="{ row }">{{ Number(row.pay_amount_cny).toFixed(0) }} 人民币</template>
@@ -99,14 +99,15 @@ import AppLayout from '@/components/AppLayout.vue'
 import CodeTable from '@/components/CodeTable.vue'
 import StatusTag from '@/components/StatusTag.vue'
 import { listAccessRequests } from '@/api/access'
-import { listBalanceTiers, listRedeemCodes } from '@/api/redeem'
-import type { AccessRequest, BalanceTier, RedeemCode } from '@/api/types'
+import { listRedeemCodes, listRedeemTiers } from '@/api/redeem'
+import type { AccessRequest, RedeemCode, RedeemTier } from '@/api/types'
+import { tierCodeType } from '@/utils/tiers'
 import { useBrandingStore } from '@/stores/branding'
 
 const router = useRouter()
 const branding = useBrandingStore()
 const accessRequests = ref<AccessRequest[]>([])
-const tiers = ref<BalanceTier[]>([])
+const tiers = ref<RedeemTier[]>([])
 const redeemCodes = ref<RedeemCode[]>([])
 let refreshTimer: number | undefined
 const enabledTiers = computed(() => tiers.value.filter((tier) => tier.enabled))
@@ -117,7 +118,7 @@ async function loadAll() {
     const [access, codes, tierData] = await Promise.all([
       listAccessRequests(),
       listRedeemCodes(),
-      listBalanceTiers(),
+      listRedeemTiers(),
     ])
     accessRequests.value = access
     redeemCodes.value = codes
@@ -135,6 +136,22 @@ function tierNameById(id: number) {
   const tier = tierById(id)
   if (!tier) return `#${id}`
   return tier.label?.trim() || `#${id}`
+}
+
+function tierContent(tier: RedeemTier) {
+  if (tierCodeType(tier) === 'subscription') {
+    const days = Number(tier.validity_days ?? 0)
+    return days > 0 ? `${days} 天订阅` : '订阅'
+  }
+  return `${Number(tier.amount).toFixed(0)} 美元`
+}
+
+function requestContent(request: AccessRequest) {
+  if (request.code_type === 'subscription') {
+    const days = Number(request.validity_days ?? 0)
+    return days > 0 ? `${days} 天订阅` : '订阅'
+  }
+  return `${Number(request.amount).toFixed(0)} 美元`
 }
 
 function formatTime(value?: string | null) {

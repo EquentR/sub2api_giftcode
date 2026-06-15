@@ -1,16 +1,16 @@
 <template>
-  <AppLayout title="充值兑换申请" subtitle="选择充值档位，审批通过后自动下发兑换码">
+  <AppLayout title="兑换申请" subtitle="选择余额或订阅档位，审批通过后自动下发兑换码">
     <div class="recharge-page">
       <section class="recharge-hero">
         <div>
           <div class="eyebrow">Recharge</div>
-          <h1>充值兑换申请</h1>
-          <p>选择合适的充值档位，提交后由管理员审批并发放兑换码。提交审批后请主动联系管理员付款！</p>
+          <h1>兑换申请</h1>
+          <p>选择合适的兑换档位，提交后由管理员审批并发放兑换码。提交审批后请主动联系管理员付款！</p>
         </div>
         <div class="wallet-card">
-          <span>本次预计到账</span>
-          <strong>{{ selectedTier ? `${formatMoney(selectedTier.amount)} USD` : '-' }}</strong>
-          <small>{{ selectedTier ? `实付 ${formatCny(selectedTier.pay_amount_cny)}` : '请选择充值档位' }}</small>
+          <span>本次预计获得</span>
+          <strong>{{ selectedTier ? selectedTierHeadline : '-' }}</strong>
+          <small>{{ selectedTier ? `实付 ${formatCny(selectedTier.pay_amount_cny)}` : '请选择兑换档位' }}</small>
         </div>
       </section>
 
@@ -18,8 +18,8 @@
         <section class="tier-section">
           <div class="section-heading">
             <div>
-              <h2>选择充值档位</h2>
-              <p>到账金额为兑换码面额，实付金额为本次充值金额。</p>
+              <h2>选择兑换档位</h2>
+              <p>订阅档位的分组和限额来自 sub2api 实时数据。</p>
             </div>
             <el-button :icon="Refresh" :loading="loadingData" @click="() => loadAll()">刷新</el-button>
           </div>
@@ -29,15 +29,26 @@
               v-for="tier in enabledTiers"
               :key="tier.id"
               class="tier-card"
-              :class="{ active: form.tierId === tier.id }"
+              :class="{
+                active: form.tierId === tier.id,
+                disabled: !tierSelectable(tier),
+                subscription: tierCodeType(tier) === 'subscription',
+              }"
+              :disabled="!tierSelectable(tier)"
               type="button"
-              @click="selectTier(tier.id)"
+              @click="selectTier(tier)"
             >
-              <span class="tier-name">{{ tier.label || `档位 #${tier.id}` }}</span>
+              <span class="tier-kind">{{ formatCodeTypeLabel(tier.code_type) }}</span>
+              <span class="tier-name">{{ tierDisplayName(tier) }}</span>
               <strong>{{ formatCny(tier.pay_amount_cny) }}</strong>
-              <span>到账 {{ formatMoney(tier.amount) }} 美元</span>
+              <span v-if="tierCodeType(tier) === 'balance'">到账 {{ formatMoney(tier.amount) }} 美元</span>
+              <template v-else>
+                <span>{{ tierGroupLabel(tier) }} · {{ validityDaysText(tier) }}</span>
+                <small>{{ formatLimitTriplet(tier) }}</small>
+                <small v-if="!tierSelectable(tier)" class="tier-error">{{ tier.upstream_error || '订阅分组不可用' }}</small>
+              </template>
             </button>
-            <div v-if="!enabledTiers.length && !loadingCore" class="empty-state">暂无可选充值档位</div>
+            <div v-if="!enabledTiers.length && !loadingCore" class="empty-state">暂无可选兑换档位</div>
           </div>
 
           <div class="status-panel">
@@ -51,8 +62,11 @@
               <div v-for="row in accessRequestRows" :key="row.request.id" class="request-item">
                 <div class="request-main">
                   <div>
-                    <strong>{{ tierNameById(row.request.tier_id) }}</strong>
-                    <span>{{ formatMoney(row.request.amount) }} 美元 · {{ formatCny(row.request.pay_amount_cny) }}</span>
+                    <strong>{{ requestTierName(row.request) }}</strong>
+                    <span>{{ requestSummary(row.request) }}</span>
+                    <small v-if="row.request.code_type === 'subscription'">
+                      {{ requestLimitSummary(row.request) }}
+                    </small>
                     <small>{{ formatTime(row.request.created_at) }}</small>
                   </div>
                   <StatusTag :status="row.request.status" />
@@ -67,7 +81,7 @@
                   >
                     <div class="code-meta">
                       <code>{{ code.code }}</code>
-                      <span>{{ formatMoney(code.value) }} 美元 · {{ formatTime(code.created_at) }}</span>
+                      <span>{{ formatCodeValue(code) }} · {{ formatTime(code.created_at) }}</span>
                     </div>
                     <div class="code-actions">
                       <StatusTag :status="code.status" />
@@ -98,7 +112,7 @@
                   >
                     <div class="code-meta">
                       <code>{{ code.code }}</code>
-                      <span>{{ formatMoney(code.value) }} 美元 · {{ formatTime(code.created_at) }}</span>
+                      <span>{{ formatCodeValue(code) }} · {{ formatTime(code.created_at) }}</span>
                     </div>
                     <div class="code-actions">
                       <StatusTag :status="code.status" />
@@ -119,12 +133,23 @@
               <strong>{{ selectedTierName }}</strong>
             </div>
             <div class="summary-line">
-              <span>到账金额</span>
-              <strong>{{ selectedTier ? `${formatMoney(selectedTier.amount)} 美元` : '-' }}</strong>
+              <span>兑换类型</span>
+              <strong>{{ selectedTier ? formatCodeTypeLabel(selectedTier.code_type) : '-' }}</strong>
+            </div>
+            <div class="summary-line">
+              <span>{{ selectedTier && tierCodeType(selectedTier) === 'subscription' ? '订阅内容' : '到账金额' }}</span>
+              <strong>{{ selectedTier ? selectedTierHeadline : '-' }}</strong>
             </div>
             <div class="summary-line">
               <span>实付金额</span>
               <strong>{{ selectedTier ? formatCny(selectedTier.pay_amount_cny) : '-' }}</strong>
+            </div>
+            <div v-if="selectedTier && tierCodeType(selectedTier) === 'subscription'" class="summary-detail">
+              <span>{{ tierGroupLabel(selectedTier) }}</span>
+              <small>{{ formatLimitTriplet(selectedTier) }}</small>
+              <small v-if="!selectedTierSubmittable" class="tier-error">
+                {{ selectedTier.upstream_error || '订阅分组不可用，请刷新后重试' }}
+              </small>
             </div>
             <label class="note-label" for="recharge-note">备注</label>
             <el-input
@@ -140,10 +165,10 @@
               class="submit-button"
               type="primary"
               :loading="loading"
-              :disabled="!enabledTiers.length || !form.tierId"
+              :disabled="!submittableTiers.length || !form.tierId || !selectedTierSubmittable"
               @click="submit"
             >
-              提交充值申请
+              提交兑换申请
             </el-button>
           </div>
         </aside>
@@ -160,14 +185,22 @@ import { ElMessage } from 'element-plus'
 import AppLayout from '@/components/AppLayout.vue'
 import StatusTag from '@/components/StatusTag.vue'
 import { createAccessRequest, listAccessRequests } from '@/api/access'
-import { listBalanceTiers, listRedeemCodes, listRedeemRequests } from '@/api/redeem'
-import type { AccessRequest, BalanceTier, RedeemCode, RedeemRequest } from '@/api/types'
+import { listRedeemCodes, listRedeemRequests, listRedeemTiers } from '@/api/redeem'
+import type { AccessRequest, RedeemCode, RedeemRequest, RedeemTier } from '@/api/types'
+import {
+  formatCodeTypeLabel,
+  formatCodeValue,
+  formatLimitTriplet,
+  isSubscriptionTierAvailable,
+  tierCodeType,
+  tierGroupLabel,
+} from '@/utils/tiers'
 import { copyText } from '@/utils/clipboard'
 
 const loading = ref(false)
 const loadingCore = ref(false)
 const loadingCodes = ref(false)
-const tiers = ref<BalanceTier[]>([])
+const tiers = ref<RedeemTier[]>([])
 const items = ref<AccessRequest[]>([])
 const redeemRequests = ref<RedeemRequest[]>([])
 const codes = ref<RedeemCode[]>([])
@@ -180,9 +213,18 @@ const form = reactive({
 })
 
 const enabledTiers = computed(() => tiers.value.filter((tier) => tier.enabled))
+const submittableTiers = computed(() => enabledTiers.value.filter((tier) => tierSelectable(tier)))
 const tierMap = computed(() => new Map(tiers.value.map((tier) => [tier.id, tier])))
 const selectedTier = computed(() => tierMap.value.get(form.tierId) ?? null)
-const selectedTierName = computed(() => selectedTier.value?.label?.trim() || (selectedTier.value ? `档位 #${selectedTier.value.id}` : '-'))
+const selectedTierName = computed(() => selectedTier.value ? tierDisplayName(selectedTier.value) : '-')
+const selectedTierHeadline = computed(() => {
+  if (!selectedTier.value) return '-'
+  if (tierCodeType(selectedTier.value) === 'subscription') {
+    return validityDaysText(selectedTier.value)
+  }
+  return `${formatMoney(selectedTier.value.amount)} USD`
+})
+const selectedTierSubmittable = computed(() => selectedTier.value ? tierSelectable(selectedTier.value) : false)
 const redeemRequestMap = computed(() => new Map(redeemRequests.value.map((request) => [request.id, request])))
 const codesByAccessRequestId = computed(() => {
   const groups = new Map<number, RedeemCode[]>()
@@ -216,7 +258,7 @@ async function loadCoreData(options: LoadAllOptions = {}) {
   }
   try {
     const [tierData, requestData] = await Promise.all([
-      listBalanceTiers(),
+      listRedeemTiers(),
       listAccessRequests(),
     ])
     tiers.value = tierData
@@ -255,8 +297,11 @@ async function loadCodes(options: LoadAllOptions = {}) {
   }
 }
 
-function selectTier(tierId: number) {
-  form.tierId = tierId
+function selectTier(tier: RedeemTier) {
+  if (!tierSelectable(tier)) {
+    return
+  }
+  form.tierId = tier.id
 }
 
 function tierById(id: number) {
@@ -266,28 +311,32 @@ function tierById(id: number) {
 function tierNameById(id: number) {
   const tier = tierById(id)
   if (!tier) return `#${id}`
-  return tier.label?.trim() || `#${id}`
+  return tierDisplayName(tier)
 }
 
 function syncDefaultTier() {
-  if (!enabledTiers.value.length) {
+  if (!submittableTiers.value.length) {
     form.tierId = 0
     return
   }
-  if (!enabledTiers.value.some((tier) => tier.id === form.tierId)) {
-    form.tierId = enabledTiers.value[0].id
+  if (!submittableTiers.value.some((tier) => tier.id === form.tierId)) {
+    form.tierId = submittableTiers.value[0].id
   }
 }
 
 async function submit() {
   if (!form.tierId) {
-    ElMessage.warning('请选择充值档位')
+    ElMessage.warning('请选择兑换档位')
+    return
+  }
+  if (!selectedTierSubmittable.value) {
+    ElMessage.warning('当前订阅档位不可提交，请刷新后重试')
     return
   }
   loading.value = true
   try {
     await createAccessRequest(form.tierId, form.note)
-    ElMessage.success('充值申请已提交')
+    ElMessage.success('兑换申请已提交')
     form.note = ''
     await loadAll()
   } catch (error: any) {
@@ -313,6 +362,39 @@ function codeEmptyText(status: string) {
   if (status === 'rejected') return '申请未通过'
   if (status === 'expired') return '申请已过期'
   return '审批通过后会在这里显示兑换码'
+}
+
+function tierDisplayName(tier: RedeemTier) {
+  return tier.label?.trim() || (tierCodeType(tier) === 'subscription' ? tierGroupLabel(tier) : `档位 #${tier.id}`)
+}
+
+function tierSelectable(tier: RedeemTier) {
+  return tier.enabled && isSubscriptionTierAvailable(tier)
+}
+
+function validityDaysText(tier: Pick<RedeemTier, 'validity_days'>) {
+  const days = Number(tier.validity_days ?? 0)
+  return days > 0 ? `${days} 天订阅` : '订阅'
+}
+
+function requestTierName(request: AccessRequest) {
+  return request.tier_label?.trim() || tierNameById(request.tier_id)
+}
+
+function requestSummary(request: AccessRequest) {
+  if (request.code_type === 'subscription') {
+    const group = request.sub2api_group_name?.trim() || '订阅分组'
+    return `${group} · ${validityDaysText(request)} · ${formatCny(request.pay_amount_cny)}`
+  }
+  return `${formatMoney(request.amount)} 美元 · ${formatCny(request.pay_amount_cny)}`
+}
+
+function requestLimitSummary(request: AccessRequest) {
+  return formatLimitTriplet({
+    sub2api_daily_limit_usd: request.sub2api_daily_limit_usd,
+    sub2api_weekly_limit_usd: request.sub2api_weekly_limit_usd,
+    sub2api_monthly_limit_usd: request.sub2api_monthly_limit_usd,
+  })
 }
 
 function refreshWhenVisible() {
@@ -494,13 +576,25 @@ p {
   cursor: pointer;
 }
 
+.tier-card:disabled,
+.tier-card.disabled {
+  cursor: not-allowed;
+  opacity: 0.62;
+}
+
 .tier-card.active {
   border-color: #1d6fd0;
   box-shadow: inset 0 0 0 1px #1d6fd0;
 }
 
-.tier-card:hover {
+.tier-card:hover:not(:disabled) {
   border-color: #7db1ee;
+}
+
+.tier-kind {
+  color: #1d6fd0;
+  font-size: 12px;
+  font-weight: 800;
 }
 
 .tier-name {
@@ -516,6 +610,16 @@ p {
 
 .tier-card span:last-child {
   color: #64748b;
+}
+
+.tier-card small {
+  color: #64748b;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.tier-error {
+  color: #b42318 !important;
 }
 
 .submit-panel {
@@ -535,6 +639,20 @@ p {
 
 .summary-line span {
   color: #64748b;
+}
+
+.summary-detail {
+  display: grid;
+  gap: 4px;
+  padding: 10px 0;
+  border-bottom: 1px solid #edf2f7;
+  color: #64748b;
+  font-size: 13px;
+}
+
+.summary-detail span {
+  color: #1f2937;
+  font-weight: 700;
 }
 
 .note-label {

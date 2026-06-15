@@ -30,8 +30,17 @@ type AccessRequest struct {
 	RequestorEmail          string     `json:"requestor_email"`
 	RequestorUsername       string     `json:"requestor_username"`
 	TierID                  int64      `json:"tier_id"`
+	CodeType                string     `json:"code_type"`
+	TierLabel               string     `json:"tier_label"`
 	Amount                  float64    `json:"amount"`
 	PayAmountCny            float64    `json:"pay_amount_cny"`
+	Sub2APIGroupID          *int64     `json:"sub2api_group_id,omitempty"`
+	Sub2APIGroupName        string     `json:"sub2api_group_name"`
+	Sub2APIGroupPlatform    string     `json:"sub2api_group_platform"`
+	Sub2APIDailyLimitUSD    *float64   `json:"sub2api_daily_limit_usd,omitempty"`
+	Sub2APIWeeklyLimitUSD   *float64   `json:"sub2api_weekly_limit_usd,omitempty"`
+	Sub2APIMonthlyLimitUSD  *float64   `json:"sub2api_monthly_limit_usd,omitempty"`
+	ValidityDays            int        `json:"validity_days"`
 	Note                    string     `json:"note"`
 	Status                  string     `json:"status"`
 	ApprovalTokenHash       string     `json:"approval_token_hash"`
@@ -55,6 +64,8 @@ type RedeemRequest struct {
 	CodeType                string    `json:"code_type"`
 	TierID                  int64     `json:"tier_id"`
 	Value                   float64   `json:"value"`
+	Sub2APIGroupID          *int64    `json:"sub2api_group_id,omitempty"`
+	ValidityDays            int       `json:"validity_days"`
 	Status                  string    `json:"status"`
 	Note                    string    `json:"note"`
 	UpstreamCode            string    `json:"upstream_code"`
@@ -75,9 +86,32 @@ type RedeemCode struct {
 	UsedAt               *time.Time `json:"used_at,omitempty"`
 	ExpiresAt            *time.Time `json:"expires_at,omitempty"`
 	Sub2APICodeID        *int64     `json:"sub2api_code_id,omitempty"`
+	Sub2APIGroupID       *int64     `json:"sub2api_group_id,omitempty"`
+	ValidityDays         int        `json:"validity_days"`
 	LastSyncedAt         *time.Time `json:"last_synced_at,omitempty"`
 	CreatedAt            time.Time  `json:"created_at"`
 	UpdatedAt            time.Time  `json:"updated_at"`
+}
+
+type RedeemTier struct {
+	ID                     int64     `json:"id"`
+	CodeType               string    `json:"code_type"`
+	Amount                 float64   `json:"amount"`
+	PayAmountCny           float64   `json:"pay_amount_cny"`
+	Label                  string    `json:"label"`
+	Enabled                bool      `json:"enabled"`
+	SortOrder              int       `json:"sort_order"`
+	Sub2APIGroupID         *int64    `json:"sub2api_group_id,omitempty"`
+	Sub2APIGroupName       string    `json:"sub2api_group_name"`
+	Sub2APIGroupPlatform   string    `json:"sub2api_group_platform"`
+	Sub2APIDailyLimitUSD   *float64  `json:"sub2api_daily_limit_usd,omitempty"`
+	Sub2APIWeeklyLimitUSD  *float64  `json:"sub2api_weekly_limit_usd,omitempty"`
+	Sub2APIMonthlyLimitUSD *float64  `json:"sub2api_monthly_limit_usd,omitempty"`
+	ValidityDays           int       `json:"validity_days"`
+	UpstreamAvailable      bool      `json:"upstream_available"`
+	UpstreamError          string    `json:"upstream_error"`
+	CreatedAt              time.Time `json:"created_at"`
+	UpdatedAt              time.Time `json:"updated_at"`
 }
 
 type BalanceTier struct {

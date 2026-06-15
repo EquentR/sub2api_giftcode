@@ -9,6 +9,7 @@ import (
 
 	"sub2api-giftcode/backend/internal/config"
 	"sub2api-giftcode/backend/internal/db"
+	"sub2api-giftcode/backend/internal/models"
 )
 
 func TestListUsersReturnsSummaries(t *testing.T) {
@@ -54,4 +55,100 @@ func TestReplaceBalanceTiersPersistsPaidAmount(t *testing.T) {
 	reloaded, err := svc.ListBalanceTiers(context.Background())
 	require.NoError(t, err)
 	require.InDelta(t, 95.25, reloaded[0].PayAmountCny, 0.0001)
+}
+
+func TestReplaceRedeemTiersPersistsSubscriptionTier(t *testing.T) {
+	store, err := db.Open("sqlite", ":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+
+	require.NoError(t, store.Migrate(context.Background()))
+
+	svc := New(&config.RuntimeConfig{}, store, nil, nil)
+	updated, err := svc.ReplaceRedeemTiers(context.Background(), []models.RedeemTier{{
+		CodeType:       "subscription",
+		PayAmountCny:   88,
+		Label:          "Claude 30 days",
+		Enabled:        true,
+		SortOrder:      10,
+		Sub2APIGroupID: int64Ptr(2),
+		ValidityDays:   30,
+	}})
+	require.NoError(t, err)
+	require.Len(t, updated, 1)
+	require.Equal(t, "subscription", updated[0].CodeType)
+	require.Equal(t, int64(2), *updated[0].Sub2APIGroupID)
+	require.Equal(t, 30, updated[0].ValidityDays)
+
+	reloaded, err := svc.ListRedeemTiers(context.Background(), true)
+	require.NoError(t, err)
+	require.Len(t, reloaded, 1)
+	require.Equal(t, "Claude 30 days", reloaded[0].Label)
+	require.Equal(t, "subscription", reloaded[0].CodeType)
+}
+
+func TestStatsCountsEnabledRedeemTiers(t *testing.T) {
+	store, err := db.Open("sqlite", ":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+
+	require.NoError(t, store.Migrate(context.Background()))
+
+	svc := New(&config.RuntimeConfig{}, store, nil, nil)
+	_, err = svc.ReplaceRedeemTiers(context.Background(), []models.RedeemTier{{
+		CodeType:     "balance",
+		Amount:       120,
+		PayAmountCny: 120,
+		Label:        "Balance",
+		Enabled:      true,
+		SortOrder:    10,
+	}, {
+		CodeType:       "subscription",
+		PayAmountCny:   88,
+		Label:          "Claude 30 days",
+		Enabled:        true,
+		SortOrder:      20,
+		Sub2APIGroupID: int64Ptr(2),
+		ValidityDays:   30,
+	}})
+	require.NoError(t, err)
+
+	stats, err := svc.Stats(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, 2, stats.ActiveTiers)
+}
+
+func TestReplaceRedeemTiersDisablesBalanceMirrorWhenTypeChanges(t *testing.T) {
+	store, err := db.Open("sqlite", ":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+
+	require.NoError(t, store.Migrate(context.Background()))
+
+	svc := New(&config.RuntimeConfig{}, store, nil, nil)
+	tiers, err := svc.ListRedeemTiers(context.Background(), true)
+	require.NoError(t, err)
+	require.NotEmpty(t, tiers)
+	id := tiers[0].ID
+
+	_, err = svc.ReplaceRedeemTiers(context.Background(), []models.RedeemTier{{
+		ID:             id,
+		CodeType:       "subscription",
+		PayAmountCny:   88,
+		Label:          "Changed to subscription",
+		Enabled:        true,
+		SortOrder:      10,
+		Sub2APIGroupID: int64Ptr(2),
+		ValidityDays:   30,
+	}})
+	require.NoError(t, err)
+
+	var enabled int
+	err = store.DB.QueryRowContext(context.Background(), `SELECT enabled FROM redeem_balance_tiers WHERE id = ?`, id).Scan(&enabled)
+	require.NoError(t, err)
+	require.Zero(t, enabled)
+}
+
+func int64Ptr(v int64) *int64 {
+	return &v
 }
