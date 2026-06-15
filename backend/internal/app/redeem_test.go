@@ -13,6 +13,7 @@ import (
 	"sub2api-giftcode/backend/internal/config"
 	"sub2api-giftcode/backend/internal/db"
 	"sub2api-giftcode/backend/internal/mail"
+	"sub2api-giftcode/backend/internal/models"
 	"sub2api-giftcode/backend/internal/sub2api"
 )
 
@@ -240,4 +241,102 @@ WHERE id = 1
 	require.Equal(t, 120.0, sawValue)
 	require.Equal(t, 120.0, approved.Amount)
 	require.Equal(t, 120.0, approved.PayAmountCny)
+}
+
+func TestApproveAccessRequestIssuesSubscriptionRedeemCode(t *testing.T) {
+	store, err := db.Open("sqlite", ":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+	require.NoError(t, store.Migrate(context.Background()))
+
+	now := time.Now().UTC().Truncate(time.Second)
+	var sawPayload map[string]any
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/admin/groups/all":
+			writeRedeemTestEnvelope(w, []sub2api.Group{{
+				ID:               2,
+				Name:             "Claude monthly",
+				Platform:         "anthropic",
+				Status:           "active",
+				SubscriptionType: "subscription",
+				DailyLimitUSD:    floatPtr(10),
+				WeeklyLimitUSD:   floatPtr(50),
+				MonthlyLimitUSD:  floatPtr(120),
+			}})
+		case "/api/v1/admin/redeem-codes/generate":
+			require.Equal(t, "admin-key", r.Header.Get("x-api-key"))
+			require.NoError(t, json.NewDecoder(r.Body).Decode(&sawPayload))
+			require.Equal(t, "subscription", sawPayload["type"])
+			require.Equal(t, float64(0), sawPayload["value"])
+			require.Equal(t, float64(2), sawPayload["group_id"])
+			require.Equal(t, float64(30), sawPayload["validity_days"])
+			writeRedeemTestEnvelope(w, []sub2api.RedeemCode{{
+				ID:           200,
+				Code:         "sub-code-200",
+				Type:         "subscription",
+				Value:        0,
+				Status:       "unused",
+				GroupID:      int64Ptr(2),
+				ValidityDays: 30,
+				CreatedAt:    now,
+			}})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(upstream.Close)
+
+	svc := New(
+		&config.RuntimeConfig{},
+		store,
+		sub2api.NewClient(upstream.URL, "admin-key"),
+		mail.New(mail.Config{}),
+	)
+	tiers, err := svc.ReplaceRedeemTiers(context.Background(), []models.RedeemTier{{
+		CodeType:       "subscription",
+		PayAmountCny:   88,
+		Label:          "Claude 30 days",
+		Enabled:        true,
+		SortOrder:      10,
+		Sub2APIGroupID: int64Ptr(2),
+		ValidityDays:   30,
+	}})
+	require.NoError(t, err)
+	require.Len(t, tiers, 1)
+
+	_, err = store.DB.ExecContext(context.Background(), `
+INSERT INTO redeem_access_requests (
+  requestor_upstream_user_id, requestor_email, requestor_username, tier_id, code_type,
+  tier_label, amount, pay_amount_cny, sub2api_group_id, sub2api_group_name, sub2api_group_platform,
+  sub2api_daily_limit_usd, sub2api_weekly_limit_usd, sub2api_monthly_limit_usd, validity_days,
+  note, status, approval_token_hash, approval_token_expires_at, notification_status, notification_error,
+  created_at, updated_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+`, 1, "alice@example.com", "alice", tiers[0].ID, "subscription", "Claude 30 days", 0.0, 88.0, 2, "Claude monthly", "anthropic", 10.0, 50.0, 120.0, 30, "please approve", "pending", "token-hash", now.Add(time.Hour).Format(time.RFC3339Nano), "sent", "", now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano))
+	require.NoError(t, err)
+
+	req, code, err := svc.ApproveAccessRequestByID(context.Background(), 1)
+	require.NoError(t, err)
+	require.NotNil(t, req)
+	require.NotNil(t, code)
+	require.Equal(t, "subscription", code.CodeType)
+	require.Equal(t, 0.0, code.Value)
+	require.Equal(t, int64(2), *code.Sub2APIGroupID)
+	require.Equal(t, 30, code.ValidityDays)
+	require.Equal(t, "subscription", req.CodeType)
+	require.Equal(t, "Claude monthly", req.Sub2APIGroupName)
+}
+
+func floatPtr(v float64) *float64 {
+	return &v
+}
+
+func writeRedeemTestEnvelope(w http.ResponseWriter, data any) {
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"code":    0,
+		"message": "success",
+		"data":    data,
+	})
 }

@@ -13,10 +13,14 @@
         <StatusTag :status="row.status" />
       </template>
     </el-table-column>
-    <el-table-column prop="code_type" label="类型" width="110" />
-    <el-table-column prop="value" label="金额" width="110">
+    <el-table-column prop="code_type" label="类型" width="110">
       <template #default="{ row }">
-        {{ Number(row.value).toFixed(0) }} 美元
+        {{ formatCodeTypeLabel(row.code_type) }}
+      </template>
+    </el-table-column>
+    <el-table-column prop="value" label="内容" width="120">
+      <template #default="{ row }">
+        {{ formatCodeValue(row) }}
       </template>
     </el-table-column>
     <el-table-column prop="request_id" label="申请" width="90" />
@@ -40,6 +44,7 @@ import { ElMessage } from 'element-plus'
 import StatusTag from './StatusTag.vue'
 import type { RedeemCode } from '@/api/types'
 import { copyText } from '@/utils/clipboard'
+import { formatCodeTypeLabel, formatCodeValue } from '@/utils/tiers'
 
 defineProps<{
   codes: RedeemCode[]

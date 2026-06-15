@@ -72,7 +72,7 @@ func TestClientLoginAndAdminGenerate(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "alice", me.Username)
 
-	codes, err := client.GenerateRedeemCodes(context.Background(), "idemp-1", "balance", 120)
+	codes, err := client.GenerateRedeemCodes(context.Background(), "idemp-1", GenerateRedeemCodesInput{Type: "balance", Value: 120})
 	require.NoError(t, err)
 	require.Len(t, codes, 1)
 	require.Equal(t, "code-99", codes[0].Code)
@@ -81,6 +81,84 @@ func TestClientLoginAndAdminGenerate(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, listed, 1)
 	require.Equal(t, "code-99", listed[0].Code)
+}
+
+func TestClientListsSubscriptionGroupsAndGeneratesSubscriptionCode(t *testing.T) {
+	var sawGenerate map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/admin/groups/all":
+			require.Equal(t, "admin-key", r.Header.Get("x-api-key"))
+			writeEnvelope(w, []Group{
+				{
+					ID:               1,
+					Name:             "Standard balance group",
+					Platform:         "openai",
+					Status:           "active",
+					SubscriptionType: "standard",
+				},
+				{
+					ID:               2,
+					Name:             "Claude monthly",
+					Platform:         "anthropic",
+					Status:           "active",
+					SubscriptionType: "subscription",
+					DailyLimitUSD:    floatPtr(10),
+					WeeklyLimitUSD:   floatPtr(50),
+					MonthlyLimitUSD:  floatPtr(120),
+				},
+			})
+		case "/api/v1/admin/redeem-codes/generate":
+			require.Equal(t, "admin-key", r.Header.Get("x-api-key"))
+			require.Equal(t, "sub-idemp", r.Header.Get("Idempotency-Key"))
+			require.NoError(t, json.NewDecoder(r.Body).Decode(&sawGenerate))
+			writeEnvelope(w, []RedeemCode{{
+				ID:           200,
+				Code:         "sub-code-200",
+				Type:         "subscription",
+				Value:        0,
+				Status:       "unused",
+				GroupID:      int64Ptr(2),
+				ValidityDays: 30,
+				CreatedAt:    time.Now().UTC(),
+			}})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, "admin-key")
+	groups, err := client.ListGroupsAll(context.Background())
+	require.NoError(t, err)
+	require.Len(t, groups, 2)
+	require.Equal(t, "Claude monthly", groups[1].Name)
+	require.Equal(t, "subscription", groups[1].SubscriptionType)
+	require.Equal(t, 10.0, *groups[1].DailyLimitUSD)
+	require.Equal(t, 50.0, *groups[1].WeeklyLimitUSD)
+	require.Equal(t, 120.0, *groups[1].MonthlyLimitUSD)
+
+	codes, err := client.GenerateRedeemCodes(context.Background(), "sub-idemp", GenerateRedeemCodesInput{
+		Type:         "subscription",
+		Value:        0,
+		GroupID:      int64Ptr(2),
+		ValidityDays: 30,
+	})
+	require.NoError(t, err)
+	require.Len(t, codes, 1)
+	require.Equal(t, "sub-code-200", codes[0].Code)
+	require.Equal(t, "subscription", sawGenerate["type"])
+	require.Equal(t, float64(2), sawGenerate["group_id"])
+	require.Equal(t, float64(30), sawGenerate["validity_days"])
+	require.Equal(t, float64(0), sawGenerate["value"])
+}
+
+func floatPtr(v float64) *float64 {
+	return &v
+}
+
+func int64Ptr(v int64) *int64 {
+	return &v
 }
 
 func writeEnvelope(w http.ResponseWriter, data any) {

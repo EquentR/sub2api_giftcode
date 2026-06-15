@@ -1,6 +1,13 @@
 import { request } from './http'
 import { asArray } from './arrays'
-import type { BalanceTier, RedeemCode, RedeemIssueResponse, RedeemRequest } from './types'
+import type { BalanceTier, RedeemCode, RedeemIssueResponse, RedeemRequest, RedeemTier } from './types'
+
+export function listRedeemTiers() {
+  return request<RedeemTier[] | null>({
+    method: 'GET',
+    url: '/redeem-tiers',
+  }).then(asArray)
+}
 
 export function listBalanceTiers() {
   return request<BalanceTier[] | null>({

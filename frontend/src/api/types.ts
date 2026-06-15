@@ -23,8 +23,17 @@ export interface AccessRequest {
   requestor_email: string
   requestor_username: string
   tier_id: number
+  code_type: string
+  tier_label: string
   amount: number
   pay_amount_cny: number
+  sub2api_group_id?: number | null
+  sub2api_group_name: string
+  sub2api_group_platform: string
+  sub2api_daily_limit_usd?: number | null
+  sub2api_weekly_limit_usd?: number | null
+  sub2api_monthly_limit_usd?: number | null
+  validity_days: number
   note: string
   status: string
   approval_token_hash: string
@@ -48,6 +57,8 @@ export interface RedeemRequest {
   code_type: string
   tier_id: number
   value: number
+  sub2api_group_id?: number | null
+  validity_days: number
   status: string
   note: string
   upstream_code: string
@@ -68,18 +79,47 @@ export interface RedeemCode {
   used_at?: string | null
   expires_at?: string | null
   sub2api_code_id?: number | null
+  sub2api_group_id?: number | null
+  validity_days: number
   last_synced_at?: string | null
   created_at: string
   updated_at: string
 }
 
-export interface BalanceTier {
+export interface RedeemTier {
   id: number
+  code_type?: string
   amount: number
   pay_amount_cny: number
   label: string
   enabled: boolean
   sort_order: number
+  sub2api_group_id?: number | null
+  sub2api_group_name?: string
+  sub2api_group_platform?: string
+  sub2api_daily_limit_usd?: number | null
+  sub2api_weekly_limit_usd?: number | null
+  sub2api_monthly_limit_usd?: number | null
+  validity_days?: number
+  upstream_available?: boolean
+  upstream_error?: string
+  created_at: string
+  updated_at: string
+}
+
+export type BalanceTier = RedeemTier
+
+export interface SubscriptionGroup {
+  id: number
+  name: string
+  description: string
+  platform: string
+  rate_multiplier: number
+  status: string
+  subscription_type: string
+  daily_limit_usd?: number | null
+  weekly_limit_usd?: number | null
+  monthly_limit_usd?: number | null
   created_at: string
   updated_at: string
 }

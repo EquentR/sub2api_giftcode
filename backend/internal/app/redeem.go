@@ -17,7 +17,7 @@ func (s *Service) CreateRedeemRequest(ctx context.Context, sessionID string, tie
 	if err != nil {
 		return nil, nil, err
 	}
-	tier, err := s.getBalanceTierByID(ctx, tierID)
+	tier, err := s.getRedeemTierByID(ctx, tierID)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil, ErrNotFound
@@ -113,7 +113,7 @@ func (s *Service) SyncRedeemCodes(ctx context.Context) (int, error) {
 	return updated, nil
 }
 
-func (s *Service) issueRedeemRequest(ctx context.Context, accessReq *models.AccessRequest, tier *models.BalanceTier, note string) (*models.RedeemRequest, *models.RedeemCode, error) {
+func (s *Service) issueRedeemRequest(ctx context.Context, accessReq *models.AccessRequest, tier *models.RedeemTier, note string) (*models.RedeemRequest, *models.RedeemCode, error) {
 	if accessReq == nil {
 		return nil, nil, ErrBadRequest
 	}
@@ -133,12 +133,42 @@ func (s *Service) issueRedeemRequest(ctx context.Context, accessReq *models.Acce
 	if redeemValue <= 0 {
 		redeemValue = tier.Amount
 	}
+	codeType := normalizeCodeType(accessReq.CodeType)
+	if codeType == "" {
+		codeType = normalizeCodeType(tier.CodeType)
+	}
+	groupID := accessReq.Sub2APIGroupID
+	validityDays := accessReq.ValidityDays
+	if codeType == "subscription" {
+		if groupID == nil {
+			groupID = tier.Sub2APIGroupID
+		}
+		if validityDays <= 0 {
+			validityDays = tier.ValidityDays
+		}
+		if groupID == nil || *groupID <= 0 || validityDays <= 0 {
+			return nil, nil, ErrBadRequest
+		}
+		if _, err := s.subscriptionGroupByID(ctx, *groupID); err != nil {
+			return nil, nil, err
+		}
+		redeemValue = 0
+	}
 	if redeemReq != nil {
 		if redeemReq.TierID > 0 {
 			redeemTierID = redeemReq.TierID
 		}
-		if redeemReq.Value > 0 {
+		if redeemReq.Value > 0 || codeType == "subscription" {
 			redeemValue = redeemReq.Value
+		}
+		if redeemReq.CodeType != "" {
+			codeType = normalizeCodeType(redeemReq.CodeType)
+		}
+		if redeemReq.Sub2APIGroupID != nil {
+			groupID = redeemReq.Sub2APIGroupID
+		}
+		if redeemReq.ValidityDays > 0 {
+			validityDays = redeemReq.ValidityDays
 		}
 	}
 	if redeemReq != nil && redeemReq.Status == "issued" {
@@ -154,9 +184,11 @@ func (s *Service) issueRedeemRequest(ctx context.Context, accessReq *models.Acce
 			RequestorUpstreamUserID: accessReq.RequestorUpstreamUserID,
 			RequestorEmail:          accessReq.RequestorEmail,
 			RequestorUsername:       accessReq.RequestorUsername,
-			CodeType:                "balance",
+			CodeType:                codeType,
 			TierID:                  redeemTierID,
 			Value:                   redeemValue,
+			Sub2APIGroupID:          groupID,
+			ValidityDays:            validityDays,
 			Status:                  "pending",
 			Note:                    trimmedNote,
 			CreatedAt:               now,
@@ -171,9 +203,11 @@ func (s *Service) issueRedeemRequest(ctx context.Context, accessReq *models.Acce
 		redeemReq.RequestorUpstreamUserID = accessReq.RequestorUpstreamUserID
 		redeemReq.RequestorEmail = accessReq.RequestorEmail
 		redeemReq.RequestorUsername = accessReq.RequestorUsername
-		redeemReq.CodeType = "balance"
+		redeemReq.CodeType = codeType
 		redeemReq.TierID = redeemTierID
 		redeemReq.Value = redeemValue
+		redeemReq.Sub2APIGroupID = groupID
+		redeemReq.ValidityDays = validityDays
 		redeemReq.Status = "pending"
 		redeemReq.Note = trimmedNote
 		redeemReq.UpdatedAt = now
@@ -187,7 +221,12 @@ func (s *Service) issueRedeemRequest(ctx context.Context, accessReq *models.Acce
 		return redeemReq, nil, err
 	}
 	idempotencyKey := redeemIssueIdempotencyKey(accessReq, redeemReq)
-	generated, err := s.upstream.GenerateRedeemCodes(ctx, idempotencyKey, "balance", redeemReq.Value)
+	generated, err := s.upstream.GenerateRedeemCodes(ctx, idempotencyKey, sub2api.GenerateRedeemCodesInput{
+		Type:         codeType,
+		Value:        redeemReq.Value,
+		GroupID:      groupID,
+		ValidityDays: validityDays,
+	})
 	if err != nil {
 		_ = s.updateRedeemRequestFailure(ctx, redeemReq.ID, err.Error(), now)
 		return redeemReq, nil, fmt.Errorf("%w: %w", ErrUpstreamFailed, err)
@@ -207,6 +246,8 @@ func (s *Service) issueRedeemRequest(ctx context.Context, accessReq *models.Acce
 		UsedAt:               upstreamCode.UsedAt,
 		ExpiresAt:            upstreamCode.ExpiresAt,
 		Sub2APICodeID:        &upstreamCode.ID,
+		Sub2APIGroupID:       upstreamCode.GroupID,
+		ValidityDays:         upstreamCode.ValidityDays,
 		LastSyncedAt:         &now,
 		CreatedAt:            now,
 		UpdatedAt:            now,
@@ -250,7 +291,7 @@ func normalizeUpstreamCodeStatus(status string) string {
 func (s *Service) getRedeemRequestByAccessRequestID(ctx context.Context, accessRequestID int64) (*models.RedeemRequest, error) {
 	row := s.db().QueryRowContext(ctx, `
 SELECT id, access_request_id, requestor_upstream_user_id, requestor_email, requestor_username,
-       code_type, tier_id, value, status, note, upstream_code, upstream_code_id, error_message,
+       code_type, tier_id, value, sub2api_group_id, validity_days, status, note, upstream_code, upstream_code_id, error_message,
        created_at, updated_at
 FROM redeem_requests
 WHERE access_request_id = ?
@@ -262,7 +303,7 @@ LIMIT 1
 func (s *Service) getRedeemCodeByRequestID(ctx context.Context, requestID int64) (*models.RedeemCode, error) {
 	row := s.db().QueryRowContext(ctx, `
 SELECT id, request_id, code, code_type, value, status, used_by_upstream_user_id, used_at,
-       expires_at, sub2api_code_id, last_synced_at, created_at, updated_at
+       expires_at, sub2api_code_id, sub2api_group_id, validity_days, last_synced_at, created_at, updated_at
 FROM redeem_codes
 WHERE request_id = ?
 LIMIT 1
@@ -274,9 +315,9 @@ func (s *Service) insertRedeemRequest(ctx context.Context, req *models.RedeemReq
 	res, err := s.db().ExecContext(ctx, `
 INSERT INTO redeem_requests (
   access_request_id, requestor_upstream_user_id, requestor_email, requestor_username,
-  code_type, tier_id, value, status, note, upstream_code, upstream_code_id,
+  code_type, tier_id, value, sub2api_group_id, validity_days, status, note, upstream_code, upstream_code_id,
   error_message, created_at, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `,
 		req.AccessRequestID,
 		req.RequestorUpstreamUserID,
@@ -285,6 +326,8 @@ INSERT INTO redeem_requests (
 		req.CodeType,
 		req.TierID,
 		req.Value,
+		req.Sub2APIGroupID,
+		req.ValidityDays,
 		req.Status,
 		req.Note,
 		req.UpstreamCode,
@@ -303,7 +346,7 @@ func (s *Service) updateRedeemRequest(ctx context.Context, req *models.RedeemReq
 	_, err := s.db().ExecContext(ctx, `
 UPDATE redeem_requests
 SET requestor_upstream_user_id = ?, requestor_email = ?, requestor_username = ?,
-    code_type = ?, tier_id = ?, value = ?, status = ?, note = ?, upstream_code = ?,
+    code_type = ?, tier_id = ?, value = ?, sub2api_group_id = ?, validity_days = ?, status = ?, note = ?, upstream_code = ?,
     upstream_code_id = ?, error_message = ?, updated_at = ?
 WHERE id = ?
 `,
@@ -313,6 +356,8 @@ WHERE id = ?
 		req.CodeType,
 		req.TierID,
 		req.Value,
+		req.Sub2APIGroupID,
+		req.ValidityDays,
 		req.Status,
 		req.Note,
 		req.UpstreamCode,
@@ -345,8 +390,8 @@ func (s *Service) persistIssuedRedeemCode(ctx context.Context, redeemReq *models
 	if _, err := tx.ExecContext(ctx, `
 INSERT INTO redeem_codes (
   request_id, code, code_type, value, status, used_by_upstream_user_id, used_at,
-  expires_at, sub2api_code_id, last_synced_at, created_at, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  expires_at, sub2api_code_id, sub2api_group_id, validity_days, last_synced_at, created_at, updated_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(request_id) DO UPDATE SET
   code = excluded.code,
   code_type = excluded.code_type,
@@ -356,6 +401,8 @@ ON CONFLICT(request_id) DO UPDATE SET
   used_at = excluded.used_at,
   expires_at = excluded.expires_at,
   sub2api_code_id = excluded.sub2api_code_id,
+  sub2api_group_id = excluded.sub2api_group_id,
+  validity_days = excluded.validity_days,
   last_synced_at = excluded.last_synced_at,
   updated_at = excluded.updated_at
 `,
@@ -368,6 +415,8 @@ ON CONFLICT(request_id) DO UPDATE SET
 		formatNullableTime(code.UsedAt),
 		formatNullableTime(code.ExpiresAt),
 		code.Sub2APICodeID,
+		code.Sub2APIGroupID,
+		code.ValidityDays,
 		formatNullableTime(code.LastSyncedAt),
 		formatTime(code.CreatedAt),
 		formatTime(code.UpdatedAt),
@@ -394,7 +443,7 @@ WHERE id = ?
 func (s *Service) listRedeemRequests(ctx context.Context, userID *int64) ([]models.RedeemRequest, error) {
 	query := `
 SELECT id, access_request_id, requestor_upstream_user_id, requestor_email, requestor_username,
-       code_type, tier_id, value, status, note, upstream_code, upstream_code_id, error_message,
+       code_type, tier_id, value, sub2api_group_id, validity_days, status, note, upstream_code, upstream_code_id, error_message,
        created_at, updated_at
 FROM redeem_requests
 `
@@ -423,7 +472,7 @@ FROM redeem_requests
 func (s *Service) listRedeemCodes(ctx context.Context, userID *int64) ([]models.RedeemCode, error) {
 	query := `
 SELECT c.id, c.request_id, c.code, c.code_type, c.value, c.status, c.used_by_upstream_user_id,
-       c.used_at, c.expires_at, c.sub2api_code_id, c.last_synced_at, c.created_at, c.updated_at
+       c.used_at, c.expires_at, c.sub2api_code_id, c.sub2api_group_id, c.validity_days, c.last_synced_at, c.created_at, c.updated_at
 FROM redeem_codes c
 JOIN redeem_requests r ON r.id = c.request_id
 `
@@ -453,7 +502,7 @@ func (s *Service) updateRedeemCodeFromUpstream(ctx context.Context, id int64, re
 	_, err := s.db().ExecContext(ctx, `
 UPDATE redeem_codes
 SET code_type = ?, value = ?, status = ?, used_by_upstream_user_id = ?, used_at = ?, expires_at = ?,
-    sub2api_code_id = ?, last_synced_at = ?, updated_at = ?
+    sub2api_code_id = ?, sub2api_group_id = ?, validity_days = ?, last_synced_at = ?, updated_at = ?
 WHERE id = ?
 `,
 		remote.Type,
@@ -463,6 +512,8 @@ WHERE id = ?
 		formatNullableTime(remote.UsedAt),
 		formatNullableTime(remote.ExpiresAt),
 		remote.ID,
+		remote.GroupID,
+		remote.ValidityDays,
 		formatTime(syncedAt),
 		formatTime(syncedAt),
 		id,
@@ -475,6 +526,7 @@ func scanRedeemRequestRow(scanner interface {
 }) (*models.RedeemRequest, error) {
 	var out models.RedeemRequest
 	var upstreamCodeID sql.NullInt64
+	var groupID sql.NullInt64
 	var createdAt string
 	var updatedAt string
 	if err := scanner.Scan(
@@ -486,6 +538,8 @@ func scanRedeemRequestRow(scanner interface {
 		&out.CodeType,
 		&out.TierID,
 		&out.Value,
+		&groupID,
+		&out.ValidityDays,
 		&out.Status,
 		&out.Note,
 		&out.UpstreamCode,
@@ -496,7 +550,9 @@ func scanRedeemRequestRow(scanner interface {
 	); err != nil {
 		return nil, err
 	}
+	out.CodeType = normalizeCodeType(out.CodeType)
 	out.UpstreamCodeID = parseNullableInt64(upstreamCodeID)
+	out.Sub2APIGroupID = parseNullableInt64(groupID)
 	var err error
 	if out.CreatedAt, err = parseNonNullTime(createdAt); err != nil {
 		return nil, err
@@ -515,6 +571,7 @@ func scanRedeemCodeRow(scanner interface {
 	var usedAt sql.NullString
 	var expiresAt sql.NullString
 	var sub2apiCodeID sql.NullInt64
+	var sub2apiGroupID sql.NullInt64
 	var lastSyncedAt sql.NullString
 	var createdAt string
 	var updatedAt string
@@ -529,12 +586,15 @@ func scanRedeemCodeRow(scanner interface {
 		&usedAt,
 		&expiresAt,
 		&sub2apiCodeID,
+		&sub2apiGroupID,
+		&out.ValidityDays,
 		&lastSyncedAt,
 		&createdAt,
 		&updatedAt,
 	); err != nil {
 		return nil, err
 	}
+	out.CodeType = normalizeCodeType(out.CodeType)
 	out.UsedByUpstreamUserID = parseNullableInt64(usedBy)
 	var err error
 	if out.UsedAt, err = scanMaybeTime(usedAt); err != nil {
@@ -544,6 +604,7 @@ func scanRedeemCodeRow(scanner interface {
 		return nil, err
 	}
 	out.Sub2APICodeID = parseNullableInt64(sub2apiCodeID)
+	out.Sub2APIGroupID = parseNullableInt64(sub2apiGroupID)
 	if out.LastSyncedAt, err = scanMaybeTime(lastSyncedAt); err != nil {
 		return nil, err
 	}

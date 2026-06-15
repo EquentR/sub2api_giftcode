@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -18,7 +19,7 @@ func (s *Service) CreateAccessRequest(ctx context.Context, sessionID string, tie
 	if err := s.requireMailer(); err != nil {
 		return nil, err
 	}
-	tier, err := s.getBalanceTierByID(ctx, tierID)
+	tier, err := s.getRedeemTierByID(ctx, tierID)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrNotFound
@@ -27,6 +28,20 @@ func (s *Service) CreateAccessRequest(ctx context.Context, sessionID string, tie
 	}
 	if !tier.Enabled {
 		return nil, ErrForbidden
+	}
+	if tier.CodeType == "subscription" {
+		if tier.Sub2APIGroupID == nil {
+			return nil, ErrBadRequest
+		}
+		group, err := s.subscriptionGroupByID(ctx, *tier.Sub2APIGroupID)
+		if err != nil {
+			return nil, err
+		}
+		tier.Sub2APIGroupName = group.Name
+		tier.Sub2APIGroupPlatform = group.Platform
+		tier.Sub2APIDailyLimitUSD = group.DailyLimitUSD
+		tier.Sub2APIWeeklyLimitUSD = group.WeeklyLimitUSD
+		tier.Sub2APIMonthlyLimitUSD = group.MonthlyLimitUSD
 	}
 	if existing, err := s.getOpenAccessRequestByUser(ctx, sessionUser.User.ID); err != nil {
 		if !errors.Is(err, sql.ErrNoRows) {
@@ -45,8 +60,17 @@ func (s *Service) CreateAccessRequest(ctx context.Context, sessionID string, tie
 		RequestorEmail:          sessionUser.User.Email,
 		RequestorUsername:       sessionUser.User.Username,
 		TierID:                  tier.ID,
+		CodeType:                tier.CodeType,
+		TierLabel:               tier.Label,
 		Amount:                  tier.Amount,
 		PayAmountCny:            tier.PayAmountCny,
+		Sub2APIGroupID:          tier.Sub2APIGroupID,
+		Sub2APIGroupName:        tier.Sub2APIGroupName,
+		Sub2APIGroupPlatform:    tier.Sub2APIGroupPlatform,
+		Sub2APIDailyLimitUSD:    tier.Sub2APIDailyLimitUSD,
+		Sub2APIWeeklyLimitUSD:   tier.Sub2APIWeeklyLimitUSD,
+		Sub2APIMonthlyLimitUSD:  tier.Sub2APIMonthlyLimitUSD,
+		ValidityDays:            tier.ValidityDays,
 		Note:                    strings.TrimSpace(note),
 		Status:                  "pending",
 		ApprovalTokenHash:       hashToken(token),
@@ -67,7 +91,7 @@ func (s *Service) CreateAccessRequest(ctx context.Context, sessionID string, tie
 		branding = current
 	}
 	subjectPrefix := effectiveMailSubjectPrefix(branding.Title, branding.MailSubjectPrefix)
-	subject, body := s.mailer.ApprovalEmail(branding.Title, subjectPrefix, req.ID, req.RequestorUsername, req.RequestorEmail, tier.Label, req.Amount, req.PayAmountCny, req.Note, approvalURL)
+	subject, body := s.mailer.ApprovalEmail(branding.Title, subjectPrefix, req.ID, req.RequestorUsername, req.RequestorEmail, displayTierLabel(&req), req.Amount, req.PayAmountCny, req.Note, approvalURL)
 	if err := s.mailer.SendApprovalEmail(ctx, s.cfg.Mail.AdminToAddress, subject, body); err != nil {
 		req.NotificationStatus = "failed"
 		req.NotificationError = err.Error()
@@ -168,7 +192,7 @@ func (s *Service) ApproveAccessRequestByID(ctx context.Context, id int64) (*mode
 	if req.Status != "pending" && req.Status != "approved" {
 		return nil, nil, ErrConflict
 	}
-	tier, err := s.getBalanceTierByID(ctx, req.TierID)
+	tier, err := s.getRedeemTierByID(ctx, req.TierID)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil, ErrNotFound
@@ -241,17 +265,28 @@ func (s *Service) getApprovedAccessRequestByUser(ctx context.Context, upstreamUs
 func (s *Service) insertAccessRequest(ctx context.Context, req *models.AccessRequest) (int64, error) {
 	res, err := s.db().ExecContext(ctx, `
 INSERT INTO redeem_access_requests (
-  requestor_upstream_user_id, requestor_email, requestor_username, tier_id, amount, pay_amount_cny, note, status,
-  approval_token_hash, approval_token_expires_at, notification_status, notification_error,
+  requestor_upstream_user_id, requestor_email, requestor_username, tier_id, code_type, tier_label,
+  amount, pay_amount_cny, sub2api_group_id, sub2api_group_name, sub2api_group_platform,
+  sub2api_daily_limit_usd, sub2api_weekly_limit_usd, sub2api_monthly_limit_usd, validity_days,
+  note, status, approval_token_hash, approval_token_expires_at, notification_status, notification_error,
   created_at, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `,
 		req.RequestorUpstreamUserID,
 		req.RequestorEmail,
 		req.RequestorUsername,
 		req.TierID,
+		req.CodeType,
+		req.TierLabel,
 		req.Amount,
 		req.PayAmountCny,
+		req.Sub2APIGroupID,
+		req.Sub2APIGroupName,
+		req.Sub2APIGroupPlatform,
+		req.Sub2APIDailyLimitUSD,
+		req.Sub2APIWeeklyLimitUSD,
+		req.Sub2APIMonthlyLimitUSD,
+		req.ValidityDays,
 		req.Note,
 		req.Status,
 		req.ApprovalTokenHash,
@@ -323,11 +358,7 @@ func (s *Service) getAccessRequestByTokenHash(ctx context.Context, tokenHash str
 }
 
 func (s *Service) getAccessRequestByID(ctx context.Context, id int64) (*models.AccessRequest, error) {
-	row := s.db().QueryRowContext(ctx, `
-SELECT id, requestor_upstream_user_id, requestor_email, requestor_username, tier_id, amount, pay_amount_cny, note, status,
-       approval_token_hash, approval_token_expires_at, approved_at, rejected_at, consumed_at,
-       notification_status, notification_error, notification_sent_at, created_at, updated_at
-FROM redeem_access_requests
+	row := s.db().QueryRowContext(ctx, accessRequestSelectSQL()+`
 WHERE id = ?
 `, id)
 	return scanAccessRequestRow(row)
@@ -336,11 +367,7 @@ WHERE id = ?
 func (s *Service) getAccessRequestByField(ctx context.Context, field string, value string) (*models.AccessRequest, error) {
 	switch field {
 	case "approval_token_hash":
-		row := s.db().QueryRowContext(ctx, `
-SELECT id, requestor_upstream_user_id, requestor_email, requestor_username, tier_id, amount, pay_amount_cny, note, status,
-       approval_token_hash, approval_token_expires_at, approved_at, rejected_at, consumed_at,
-       notification_status, notification_error, notification_sent_at, created_at, updated_at
-FROM redeem_access_requests
+		row := s.db().QueryRowContext(ctx, accessRequestSelectSQL()+`
 WHERE approval_token_hash = ?
 LIMIT 1
 `, value)
@@ -351,12 +378,7 @@ LIMIT 1
 }
 
 func (s *Service) listAccessRequests(ctx context.Context, userID *int64) ([]models.AccessRequest, error) {
-	query := `
-SELECT id, requestor_upstream_user_id, requestor_email, requestor_username, tier_id, amount, pay_amount_cny, note, status,
-       approval_token_hash, approval_token_expires_at, approved_at, rejected_at, consumed_at,
-       notification_status, notification_error, notification_sent_at, created_at, updated_at
-FROM redeem_access_requests
-`
+	query := accessRequestSelectSQL()
 	args := make([]any, 0, 1)
 	if userID != nil {
 		query += `WHERE requestor_upstream_user_id = ? `
@@ -379,6 +401,17 @@ FROM redeem_access_requests
 	return out, rows.Err()
 }
 
+func accessRequestSelectSQL() string {
+	return `
+SELECT id, requestor_upstream_user_id, requestor_email, requestor_username, tier_id, code_type, tier_label,
+       amount, pay_amount_cny, sub2api_group_id, sub2api_group_name, sub2api_group_platform,
+       sub2api_daily_limit_usd, sub2api_weekly_limit_usd, sub2api_monthly_limit_usd, validity_days,
+       note, status, approval_token_hash, approval_token_expires_at, approved_at, rejected_at, consumed_at,
+       notification_status, notification_error, notification_sent_at, created_at, updated_at
+FROM redeem_access_requests
+`
+}
+
 func scanAccessRequestRow(scanner interface {
 	Scan(dest ...any) error
 }) (*models.AccessRequest, error) {
@@ -388,6 +421,10 @@ func scanAccessRequestRow(scanner interface {
 	var consumedAt sql.NullString
 	var notificationSentAt sql.NullString
 	var approvalTokenExpiresAt string
+	var sub2apiGroupID sql.NullInt64
+	var sub2apiDailyLimit sql.NullFloat64
+	var sub2apiWeeklyLimit sql.NullFloat64
+	var sub2apiMonthlyLimit sql.NullFloat64
 	var createdAt string
 	var updatedAt string
 	if err := scanner.Scan(
@@ -396,8 +433,17 @@ func scanAccessRequestRow(scanner interface {
 		&out.RequestorEmail,
 		&out.RequestorUsername,
 		&out.TierID,
+		&out.CodeType,
+		&out.TierLabel,
 		&out.Amount,
 		&out.PayAmountCny,
+		&sub2apiGroupID,
+		&out.Sub2APIGroupName,
+		&out.Sub2APIGroupPlatform,
+		&sub2apiDailyLimit,
+		&sub2apiWeeklyLimit,
+		&sub2apiMonthlyLimit,
+		&out.ValidityDays,
 		&out.Note,
 		&out.Status,
 		&out.ApprovalTokenHash,
@@ -412,6 +458,20 @@ func scanAccessRequestRow(scanner interface {
 		&updatedAt,
 	); err != nil {
 		return nil, err
+	}
+	out.CodeType = normalizeCodeType(out.CodeType)
+	out.Sub2APIGroupID = parseNullableInt64(sub2apiGroupID)
+	if sub2apiDailyLimit.Valid {
+		v := sub2apiDailyLimit.Float64
+		out.Sub2APIDailyLimitUSD = &v
+	}
+	if sub2apiWeeklyLimit.Valid {
+		v := sub2apiWeeklyLimit.Float64
+		out.Sub2APIWeeklyLimitUSD = &v
+	}
+	if sub2apiMonthlyLimit.Valid {
+		v := sub2apiMonthlyLimit.Float64
+		out.Sub2APIMonthlyLimitUSD = &v
 	}
 	var err error
 	if out.ApprovalTokenExpiresAt, err = parseNonNullTime(approvalTokenExpiresAt); err != nil {
@@ -440,4 +500,17 @@ func scanAccessRequestRow(scanner interface {
 
 func scanAccessRequestRows(rows *sql.Rows) (*models.AccessRequest, error) {
 	return scanAccessRequestRow(rows)
+}
+
+func displayTierLabel(req *models.AccessRequest) string {
+	if req == nil {
+		return ""
+	}
+	if strings.TrimSpace(req.TierLabel) != "" {
+		return req.TierLabel
+	}
+	if req.CodeType == "subscription" && strings.TrimSpace(req.Sub2APIGroupName) != "" {
+		return fmt.Sprintf("%s / %d days", req.Sub2APIGroupName, req.ValidityDays)
+	}
+	return fmt.Sprintf("%.0f USD", req.Amount)
 }

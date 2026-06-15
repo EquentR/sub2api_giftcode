@@ -12,14 +12,15 @@
     </div>
 
     <div class="surface section compact-form" style="margin-bottom: 16px">
-      <el-form :model="form" label-position="top" @submit.prevent="submit">
-        <el-form-item label="余额档位">
+        <el-form :model="form" label-position="top" @submit.prevent="submit">
+        <el-form-item label="兑换档位">
           <el-select v-model="form.tierId" placeholder="请选择档位" style="width: 100%">
             <el-option
               v-for="tier in enabledTiers"
               :key="tier.id"
               :label="formatTierDisplay(tier)"
               :value="tier.id"
+              :disabled="!isSubscriptionTierAvailable(tier)"
             />
           </el-select>
         </el-form-item>
@@ -45,7 +46,7 @@
           <template #default="{ row }">{{ row.label || '-' }}</template>
         </el-table-column>
         <el-table-column prop="amount" label="金额" width="120">
-          <template #default="{ row }">{{ Number(row.amount).toFixed(0) }} 美元</template>
+          <template #default="{ row }">{{ formatTierAmount(row) }}</template>
         </el-table-column>
         <el-table-column prop="pay_amount_cny" label="实付金额" width="120">
           <template #default="{ row }">{{ Number(row.pay_amount_cny).toFixed(0) }} 人民币</template>
@@ -78,7 +79,7 @@
           <template #default="{ row }"><StatusTag :status="row.status" /></template>
         </el-table-column>
         <el-table-column prop="value" label="到账金额" width="110">
-          <template #default="{ row }">{{ Number(row.value).toFixed(0) }} 美元</template>
+          <template #default="{ row }">{{ formatCodeValue(row) }}</template>
         </el-table-column>
         <el-table-column prop="upstream_code" label="兑换码" min-width="220">
           <template #default="{ row }">
@@ -102,15 +103,15 @@ import { ElMessage } from 'element-plus'
 import AppLayout from '@/components/AppLayout.vue'
 import CodeTable from '@/components/CodeTable.vue'
 import StatusTag from '@/components/StatusTag.vue'
-import { createRedeemRequest, listBalanceTiers, listRedeemCodes, listRedeemRequests } from '@/api/redeem'
-import type { BalanceTier, RedeemCode, RedeemRequest } from '@/api/types'
-import { formatTierAmount, formatTierDisplay, formatTierPayAmount } from '@/utils/tiers'
+import { createRedeemRequest, listRedeemCodes, listRedeemRequests, listRedeemTiers } from '@/api/redeem'
+import type { RedeemCode, RedeemRequest, RedeemTier } from '@/api/types'
+import { formatCodeValue, formatTierAmount, formatTierDisplay, formatTierPayAmount, isSubscriptionTierAvailable } from '@/utils/tiers'
 import { copyText } from '@/utils/clipboard'
 import { useBrandingStore } from '@/stores/branding'
 
 const loading = ref(false)
 const branding = useBrandingStore()
-const tiers = ref<BalanceTier[]>([])
+const tiers = ref<RedeemTier[]>([])
 const requests = ref<RedeemRequest[]>([])
 const codes = ref<RedeemCode[]>([])
 const issuedCode = ref<RedeemCode | null>(null)
@@ -126,15 +127,16 @@ const tierMap = computed(() => new Map(tiers.value.map((tier) => [tier.id, tier]
 async function loadAll() {
   try {
     const [tierData, requestData, codeData] = await Promise.all([
-      listBalanceTiers(),
+      listRedeemTiers(),
       listRedeemRequests(),
       listRedeemCodes(),
     ])
     tiers.value = tierData
     requests.value = requestData
     codes.value = codeData
-    if (!form.tierId && enabledTiers.value[0]) {
-      form.tierId = enabledTiers.value[0].id
+    const selectableTier = enabledTiers.value.find((tier) => isSubscriptionTierAvailable(tier))
+    if (!form.tierId && selectableTier) {
+      form.tierId = selectableTier.id
     }
   } catch (error: any) {
     ElMessage.error(error?.message ?? '加载数据失败')
@@ -154,6 +156,11 @@ function tierNameById(id: number) {
 async function submit() {
   if (!form.tierId) {
     ElMessage.warning('请先选择一个档位')
+    return
+  }
+  const tier = tierById(form.tierId)
+  if (tier && !isSubscriptionTierAvailable(tier)) {
+    ElMessage.warning('当前订阅档位不可提交，请刷新后重试')
     return
   }
   loading.value = true

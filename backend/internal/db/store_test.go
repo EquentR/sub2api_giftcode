@@ -105,3 +105,45 @@ func TestOpenAndMigrateAddsAccessRequestAmountColumns(t *testing.T) {
 	require.True(t, foundAmount, "expected redeem_access_requests to include amount")
 	require.True(t, foundPayAmount, "expected redeem_access_requests to include pay_amount_cny")
 }
+
+func TestOpenAndMigrateAddsRedeemTierSubscriptionColumns(t *testing.T) {
+	store, err := Open("sqlite", ":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+
+	require.NoError(t, store.Migrate(context.Background()))
+
+	rows, err := store.DB.QueryContext(context.Background(), `PRAGMA table_info(redeem_tiers)`)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = rows.Close() })
+
+	foundCodeType := false
+	foundGroupID := false
+	foundValidityDays := false
+	for rows.Next() {
+		var (
+			cid          int
+			name         string
+			typeName     string
+			notNull      int
+			defaultValue any
+			pk           int
+		)
+		require.NoError(t, rows.Scan(&cid, &name, &typeName, &notNull, &defaultValue, &pk))
+		switch name {
+		case "code_type":
+			foundCodeType = true
+			require.Equal(t, "TEXT", typeName)
+		case "sub2api_group_id":
+			foundGroupID = true
+			require.Equal(t, "INTEGER", typeName)
+		case "validity_days":
+			foundValidityDays = true
+			require.Equal(t, "INTEGER", typeName)
+		}
+	}
+	require.NoError(t, rows.Err())
+	require.True(t, foundCodeType, "expected redeem_tiers to include code_type")
+	require.True(t, foundGroupID, "expected redeem_tiers to include sub2api_group_id")
+	require.True(t, foundValidityDays, "expected redeem_tiers to include validity_days")
+}

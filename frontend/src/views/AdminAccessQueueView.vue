@@ -15,8 +15,8 @@
         <el-table-column prop="tier_id" label="档位" min-width="160">
           <template #default="{ row }">{{ tierNameById(row.tier_id) }}</template>
         </el-table-column>
-        <el-table-column label="到账金额" width="130">
-          <template #default="{ row }">{{ Number(row.amount).toFixed(0) }} 美元</template>
+        <el-table-column label="内容" width="130">
+          <template #default="{ row }">{{ requestContent(row) }}</template>
         </el-table-column>
         <el-table-column label="实付金额" width="130">
           <template #default="{ row }">{{ Number(row.pay_amount_cny).toFixed(0) }} 人民币</template>
@@ -59,8 +59,11 @@
           <el-descriptions-item label="用户">{{ selectedRequest.requestor_username }}</el-descriptions-item>
           <el-descriptions-item label="邮箱">{{ selectedRequest.requestor_email }}</el-descriptions-item>
           <el-descriptions-item label="档位">{{ tierNameById(selectedRequest.tier_id) }}</el-descriptions-item>
-          <el-descriptions-item label="到账金额">{{ Number(selectedRequest.amount).toFixed(0) }} 美元</el-descriptions-item>
+          <el-descriptions-item label="内容">{{ requestContent(selectedRequest) }}</el-descriptions-item>
           <el-descriptions-item label="实付金额">{{ Number(selectedRequest.pay_amount_cny).toFixed(0) }} 人民币</el-descriptions-item>
+          <el-descriptions-item v-if="selectedRequest.code_type === 'subscription'" label="订阅限额">
+            {{ requestLimitSummary(selectedRequest) }}
+          </el-descriptions-item>
           <el-descriptions-item label="备注">{{ selectedRequest.note || '-' }}</el-descriptions-item>
         </el-descriptions>
 
@@ -110,15 +113,16 @@ import { ElMessage } from 'element-plus'
 import AppLayout from '@/components/AppLayout.vue'
 import CodeTable from '@/components/CodeTable.vue'
 import StatusTag from '@/components/StatusTag.vue'
-import { approveAccessRequest, listAccessRequests, listBalanceTiers, listRedeemCodes, listUserRedeemCodes, rejectAccessRequest } from '@/api/admin'
-import type { AccessRequest, BalanceTier, RedeemCode } from '@/api/types'
+import { approveAccessRequest, listAccessRequests, listRedeemCodes, listRedeemTiers, listUserRedeemCodes, rejectAccessRequest } from '@/api/admin'
+import type { AccessRequest, RedeemCode, RedeemTier } from '@/api/types'
+import { formatCodeTypeLabel, formatLimitTriplet } from '@/utils/tiers'
 import { copyText } from '@/utils/clipboard'
 
 
 const route = useRoute()
 const requests = ref<AccessRequest[]>([])
 const codes = ref<RedeemCode[]>([])
-const tiers = ref<BalanceTier[]>([])
+const tiers = ref<RedeemTier[]>([])
 const selectedRequest = ref<AccessRequest | null>(null)
 const issuedCode = ref<RedeemCode | null>(null)
 const reviewDialogVisible = ref(false)
@@ -140,7 +144,7 @@ async function loadAll(options: LoadAllOptions = {}) {
     const [requestData, codeData, tierData] = await Promise.all([
       listAccessRequests(),
       Number.isFinite(userId) && userId > 0 ? listUserRedeemCodes(userId) : listRedeemCodes(),
-      listBalanceTiers(),
+      listRedeemTiers(),
     ])
     requests.value = requestData
     codes.value = codeData
@@ -212,6 +216,22 @@ function tierNameById(id: number) {
   const tier = tierById(id)
   if (!tier) return `#${id}`
   return tier.label?.trim() || `#${id}`
+}
+
+function requestContent(request: AccessRequest) {
+  if (request.code_type === 'subscription') {
+    const days = Number(request.validity_days ?? 0)
+    return `${formatCodeTypeLabel(request.code_type)} · ${days > 0 ? `${days} 天` : request.sub2api_group_name || '-'}`
+  }
+  return `${Number(request.amount).toFixed(0)} 美元`
+}
+
+function requestLimitSummary(request: AccessRequest) {
+  return formatLimitTriplet({
+    sub2api_daily_limit_usd: request.sub2api_daily_limit_usd,
+    sub2api_weekly_limit_usd: request.sub2api_weekly_limit_usd,
+    sub2api_monthly_limit_usd: request.sub2api_monthly_limit_usd,
+  })
 }
 
 function formatTime(value?: string | null) {

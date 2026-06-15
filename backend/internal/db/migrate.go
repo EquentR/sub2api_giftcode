@@ -34,8 +34,17 @@ CREATE TABLE IF NOT EXISTS redeem_access_requests (
   requestor_email TEXT NOT NULL,
   requestor_username TEXT NOT NULL,
   tier_id INTEGER NOT NULL DEFAULT 0,
+  code_type TEXT NOT NULL DEFAULT 'balance',
+  tier_label TEXT NOT NULL DEFAULT '',
   amount REAL NOT NULL DEFAULT 0,
   pay_amount_cny REAL NOT NULL DEFAULT 0,
+  sub2api_group_id INTEGER NULL,
+  sub2api_group_name TEXT NOT NULL DEFAULT '',
+  sub2api_group_platform TEXT NOT NULL DEFAULT '',
+  sub2api_daily_limit_usd REAL NULL,
+  sub2api_weekly_limit_usd REAL NULL,
+  sub2api_monthly_limit_usd REAL NULL,
+  validity_days INTEGER NOT NULL DEFAULT 0,
   note TEXT NOT NULL DEFAULT '',
   status TEXT NOT NULL,
   approval_token_hash TEXT NOT NULL,
@@ -62,6 +71,8 @@ CREATE TABLE IF NOT EXISTS redeem_requests (
   code_type TEXT NOT NULL,
   tier_id INTEGER NOT NULL,
   value REAL NOT NULL,
+  sub2api_group_id INTEGER NULL,
+  validity_days INTEGER NOT NULL DEFAULT 0,
   status TEXT NOT NULL,
   note TEXT NOT NULL DEFAULT '',
   upstream_code TEXT NOT NULL DEFAULT '',
@@ -85,6 +96,8 @@ CREATE TABLE IF NOT EXISTS redeem_codes (
   used_at TEXT NULL,
   expires_at TEXT NULL,
   sub2api_code_id INTEGER NULL,
+  sub2api_group_id INTEGER NULL,
+  validity_days INTEGER NOT NULL DEFAULT 0,
   last_synced_at TEXT NULL,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
@@ -100,6 +113,20 @@ CREATE TABLE IF NOT EXISTS redeem_balance_tiers (
   label TEXT NOT NULL,
   enabled INTEGER NOT NULL DEFAULT 1,
   sort_order INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS redeem_tiers (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  code_type TEXT NOT NULL DEFAULT 'balance',
+  amount REAL NOT NULL DEFAULT 0,
+  pay_amount_cny REAL NOT NULL DEFAULT 0,
+  label TEXT NOT NULL,
+  enabled INTEGER NOT NULL DEFAULT 1,
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  sub2api_group_id INTEGER NULL,
+  validity_days INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
@@ -127,7 +154,86 @@ func (s *Store) Migrate(ctx context.Context) error {
 	if err := s.ensureBalanceTierPayAmountColumn(ctx); err != nil {
 		return err
 	}
-	return s.seedBalanceTiers(ctx)
+	if err := s.ensureAccessRequestSnapshotColumns(ctx); err != nil {
+		return err
+	}
+	if err := s.ensureRedeemRequestSubscriptionColumns(ctx); err != nil {
+		return err
+	}
+	if err := s.ensureRedeemCodeSubscriptionColumns(ctx); err != nil {
+		return err
+	}
+	if err := s.seedBalanceTiers(ctx); err != nil {
+		return err
+	}
+	return s.migrateBalanceTiersToRedeemTiers(ctx)
+}
+
+func (s *Store) ensureAccessRequestSnapshotColumns(ctx context.Context) error {
+	return s.ensureColumns(ctx, "redeem_access_requests", map[string]string{
+		"code_type":                 "TEXT NOT NULL DEFAULT 'balance'",
+		"tier_label":                "TEXT NOT NULL DEFAULT ''",
+		"sub2api_group_id":          "INTEGER NULL",
+		"sub2api_group_name":        "TEXT NOT NULL DEFAULT ''",
+		"sub2api_group_platform":    "TEXT NOT NULL DEFAULT ''",
+		"sub2api_daily_limit_usd":   "REAL NULL",
+		"sub2api_weekly_limit_usd":  "REAL NULL",
+		"sub2api_monthly_limit_usd": "REAL NULL",
+		"validity_days":             "INTEGER NOT NULL DEFAULT 0",
+	})
+}
+
+func (s *Store) ensureRedeemRequestSubscriptionColumns(ctx context.Context) error {
+	return s.ensureColumns(ctx, "redeem_requests", map[string]string{
+		"sub2api_group_id": "INTEGER NULL",
+		"validity_days":    "INTEGER NOT NULL DEFAULT 0",
+	})
+}
+
+func (s *Store) ensureRedeemCodeSubscriptionColumns(ctx context.Context) error {
+	return s.ensureColumns(ctx, "redeem_codes", map[string]string{
+		"sub2api_group_id": "INTEGER NULL",
+		"validity_days":    "INTEGER NOT NULL DEFAULT 0",
+	})
+}
+
+func (s *Store) ensureColumns(ctx context.Context, table string, columns map[string]string) error {
+	rows, err := s.DB.QueryContext(ctx, `PRAGMA table_info(`+table+`)`)
+	if err != nil {
+		return err
+	}
+	found := map[string]bool{}
+	for rows.Next() {
+		var (
+			cid          int
+			name         string
+			typeName     string
+			notNull      int
+			defaultValue any
+			pk           int
+		)
+		if err := rows.Scan(&cid, &name, &typeName, &notNull, &defaultValue, &pk); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		found[name] = true
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return err
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	for name, spec := range columns {
+		if found[name] {
+			continue
+		}
+		if _, err := s.DB.ExecContext(ctx, `ALTER TABLE `+table+` ADD COLUMN `+name+` `+spec); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *Store) ensureAccessRequestTierColumn(ctx context.Context) error {
@@ -276,6 +382,20 @@ VALUES
   (120, 120, '$120', 1, 10, ?, ?),
   (240, 240, '$240', 1, 20, ?, ?)
 `, now, now, now, now)
+	return err
+}
+
+func (s *Store) migrateBalanceTiersToRedeemTiers(ctx context.Context) error {
+	_, err := s.DB.ExecContext(ctx, `
+INSERT INTO redeem_tiers (
+  id, code_type, amount, pay_amount_cny, label, enabled, sort_order,
+  sub2api_group_id, validity_days, created_at, updated_at
+)
+SELECT id, 'balance', amount, pay_amount_cny, label, enabled, sort_order,
+       NULL, 0, created_at, updated_at
+FROM redeem_balance_tiers bt
+WHERE NOT EXISTS (SELECT 1 FROM redeem_tiers rt WHERE rt.id = bt.id)
+`)
 	return err
 }
 

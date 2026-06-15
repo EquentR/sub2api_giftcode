@@ -1,5 +1,5 @@
 <template>
-  <AppLayout title="申请审批" subtitle="提交申请时先选好余额档位">
+  <AppLayout title="申请审批" subtitle="提交申请时先选好兑换档位">
     <div class="surface section" style="margin-bottom: 16px">
       <div class="toolbar">
         <div>
@@ -8,7 +8,7 @@
         </div>
         <div style="display: flex; gap: 8px">
           <el-button :icon="Refresh" :loading="loadingData" @click="loadAll">刷新</el-button>
-          <el-button type="primary" :icon="Document" :disabled="!enabledTiers.length" @click="openDialog">
+          <el-button type="primary" :icon="Document" :disabled="!selectableTiers.length" @click="openDialog">
             新建申请
           </el-button>
         </div>
@@ -18,8 +18,8 @@
         <el-table-column prop="label" label="标签" min-width="180">
           <template #default="{ row }">{{ row.label || '-' }}</template>
         </el-table-column>
-        <el-table-column prop="amount" label="到账金额" width="140">
-          <template #default="{ row }">{{ Number(row.amount).toFixed(0) }} 美元</template>
+        <el-table-column label="内容" width="140">
+          <template #default="{ row }">{{ tierContent(row) }}</template>
         </el-table-column>
         <el-table-column prop="pay_amount_cny" label="实付金额" width="140">
           <template #default="{ row }">{{ Number(row.pay_amount_cny).toFixed(0) }} 人民币</template>
@@ -42,8 +42,8 @@
         <el-table-column label="档位" min-width="160">
           <template #default="{ row }">{{ tierNameById(row.tier_id) }}</template>
         </el-table-column>
-        <el-table-column label="到账金额" width="130">
-          <template #default="{ row }">{{ Number(row.amount).toFixed(0) }} 美元</template>
+        <el-table-column label="内容" width="130">
+          <template #default="{ row }">{{ requestContent(row) }}</template>
         </el-table-column>
         <el-table-column label="实付金额" width="130">
           <template #default="{ row }">{{ Number(row.pay_amount_cny).toFixed(0) }} 人民币</template>
@@ -84,13 +84,14 @@
 
     <el-dialog v-model="dialogVisible" title="提交申请" width="560px">
       <el-form :model="form" label-position="top" @submit.prevent="submit">
-        <el-form-item label="余额档位">
+        <el-form-item label="兑换档位">
           <el-select v-model="form.tierId" placeholder="请选择档位" style="width: 100%">
             <el-option
               v-for="tier in enabledTiers"
               :key="tier.id"
               :label="formatTierDisplay(tier)"
               :value="tier.id"
+              :disabled="!isSubscriptionTierAvailable(tier)"
             />
           </el-select>
         </el-form-item>
@@ -100,7 +101,7 @@
       </el-form>
       <template #footer>
         <el-button @click="dialogVisible = false">取消</el-button>
-        <el-button type="primary" :loading="loading" :disabled="!enabledTiers.length" @click="submit">
+        <el-button type="primary" :loading="loading" :disabled="!selectableTiers.length" @click="submit">
           提交申请
         </el-button>
       </template>
@@ -117,16 +118,16 @@ import AppLayout from '@/components/AppLayout.vue'
 import CodeTable from '@/components/CodeTable.vue'
 import StatusTag from '@/components/StatusTag.vue'
 import { createAccessRequest, listAccessRequests } from '@/api/access'
-import { listBalanceTiers, listRedeemCodes } from '@/api/redeem'
-import type { AccessRequest, BalanceTier, RedeemCode } from '@/api/types'
-import { formatTierDisplay } from '@/utils/tiers'
+import { listRedeemCodes, listRedeemTiers } from '@/api/redeem'
+import type { AccessRequest, RedeemCode, RedeemTier } from '@/api/types'
+import { formatTierDisplay, isSubscriptionTierAvailable, tierCodeType } from '@/utils/tiers'
 import { copyText } from '@/utils/clipboard'
 
 const loading = ref(false)
 const loadingCore = ref(false)
 const loadingCodes = ref(false)
 const dialogVisible = ref(false)
-const tiers = ref<BalanceTier[]>([])
+const tiers = ref<RedeemTier[]>([])
 const items = ref<AccessRequest[]>([])
 const codes = ref<RedeemCode[]>([])
 let refreshTimer: number | undefined
@@ -138,6 +139,7 @@ const form = reactive({
 })
 
 const enabledTiers = computed(() => tiers.value.filter((tier) => tier.enabled))
+const selectableTiers = computed(() => enabledTiers.value.filter((tier) => isSubscriptionTierAvailable(tier)))
 const tierMap = computed(() => new Map(tiers.value.map((tier) => [tier.id, tier])))
 const latestCode = computed(() => codes.value[0] ?? null)
 const loadingData = computed(() => loadingCore.value || loadingCodes.value)
@@ -150,7 +152,7 @@ async function loadCoreData() {
   loadingCore.value = true
   try {
     const [tierData, requestData] = await Promise.all([
-      listBalanceTiers(),
+      listRedeemTiers(),
       listAccessRequests(),
     ])
     tiers.value = tierData
@@ -185,12 +187,12 @@ function tierNameById(id: number) {
 }
 
 function syncDefaultTier() {
-  if (!enabledTiers.value.length) {
+  if (!selectableTiers.value.length) {
     form.tierId = 0
     return
   }
-  if (!enabledTiers.value.some((tier) => tier.id === form.tierId)) {
-    form.tierId = enabledTiers.value[0].id
+  if (!selectableTiers.value.some((tier) => tier.id === form.tierId)) {
+    form.tierId = selectableTiers.value[0].id
   }
 }
 
@@ -202,6 +204,11 @@ function openDialog() {
 async function submit() {
   if (!form.tierId) {
     ElMessage.warning('请选择档位')
+    return
+  }
+  const tier = tierById(form.tierId)
+  if (tier && !isSubscriptionTierAvailable(tier)) {
+    ElMessage.warning('当前订阅档位不可提交，请刷新后重试')
     return
   }
   loading.value = true
@@ -224,6 +231,22 @@ async function copyLatestCode() {
   if (copied) {
     ElMessage.success('已复制')
   }
+}
+
+function tierContent(tier: RedeemTier) {
+  if (tierCodeType(tier) === 'subscription') {
+    const days = Number(tier.validity_days ?? 0)
+    return days > 0 ? `${days} 天订阅` : '订阅'
+  }
+  return `${Number(tier.amount).toFixed(0)} 美元`
+}
+
+function requestContent(request: AccessRequest) {
+  if (request.code_type === 'subscription') {
+    const days = Number(request.validity_days ?? 0)
+    return days > 0 ? `${days} 天订阅` : '订阅'
+  }
+  return `${Number(request.amount).toFixed(0)} 美元`
 }
 
 function refreshWhenVisible() {

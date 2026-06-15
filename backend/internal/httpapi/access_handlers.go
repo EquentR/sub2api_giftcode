@@ -137,6 +137,81 @@ func (h *Handlers) ListBalanceTiers(c *gin.Context) {
 	writeSuccess(c, items)
 }
 
+func (h *Handlers) ListRedeemTiers(c *gin.Context) {
+	items, err := h.service.ListRedeemTiers(c.Request.Context(), false)
+	if err != nil {
+		status, msg, reason := statusForError(err)
+		if reason != "" {
+			writeErrorReason(c, status, msg, reason)
+		} else {
+			writeError(c, status, msg)
+		}
+		return
+	}
+	writeSuccess(c, items)
+}
+
+func (h *Handlers) ListEnabledRedeemTiers(c *gin.Context) {
+	items, err := h.service.ListRedeemTiers(c.Request.Context(), true)
+	if err != nil {
+		status, msg, reason := statusForError(err)
+		if reason != "" {
+			writeErrorReason(c, status, msg, reason)
+		} else {
+			writeError(c, status, msg)
+		}
+		return
+	}
+	writeSuccess(c, items)
+}
+
+func (h *Handlers) UpdateRedeemTiers(c *gin.Context) {
+	var req []RedeemTierRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		writeError(c, http.StatusBadRequest, err.Error())
+		return
+	}
+	tiers := make([]models.RedeemTier, 0, len(req))
+	for _, tier := range req {
+		tiers = append(tiers, models.RedeemTier{
+			ID:             tier.ID,
+			CodeType:       tier.CodeType,
+			Amount:         tier.Amount,
+			PayAmountCny:   tier.PayAmountCny,
+			Label:          tier.Label,
+			Enabled:        tier.Enabled,
+			SortOrder:      tier.SortOrder,
+			Sub2APIGroupID: tier.Sub2APIGroupID,
+			ValidityDays:   tier.ValidityDays,
+		})
+	}
+	items, err := h.service.ReplaceRedeemTiers(c.Request.Context(), tiers)
+	if err != nil {
+		status, msg, reason := statusForError(err)
+		if reason != "" {
+			writeErrorReason(c, status, msg, reason)
+		} else {
+			writeError(c, status, msg)
+		}
+		return
+	}
+	writeSuccess(c, items)
+}
+
+func (h *Handlers) ListSubscriptionGroups(c *gin.Context) {
+	items, err := h.service.ListSubscriptionGroups(c.Request.Context())
+	if err != nil {
+		status, msg, reason := statusForError(err)
+		if reason != "" {
+			writeErrorReason(c, status, msg, reason)
+		} else {
+			writeError(c, status, msg)
+		}
+		return
+	}
+	writeSuccess(c, items)
+}
+
 func (h *Handlers) UpdateBalanceTiers(c *gin.Context) {
 	var req []BalanceTierRequest
 	if err := c.ShouldBindJSON(&req); err != nil {

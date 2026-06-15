@@ -1,6 +1,15 @@
 import { request } from './http'
 import { asArray } from './arrays'
-import type { AccessApprovalResponse, AccessRequest, BalanceTier, DashboardStats, RedeemCode, UserSummary } from './types'
+import type {
+  AccessApprovalResponse,
+  AccessRequest,
+  BalanceTier,
+  DashboardStats,
+  RedeemCode,
+  RedeemTier,
+  SubscriptionGroup,
+  UserSummary,
+} from './types'
 
 export function stats() {
   return request<DashboardStats>({
@@ -72,10 +81,32 @@ export function listBalanceTiers() {
   }).then(asArray)
 }
 
+export function listRedeemTiers() {
+  return request<RedeemTier[] | null>({
+    method: 'GET',
+    url: '/admin/redeem-tiers',
+  }).then(asArray)
+}
+
 export function updateBalanceTiers(tiers: BalanceTier[]) {
   return request<BalanceTier[]>({
     method: 'PUT',
     url: '/admin/redeem-balance-tiers',
     data: tiers,
   })
+}
+
+export function updateRedeemTiers(tiers: RedeemTier[]) {
+  return request<RedeemTier[]>({
+    method: 'PUT',
+    url: '/admin/redeem-tiers',
+    data: tiers,
+  })
+}
+
+export function listSubscriptionGroups() {
+  return request<SubscriptionGroup[] | null>({
+    method: 'GET',
+    url: '/admin/sub2api-subscription-groups',
+  }).then(asArray)
 }

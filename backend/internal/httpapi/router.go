@@ -40,6 +40,7 @@ func NewRouter(cfg *config.RuntimeConfig, service *app.Service) *gin.Engine {
 			user.POST("/redeem-requests", handlers.CreateRedeemRequest)
 			user.GET("/redeem-requests", handlers.ListMyRedeemRequests)
 			user.GET("/redeem-codes", handlers.ListMyRedeemCodes)
+			user.GET("/redeem-tiers", handlers.ListEnabledRedeemTiers)
 			user.GET("/redeem-balance-tiers", handlers.ListBalanceTiers)
 		}
 
@@ -55,6 +56,9 @@ func NewRouter(cfg *config.RuntimeConfig, service *app.Service) *gin.Engine {
 			admin.POST("/redeem-access-requests/:id/reject", handlers.RejectAccessRequest)
 			admin.GET("/redeem-codes", handlers.ListAllRedeemCodes)
 			admin.POST("/sync/redeem-codes", handlers.SyncRedeemCodes)
+			admin.GET("/redeem-tiers", handlers.ListRedeemTiers)
+			admin.PUT("/redeem-tiers", handlers.UpdateRedeemTiers)
+			admin.GET("/sub2api-subscription-groups", handlers.ListSubscriptionGroups)
 			admin.GET("/redeem-balance-tiers", handlers.ListBalanceTiers)
 			admin.PUT("/redeem-balance-tiers", handlers.UpdateBalanceTiers)
 		}

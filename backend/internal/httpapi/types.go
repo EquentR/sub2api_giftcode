@@ -64,6 +64,18 @@ type BalanceTierRequest struct {
 	SortOrder    int     `json:"sort_order"`
 }
 
+type RedeemTierRequest struct {
+	ID             int64   `json:"id"`
+	CodeType       string  `json:"code_type" binding:"required"`
+	Amount         float64 `json:"amount"`
+	PayAmountCny   float64 `json:"pay_amount_cny" binding:"required,gt=0"`
+	Label          string  `json:"label"`
+	Enabled        bool    `json:"enabled"`
+	SortOrder      int     `json:"sort_order"`
+	Sub2APIGroupID *int64  `json:"sub2api_group_id,omitempty"`
+	ValidityDays   int     `json:"validity_days"`
+}
+
 type LoginResponse struct {
 	User             any    `json:"user"`
 	IsAdmin          bool   `json:"is_admin"`
