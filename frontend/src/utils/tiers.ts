@@ -65,7 +65,10 @@ export function formatTierDisplay(tier?: TierLike | null) {
 
 export function formatLimitValue(value?: number | null) {
   if (value === undefined || value === null) {
-    return '不限'
+    return '-'
+  }
+  if (Number(value) === 0) {
+    return '无限制'
   }
   return `${Number(value).toFixed(0)} USD`
 }

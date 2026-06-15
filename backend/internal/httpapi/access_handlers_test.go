@@ -253,6 +253,54 @@ INSERT INTO redeem_access_requests (
 	require.Equal(t, "consumed", status)
 }
 
+func TestEmailApprovalLinkShowsSubscriptionDetails(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	store, err := db.Open("sqlite", ":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+	require.NoError(t, store.Migrate(context.Background()))
+
+	now := time.Now().UTC().Truncate(time.Second)
+	token := "approval-token-subscription"
+	_, err = store.DB.ExecContext(context.Background(), `
+INSERT INTO redeem_access_requests (
+  requestor_upstream_user_id, requestor_email, requestor_username, tier_id, code_type,
+  tier_label, amount, pay_amount_cny, sub2api_group_id, sub2api_group_name, sub2api_group_platform,
+  sub2api_daily_limit_usd, sub2api_weekly_limit_usd, sub2api_monthly_limit_usd, validity_days,
+  note, status, approval_token_hash, approval_token_expires_at, notification_status, notification_error,
+  created_at, updated_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+`, 1, "alice@example.com", "alice", 3, "subscription", "Claude 30 days", 0.0, 88.0, 2, "Claude monthly", "anthropic", 0.0, 50.0, 120.0, 30, "need sub", "pending", hashApprovalToken(token), now.Add(time.Hour).Format(time.RFC3339Nano), "sent", "", now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano))
+	require.NoError(t, err)
+
+	cfg := &config.RuntimeConfig{Config: config.Config{}}
+	cfg.App.FrontendURL = "https://front.example.com"
+	svc := app.New(cfg, store, nil, nil)
+	handlers := &Handlers{cfg: cfg, service: svc}
+	r := gin.New()
+	r.GET("/api/admin/redeem-access-requests/confirm", handlers.ShowAccessRequestConfirmation)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/redeem-access-requests/confirm?token="+token, nil)
+	recorder := httptest.NewRecorder()
+	r.ServeHTTP(recorder, req)
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	page := recorder.Body.String()
+	require.Contains(t, page, "订阅")
+	require.Contains(t, page, "Claude 30 days")
+	require.Contains(t, page, "Claude monthly")
+	require.Contains(t, page, "anthropic")
+	require.Contains(t, page, "30 天")
+	require.Contains(t, page, "日限")
+	require.Contains(t, page, "无限制")
+	require.Contains(t, page, "周限")
+	require.Contains(t, page, "50 USD")
+	require.Contains(t, page, "月限")
+	require.Contains(t, page, "120 USD")
+	require.Contains(t, page, "88")
+}
+
 func TestFrontendApprovalConfirmEndpointReturnsJSON(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

@@ -242,13 +242,27 @@ func approvalRequestDetailsHTML(req *models.AccessRequest) string {
 	if note == "" {
 		note = "-"
 	}
+	rows := []string{
+		approvalDetailRow("申请编号", fmt.Sprintf("#%d", req.ID)),
+		approvalDetailRow("申请人", fmt.Sprintf("%s (%s)", req.RequestorUsername, req.RequestorEmail)),
+		approvalDetailRow("兑换类型", approvalCodeTypeLabel(req.CodeType)),
+		approvalDetailRow("档位", approvalTierLabel(req)),
+	}
+	if strings.EqualFold(strings.TrimSpace(req.CodeType), "subscription") {
+		rows = append(rows,
+			approvalDetailRow("订阅分组", approvalGroupLabel(req)),
+			approvalDetailRow("生效天数", fmt.Sprintf("%d 天", req.ValidityDays)),
+			approvalDetailRow("订阅限额", approvalLimitSummary(req)),
+		)
+	} else {
+		rows = append(rows, approvalDetailRow("到账金额", fmt.Sprintf("%.0f 美元", req.Amount)))
+	}
+	rows = append(rows,
+		approvalDetailRow("实付金额", fmt.Sprintf("%.0f 人民币", req.PayAmountCny)),
+		approvalDetailRow("申请理由", note),
+	)
 	return "<table style=\"border-collapse:collapse;width:100%;margin-top:16px;\">" +
-		approvalDetailRow("申请编号", fmt.Sprintf("#%d", req.ID)) +
-		approvalDetailRow("申请人", fmt.Sprintf("%s (%s)", req.RequestorUsername, req.RequestorEmail)) +
-		approvalDetailRow("档位", fmt.Sprintf("#%d", req.TierID)) +
-		approvalDetailRow("到账金额", fmt.Sprintf("%.0f 美元", req.Amount)) +
-		approvalDetailRow("实付金额", fmt.Sprintf("%.0f 人民币", req.PayAmountCny)) +
-		approvalDetailRow("申请理由", note) +
+		strings.Join(rows, "") +
 		"</table>"
 }
 
@@ -257,6 +271,60 @@ func approvalDetailRow(label, value string) string {
 		"<th style=\"text-align:left;border:1px solid #e5e7eb;background:#f9fafb;padding:8px;width:140px;\">" + htmlEscape(label) + "</th>" +
 		"<td style=\"border:1px solid #e5e7eb;padding:8px;\">" + htmlEscape(value) + "</td>" +
 		"</tr>"
+}
+
+func approvalCodeTypeLabel(codeType string) string {
+	if strings.EqualFold(strings.TrimSpace(codeType), "subscription") {
+		return "订阅"
+	}
+	return "余额"
+}
+
+func approvalTierLabel(req *models.AccessRequest) string {
+	if req == nil {
+		return "-"
+	}
+	if label := strings.TrimSpace(req.TierLabel); label != "" {
+		return label
+	}
+	return fmt.Sprintf("#%d", req.TierID)
+}
+
+func approvalGroupLabel(req *models.AccessRequest) string {
+	if req == nil {
+		return "-"
+	}
+	name := strings.TrimSpace(req.Sub2APIGroupName)
+	if name == "" {
+		name = "-"
+	}
+	platform := strings.TrimSpace(req.Sub2APIGroupPlatform)
+	if platform == "" {
+		return name
+	}
+	return fmt.Sprintf("%s (%s)", name, platform)
+}
+
+func approvalLimitSummary(req *models.AccessRequest) string {
+	if req == nil {
+		return "-"
+	}
+	return fmt.Sprintf(
+		"日限 %s / 周限 %s / 月限 %s",
+		approvalLimitValue(req.Sub2APIDailyLimitUSD),
+		approvalLimitValue(req.Sub2APIWeeklyLimitUSD),
+		approvalLimitValue(req.Sub2APIMonthlyLimitUSD),
+	)
+}
+
+func approvalLimitValue(value *float64) string {
+	if value == nil {
+		return "-"
+	}
+	if *value == 0 {
+		return "无限制"
+	}
+	return fmt.Sprintf("%.0f USD", *value)
 }
 
 func htmlEscape(raw string) string {

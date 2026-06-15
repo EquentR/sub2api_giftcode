@@ -9,21 +9,9 @@
       <h1>{{ title }}</h1>
       <p>{{ detail }}</p>
       <div v-if="request" class="approval-detail">
-        <div>
-          <span>申请编号</span>
-          <strong>#{{ request.id }}</strong>
-        </div>
-        <div>
-          <span>申请人</span>
-          <strong>{{ request.requestor_username }}</strong>
-        </div>
-        <div>
-          <span>到账金额</span>
-          <strong>{{ Number(request.amount).toFixed(0) }} 美元</strong>
-        </div>
-        <div>
-          <span>实付金额</span>
-          <strong>{{ Number(request.pay_amount_cny).toFixed(0) }} 人民币</strong>
+        <div v-for="row in detailRows" :key="row.label">
+          <span>{{ row.label }}</span>
+          <strong>{{ row.value }}</strong>
         </div>
       </div>
       <div class="approval-actions">
@@ -47,6 +35,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { CircleCheck, CircleClose, Loading } from '@element-plus/icons-vue'
 import { confirmAccessRequest, previewAccessRequest } from '@/api/access'
 import type { AccessRequest } from '@/api/types'
+import { approvalRequestDetailRows } from '@/utils/approval-details'
 
 type ConfirmState = 'loading' | 'preview' | 'success' | 'error'
 
@@ -57,6 +46,7 @@ const request = ref<AccessRequest | null>(null)
 const errorMessage = ref('')
 const token = ref('')
 const confirming = ref(false)
+const detailRows = computed(() => request.value ? approvalRequestDetailRows(request.value) : [])
 
 const title = computed(() => {
   if (state.value === 'success') return '审批已完成'
@@ -68,7 +58,7 @@ const title = computed(() => {
 const detail = computed(() => {
   if (state.value === 'success') return '兑换码已经下发，用户可以回到应用查看并复制。'
   if (state.value === 'error') return errorMessage.value || '链接可能已过期或已经处理，请返回应用查看最新状态。'
-  if (state.value === 'preview') return '请核对申请人、金额和备注。点击确认后会立即审批并下发兑换码。'
+  if (state.value === 'preview') return '请核对申请人、档位和订阅信息。点击确认后会立即审批并下发兑换码。'
   return '请稍等，系统正在读取这条审批链接。'
 })
 
