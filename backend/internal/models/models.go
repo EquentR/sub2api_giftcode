@@ -98,6 +98,7 @@ type RedeemTier struct {
 	CodeType               string    `json:"code_type"`
 	Amount                 float64   `json:"amount"`
 	PayAmountCny           float64   `json:"pay_amount_cny"`
+	OriginalPayAmountCny   *float64  `json:"original_pay_amount_cny,omitempty"`
 	Label                  string    `json:"label"`
 	Enabled                bool      `json:"enabled"`
 	SortOrder              int       `json:"sort_order"`
@@ -115,14 +116,15 @@ type RedeemTier struct {
 }
 
 type BalanceTier struct {
-	ID           int64     `json:"id"`
-	Amount       float64   `json:"amount"`
-	PayAmountCny float64   `json:"pay_amount_cny"`
-	Label        string    `json:"label"`
-	Enabled      bool      `json:"enabled"`
-	SortOrder    int       `json:"sort_order"`
-	CreatedAt    time.Time `json:"created_at"`
-	UpdatedAt    time.Time `json:"updated_at"`
+	ID                   int64     `json:"id"`
+	Amount               float64   `json:"amount"`
+	PayAmountCny         float64   `json:"pay_amount_cny"`
+	OriginalPayAmountCny *float64  `json:"original_pay_amount_cny,omitempty"`
+	Label                string    `json:"label"`
+	Enabled              bool      `json:"enabled"`
+	SortOrder            int       `json:"sort_order"`
+	CreatedAt            time.Time `json:"created_at"`
+	UpdatedAt            time.Time `json:"updated_at"`
 }
 
 type SyncState struct {

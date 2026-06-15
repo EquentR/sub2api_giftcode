@@ -174,15 +174,16 @@ func (h *Handlers) UpdateRedeemTiers(c *gin.Context) {
 	tiers := make([]models.RedeemTier, 0, len(req))
 	for _, tier := range req {
 		tiers = append(tiers, models.RedeemTier{
-			ID:             tier.ID,
-			CodeType:       tier.CodeType,
-			Amount:         tier.Amount,
-			PayAmountCny:   tier.PayAmountCny,
-			Label:          tier.Label,
-			Enabled:        tier.Enabled,
-			SortOrder:      tier.SortOrder,
-			Sub2APIGroupID: tier.Sub2APIGroupID,
-			ValidityDays:   tier.ValidityDays,
+			ID:                   tier.ID,
+			CodeType:             tier.CodeType,
+			Amount:               tier.Amount,
+			PayAmountCny:         tier.PayAmountCny,
+			OriginalPayAmountCny: tier.OriginalPayAmountCny,
+			Label:                tier.Label,
+			Enabled:              tier.Enabled,
+			SortOrder:            tier.SortOrder,
+			Sub2APIGroupID:       tier.Sub2APIGroupID,
+			ValidityDays:         tier.ValidityDays,
 		})
 	}
 	items, err := h.service.ReplaceRedeemTiers(c.Request.Context(), tiers)
@@ -221,12 +222,13 @@ func (h *Handlers) UpdateBalanceTiers(c *gin.Context) {
 	tiers := make([]models.BalanceTier, 0, len(req))
 	for _, tier := range req {
 		tiers = append(tiers, models.BalanceTier{
-			ID:           tier.ID,
-			Amount:       tier.Amount,
-			PayAmountCny: tier.PayAmountCny,
-			Label:        tier.Label,
-			Enabled:      tier.Enabled,
-			SortOrder:    tier.SortOrder,
+			ID:                   tier.ID,
+			Amount:               tier.Amount,
+			PayAmountCny:         tier.PayAmountCny,
+			OriginalPayAmountCny: tier.OriginalPayAmountCny,
+			Label:                tier.Label,
+			Enabled:              tier.Enabled,
+			SortOrder:            tier.SortOrder,
 		})
 	}
 	items, err := h.service.ReplaceBalanceTiers(c.Request.Context(), tiers)

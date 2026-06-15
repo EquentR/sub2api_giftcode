@@ -191,6 +191,14 @@ func parseNullableInt64(raw sql.NullInt64) *int64 {
 	return &v
 }
 
+func parseNullableFloat64(raw sql.NullFloat64) *float64 {
+	if !raw.Valid {
+		return nil
+	}
+	v := raw.Float64
+	return &v
+}
+
 func (s *Service) requireUpstreamClient() error {
 	if s == nil || s.upstream == nil {
 		return errors.New("sub2api client not configured")

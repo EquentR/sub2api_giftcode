@@ -57,6 +57,44 @@ func TestReplaceBalanceTiersPersistsPaidAmount(t *testing.T) {
 	require.InDelta(t, 95.25, reloaded[0].PayAmountCny, 0.0001)
 }
 
+func TestReplaceRedeemTiersPersistsOptionalOriginalPaidAmount(t *testing.T) {
+	store, err := db.Open("sqlite", ":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+
+	require.NoError(t, store.Migrate(context.Background()))
+
+	svc := New(&config.RuntimeConfig{}, store, nil, nil)
+	updated, err := svc.ReplaceRedeemTiers(context.Background(), []models.RedeemTier{{
+		CodeType:             "balance",
+		Amount:               120,
+		PayAmountCny:         95,
+		OriginalPayAmountCny: float64Ptr(120),
+		Label:                "Promo balance",
+		Enabled:              true,
+		SortOrder:            10,
+	}})
+	require.NoError(t, err)
+	require.Len(t, updated, 1)
+	require.NotNil(t, updated[0].OriginalPayAmountCny)
+	require.InDelta(t, 120, *updated[0].OriginalPayAmountCny, 0.0001)
+
+	reloaded, err := svc.ListRedeemTiers(context.Background(), true)
+	require.NoError(t, err)
+	require.Len(t, reloaded, 1)
+	require.NotNil(t, reloaded[0].OriginalPayAmountCny)
+	require.InDelta(t, 120, *reloaded[0].OriginalPayAmountCny, 0.0001)
+
+	reloaded[0].OriginalPayAmountCny = nil
+	updated, err = svc.ReplaceRedeemTiers(context.Background(), reloaded)
+	require.NoError(t, err)
+	require.Nil(t, updated[0].OriginalPayAmountCny)
+
+	reloaded, err = svc.ListRedeemTiers(context.Background(), true)
+	require.NoError(t, err)
+	require.Nil(t, reloaded[0].OriginalPayAmountCny)
+}
+
 func TestReplaceRedeemTiersPersistsSubscriptionTier(t *testing.T) {
 	store, err := db.Open("sqlite", ":memory:")
 	require.NoError(t, err)
@@ -150,5 +188,9 @@ func TestReplaceRedeemTiersDisablesBalanceMirrorWhenTypeChanges(t *testing.T) {
 }
 
 func int64Ptr(v int64) *int64 {
+	return &v
+}
+
+func float64Ptr(v float64) *float64 {
 	return &v
 }

@@ -147,3 +147,37 @@ func TestOpenAndMigrateAddsRedeemTierSubscriptionColumns(t *testing.T) {
 	require.True(t, foundGroupID, "expected redeem_tiers to include sub2api_group_id")
 	require.True(t, foundValidityDays, "expected redeem_tiers to include validity_days")
 }
+
+func TestOpenAndMigrateAddsOptionalOriginalPaidAmountColumns(t *testing.T) {
+	store, err := Open("sqlite", ":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+
+	require.NoError(t, store.Migrate(context.Background()))
+
+	for _, table := range []string{"redeem_tiers", "redeem_balance_tiers"} {
+		rows, err := store.DB.QueryContext(context.Background(), `PRAGMA table_info(`+table+`)`)
+		require.NoError(t, err)
+
+		found := false
+		for rows.Next() {
+			var (
+				cid          int
+				name         string
+				typeName     string
+				notNull      int
+				defaultValue any
+				pk           int
+			)
+			require.NoError(t, rows.Scan(&cid, &name, &typeName, &notNull, &defaultValue, &pk))
+			if name == "original_pay_amount_cny" {
+				found = true
+				require.Equal(t, "REAL", typeName)
+				require.Zero(t, notNull)
+			}
+		}
+		require.NoError(t, rows.Err())
+		require.NoError(t, rows.Close())
+		require.True(t, found, "expected %s to include original_pay_amount_cny", table)
+	}
+}

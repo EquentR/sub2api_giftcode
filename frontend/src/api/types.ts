@@ -91,6 +91,7 @@ export interface RedeemTier {
   code_type?: string
   amount: number
   pay_amount_cny: number
+  original_pay_amount_cny?: number | null
   label: string
   enabled: boolean
   sort_order: number

@@ -19,7 +19,7 @@
           <div class="section-heading">
             <div>
               <h2>选择兑换档位</h2>
-              <p>订阅档位的分组和限额来自 sub2api 实时数据。</p>
+              <p>订阅档位的分组和限额来自 {{ branding.title }} 实时数据。</p>
             </div>
             <el-button :icon="Refresh" :loading="loadingData" @click="() => loadAll()">刷新</el-button>
           </div>
@@ -40,7 +40,10 @@
             >
               <span class="tier-kind">{{ formatCodeTypeLabel(tier.code_type) }}</span>
               <span class="tier-name">{{ tierDisplayName(tier) }}</span>
-              <strong>{{ formatCny(tier.pay_amount_cny) }}</strong>
+              <div class="tier-price">
+                <strong>{{ formatCny(tier.pay_amount_cny) }}</strong>
+                <span v-if="hasOriginalPrice(tier)" class="original-price">{{ formatCny(tier.original_pay_amount_cny) }}</span>
+              </div>
               <span v-if="tierCodeType(tier) === 'balance'">到账 {{ formatMoney(tier.amount) }} 美元</span>
               <template v-else>
                 <span>{{ tierGroupLabel(tier) }} · {{ validityDaysText(tier) }}</span>
@@ -142,7 +145,12 @@
             </div>
             <div class="summary-line">
               <span>实付金额</span>
-              <strong>{{ selectedTier ? formatCny(selectedTier.pay_amount_cny) : '-' }}</strong>
+              <strong class="summary-price">
+                {{ selectedTier ? formatCny(selectedTier.pay_amount_cny) : '-' }}
+                <small v-if="selectedTier && hasOriginalPrice(selectedTier)" class="original-price">
+                  {{ formatCny(selectedTier.original_pay_amount_cny) }}
+                </small>
+              </strong>
             </div>
             <div v-if="selectedTier && tierCodeType(selectedTier) === 'subscription'" class="summary-detail">
               <span>{{ tierGroupLabel(selectedTier) }}</span>
@@ -187,6 +195,7 @@ import StatusTag from '@/components/StatusTag.vue'
 import { createAccessRequest, listAccessRequests } from '@/api/access'
 import { listRedeemCodes, listRedeemRequests, listRedeemTiers } from '@/api/redeem'
 import type { AccessRequest, RedeemCode, RedeemRequest, RedeemTier } from '@/api/types'
+import { useBrandingStore } from '@/stores/branding'
 import {
   formatCodeTypeLabel,
   formatCodeValue,
@@ -207,6 +216,7 @@ const codes = ref<RedeemCode[]>([])
 let refreshTimer: number | undefined
 
 const route = useRoute()
+const branding = useBrandingStore()
 const form = reactive({
   tierId: 0,
   note: '',
@@ -372,6 +382,10 @@ function tierSelectable(tier: RedeemTier) {
   return tier.enabled && isSubscriptionTierAvailable(tier)
 }
 
+function hasOriginalPrice(tier?: Pick<RedeemTier, 'original_pay_amount_cny'> | null) {
+  return Number(tier?.original_pay_amount_cny ?? 0) > 0
+}
+
 function validityDaysText(tier: Pick<RedeemTier, 'validity_days'>) {
   const days = Number(tier.validity_days ?? 0)
   return days > 0 ? `${days} 天订阅` : '订阅'
@@ -412,7 +426,7 @@ function formatMoney(value: number) {
   return Number(value).toFixed(0)
 }
 
-function formatCny(value: number) {
+function formatCny(value?: number | null) {
   return `¥${Number(value).toFixed(0)}`
 }
 
@@ -608,6 +622,20 @@ p {
   line-height: 1.1;
 }
 
+.tier-price {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.original-price {
+  color: #94a3b8;
+  font-size: 13px;
+  font-weight: 600;
+  text-decoration: line-through;
+}
+
 .tier-card span:last-child {
   color: #64748b;
 }
@@ -639,6 +667,14 @@ p {
 
 .summary-line span {
   color: #64748b;
+}
+
+.summary-price {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
 }
 
 .summary-detail {

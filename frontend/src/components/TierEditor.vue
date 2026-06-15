@@ -53,6 +53,19 @@
         </template>
       </el-table-column>
 
+      <el-table-column prop="original_pay_amount_cny" label="原价" width="150">
+        <template #default="{ row }">
+          <el-input-number
+            v-model="row.original_pay_amount_cny"
+            :min="0"
+            :step="1"
+            placeholder="不显示"
+            style="width: 100%"
+            @change="emitUpdate"
+          />
+        </template>
+      </el-table-column>
+
       <el-table-column prop="label" label="标签" min-width="190">
         <template #default="{ row }">
           <el-input v-model="row.label" placeholder="例如 120 美元 / 30 天订阅" @input="emitUpdate" />
@@ -182,6 +195,7 @@ function sanitizedRows() {
       return {
         ...tier,
         amount: 0,
+        original_pay_amount_cny: normalizeOriginalPayAmount(tier.original_pay_amount_cny),
         sub2api_group_id: tier.sub2api_group_id ?? null,
         validity_days: Number(tier.validity_days ?? 30),
       }
@@ -189,6 +203,7 @@ function sanitizedRows() {
     return {
       ...tier,
       amount: Number(tier.amount || 0),
+      original_pay_amount_cny: normalizeOriginalPayAmount(tier.original_pay_amount_cny),
       sub2api_group_id: null,
       sub2api_group_name: '',
       sub2api_group_platform: '',
@@ -212,6 +227,7 @@ function addRow(codeType: 'balance' | 'subscription') {
     code_type: codeType,
     amount: baseAmount,
     pay_amount_cny: 120,
+    original_pay_amount_cny: null,
     label: formatTierDisplay({
       code_type: codeType,
       amount: baseAmount,
@@ -239,6 +255,11 @@ function addRow(codeType: 'balance' | 'subscription') {
 function removeRow(index: number) {
   rows.value.splice(index, 1)
   emitUpdate()
+}
+
+function normalizeOriginalPayAmount(value?: number | null) {
+  const amount = Number(value ?? 0)
+  return amount > 0 ? amount : null
 }
 
 function onTypeChange(row: RedeemTier) {

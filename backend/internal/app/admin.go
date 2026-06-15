@@ -19,14 +19,15 @@ func (s *Service) ListBalanceTiers(ctx context.Context) ([]models.BalanceTier, e
 	out := make([]models.BalanceTier, 0, len(tiers))
 	for _, tier := range tiers {
 		out = append(out, models.BalanceTier{
-			ID:           tier.ID,
-			Amount:       tier.Amount,
-			PayAmountCny: tier.PayAmountCny,
-			Label:        tier.Label,
-			Enabled:      tier.Enabled,
-			SortOrder:    tier.SortOrder,
-			CreatedAt:    tier.CreatedAt,
-			UpdatedAt:    tier.UpdatedAt,
+			ID:                   tier.ID,
+			Amount:               tier.Amount,
+			PayAmountCny:         tier.PayAmountCny,
+			OriginalPayAmountCny: tier.OriginalPayAmountCny,
+			Label:                tier.Label,
+			Enabled:              tier.Enabled,
+			SortOrder:            tier.SortOrder,
+			CreatedAt:            tier.CreatedAt,
+			UpdatedAt:            tier.UpdatedAt,
 		})
 	}
 	return out, nil
@@ -36,13 +37,14 @@ func (s *Service) ReplaceBalanceTiers(ctx context.Context, tiers []models.Balanc
 	redeemTiers := make([]models.RedeemTier, 0, len(tiers))
 	for _, tier := range tiers {
 		redeemTiers = append(redeemTiers, models.RedeemTier{
-			ID:           tier.ID,
-			CodeType:     "balance",
-			Amount:       tier.Amount,
-			PayAmountCny: tier.PayAmountCny,
-			Label:        tier.Label,
-			Enabled:      tier.Enabled,
-			SortOrder:    tier.SortOrder,
+			ID:                   tier.ID,
+			CodeType:             "balance",
+			Amount:               tier.Amount,
+			PayAmountCny:         tier.PayAmountCny,
+			OriginalPayAmountCny: tier.OriginalPayAmountCny,
+			Label:                tier.Label,
+			Enabled:              tier.Enabled,
+			SortOrder:            tier.SortOrder,
 		})
 	}
 	updated, err := s.replaceRedeemTiers(ctx, redeemTiers, "balance")
@@ -52,14 +54,15 @@ func (s *Service) ReplaceBalanceTiers(ctx context.Context, tiers []models.Balanc
 	out := make([]models.BalanceTier, 0, len(updated))
 	for _, tier := range updated {
 		out = append(out, models.BalanceTier{
-			ID:           tier.ID,
-			Amount:       tier.Amount,
-			PayAmountCny: tier.PayAmountCny,
-			Label:        tier.Label,
-			Enabled:      tier.Enabled,
-			SortOrder:    tier.SortOrder,
-			CreatedAt:    tier.CreatedAt,
-			UpdatedAt:    tier.UpdatedAt,
+			ID:                   tier.ID,
+			Amount:               tier.Amount,
+			PayAmountCny:         tier.PayAmountCny,
+			OriginalPayAmountCny: tier.OriginalPayAmountCny,
+			Label:                tier.Label,
+			Enabled:              tier.Enabled,
+			SortOrder:            tier.SortOrder,
+			CreatedAt:            tier.CreatedAt,
+			UpdatedAt:            tier.UpdatedAt,
 		})
 	}
 	return out, nil
@@ -104,21 +107,22 @@ func (s *Service) replaceRedeemTiers(ctx context.Context, tiers []models.RedeemT
 			tier.CreatedAt = now
 			if _, err := tx.ExecContext(ctx, `
 INSERT INTO redeem_tiers (
-  id, code_type, amount, pay_amount_cny, label, enabled, sort_order,
+  id, code_type, amount, pay_amount_cny, original_pay_amount_cny, label, enabled, sort_order,
   sub2api_group_id, validity_days, created_at, updated_at
 )
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(id) DO UPDATE SET
   code_type = excluded.code_type,
   amount = excluded.amount,
   pay_amount_cny = excluded.pay_amount_cny,
+  original_pay_amount_cny = excluded.original_pay_amount_cny,
   label = excluded.label,
   enabled = excluded.enabled,
   sort_order = excluded.sort_order,
   sub2api_group_id = excluded.sub2api_group_id,
   validity_days = excluded.validity_days,
   updated_at = excluded.updated_at
-`, tier.ID, tier.CodeType, tier.Amount, tier.PayAmountCny, tier.Label, boolToInt(tier.Enabled), tier.SortOrder, tier.Sub2APIGroupID, tier.ValidityDays, formatTime(tier.CreatedAt), formatTime(tier.UpdatedAt)); err != nil {
+`, tier.ID, tier.CodeType, tier.Amount, tier.PayAmountCny, tier.OriginalPayAmountCny, tier.Label, boolToInt(tier.Enabled), tier.SortOrder, tier.Sub2APIGroupID, tier.ValidityDays, formatTime(tier.CreatedAt), formatTime(tier.UpdatedAt)); err != nil {
 				return nil, rollback(err)
 			}
 			if err := upsertBalanceTierMirror(ctx, tx, tier); err != nil {
@@ -131,11 +135,11 @@ ON CONFLICT(id) DO UPDATE SET
 		tier.CreatedAt = now
 		res, err := tx.ExecContext(ctx, `
 INSERT INTO redeem_tiers (
-  code_type, amount, pay_amount_cny, label, enabled, sort_order,
+  code_type, amount, pay_amount_cny, original_pay_amount_cny, label, enabled, sort_order,
   sub2api_group_id, validity_days, created_at, updated_at
 )
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-`, tier.CodeType, tier.Amount, tier.PayAmountCny, tier.Label, boolToInt(tier.Enabled), tier.SortOrder, tier.Sub2APIGroupID, tier.ValidityDays, formatTime(tier.CreatedAt), formatTime(tier.UpdatedAt))
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+`, tier.CodeType, tier.Amount, tier.PayAmountCny, tier.OriginalPayAmountCny, tier.Label, boolToInt(tier.Enabled), tier.SortOrder, tier.Sub2APIGroupID, tier.ValidityDays, formatTime(tier.CreatedAt), formatTime(tier.UpdatedAt))
 		if err != nil {
 			return nil, rollback(err)
 		}
@@ -198,22 +202,23 @@ func upsertBalanceTierMirror(ctx context.Context, tx *sql.Tx, tier models.Redeem
 		return err
 	}
 	_, err := tx.ExecContext(ctx, `
-INSERT INTO redeem_balance_tiers (id, amount, pay_amount_cny, label, enabled, sort_order, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+INSERT INTO redeem_balance_tiers (id, amount, pay_amount_cny, original_pay_amount_cny, label, enabled, sort_order, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(id) DO UPDATE SET
   amount = excluded.amount,
   pay_amount_cny = excluded.pay_amount_cny,
+  original_pay_amount_cny = excluded.original_pay_amount_cny,
   label = excluded.label,
   enabled = excluded.enabled,
   sort_order = excluded.sort_order,
   updated_at = excluded.updated_at
-`, tier.ID, tier.Amount, tier.PayAmountCny, tier.Label, boolToInt(tier.Enabled), tier.SortOrder, formatTime(tier.CreatedAt), formatTime(tier.UpdatedAt))
+`, tier.ID, tier.Amount, tier.PayAmountCny, tier.OriginalPayAmountCny, tier.Label, boolToInt(tier.Enabled), tier.SortOrder, formatTime(tier.CreatedAt), formatTime(tier.UpdatedAt))
 	return err
 }
 
 func (s *Service) getRedeemTierByID(ctx context.Context, id int64) (*models.RedeemTier, error) {
 	row := s.db().QueryRowContext(ctx, `
-SELECT id, code_type, amount, pay_amount_cny, label, enabled, sort_order,
+SELECT id, code_type, amount, pay_amount_cny, original_pay_amount_cny, label, enabled, sort_order,
        sub2api_group_id, validity_days, created_at, updated_at
 FROM redeem_tiers
 WHERE id = ?
@@ -230,20 +235,21 @@ func (s *Service) getBalanceTierByID(ctx context.Context, id int64) (*models.Bal
 		return nil, sql.ErrNoRows
 	}
 	return &models.BalanceTier{
-		ID:           tier.ID,
-		Amount:       tier.Amount,
-		PayAmountCny: tier.PayAmountCny,
-		Label:        tier.Label,
-		Enabled:      tier.Enabled,
-		SortOrder:    tier.SortOrder,
-		CreatedAt:    tier.CreatedAt,
-		UpdatedAt:    tier.UpdatedAt,
+		ID:                   tier.ID,
+		Amount:               tier.Amount,
+		PayAmountCny:         tier.PayAmountCny,
+		OriginalPayAmountCny: tier.OriginalPayAmountCny,
+		Label:                tier.Label,
+		Enabled:              tier.Enabled,
+		SortOrder:            tier.SortOrder,
+		CreatedAt:            tier.CreatedAt,
+		UpdatedAt:            tier.UpdatedAt,
 	}, nil
 }
 
 func (s *Service) listRedeemTiersRaw(ctx context.Context, codeType string, enabledOnly bool) ([]models.RedeemTier, error) {
 	query := `
-SELECT id, code_type, amount, pay_amount_cny, label, enabled, sort_order,
+SELECT id, code_type, amount, pay_amount_cny, original_pay_amount_cny, label, enabled, sort_order,
        sub2api_group_id, validity_days, created_at, updated_at
 FROM redeem_tiers
 `
@@ -319,6 +325,9 @@ func (s *Service) validateRedeemTiers(ctx context.Context, tiers []models.Redeem
 
 func normalizeRedeemTier(tier models.RedeemTier) models.RedeemTier {
 	tier.CodeType = normalizeCodeType(tier.CodeType)
+	if tier.OriginalPayAmountCny != nil && *tier.OriginalPayAmountCny <= 0 {
+		tier.OriginalPayAmountCny = nil
+	}
 	if tier.CodeType == "balance" {
 		tier.Sub2APIGroupID = nil
 		tier.ValidityDays = 0
@@ -535,12 +544,14 @@ func scanBalanceTierRow(scanner interface {
 }) (*models.BalanceTier, error) {
 	var out models.BalanceTier
 	var enabled int
+	var originalPayAmount sql.NullFloat64
 	var createdAt string
 	var updatedAt string
-	if err := scanner.Scan(&out.ID, &out.Amount, &out.PayAmountCny, &out.Label, &enabled, &out.SortOrder, &createdAt, &updatedAt); err != nil {
+	if err := scanner.Scan(&out.ID, &out.Amount, &out.PayAmountCny, &originalPayAmount, &out.Label, &enabled, &out.SortOrder, &createdAt, &updatedAt); err != nil {
 		return nil, err
 	}
 	out.Enabled = enabled != 0
+	out.OriginalPayAmountCny = parseNullableFloat64(originalPayAmount)
 	var err error
 	if out.CreatedAt, err = parseNonNullTime(createdAt); err != nil {
 		return nil, err
@@ -557,6 +568,7 @@ func scanRedeemTierRow(scanner interface {
 	var out models.RedeemTier
 	var enabled int
 	var groupID sql.NullInt64
+	var originalPayAmount sql.NullFloat64
 	var createdAt string
 	var updatedAt string
 	if err := scanner.Scan(
@@ -564,6 +576,7 @@ func scanRedeemTierRow(scanner interface {
 		&out.CodeType,
 		&out.Amount,
 		&out.PayAmountCny,
+		&originalPayAmount,
 		&out.Label,
 		&enabled,
 		&out.SortOrder,
@@ -577,6 +590,7 @@ func scanRedeemTierRow(scanner interface {
 	out.CodeType = normalizeCodeType(out.CodeType)
 	out.Enabled = enabled != 0
 	out.Sub2APIGroupID = parseNullableInt64(groupID)
+	out.OriginalPayAmountCny = parseNullableFloat64(originalPayAmount)
 	var err error
 	if out.CreatedAt, err = parseNonNullTime(createdAt); err != nil {
 		return nil, err

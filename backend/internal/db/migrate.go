@@ -110,6 +110,7 @@ CREATE TABLE IF NOT EXISTS redeem_balance_tiers (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   amount REAL NOT NULL,
   pay_amount_cny REAL NOT NULL DEFAULT 0,
+  original_pay_amount_cny REAL NULL,
   label TEXT NOT NULL,
   enabled INTEGER NOT NULL DEFAULT 1,
   sort_order INTEGER NOT NULL DEFAULT 0,
@@ -122,6 +123,7 @@ CREATE TABLE IF NOT EXISTS redeem_tiers (
   code_type TEXT NOT NULL DEFAULT 'balance',
   amount REAL NOT NULL DEFAULT 0,
   pay_amount_cny REAL NOT NULL DEFAULT 0,
+  original_pay_amount_cny REAL NULL,
   label TEXT NOT NULL,
   enabled INTEGER NOT NULL DEFAULT 1,
   sort_order INTEGER NOT NULL DEFAULT 0,
@@ -152,6 +154,9 @@ func (s *Store) Migrate(ctx context.Context) error {
 		return err
 	}
 	if err := s.ensureBalanceTierPayAmountColumn(ctx); err != nil {
+		return err
+	}
+	if err := s.ensureTierOriginalPayAmountColumns(ctx); err != nil {
 		return err
 	}
 	if err := s.ensureAccessRequestSnapshotColumns(ctx); err != nil {
@@ -194,6 +199,17 @@ func (s *Store) ensureRedeemCodeSubscriptionColumns(ctx context.Context) error {
 	return s.ensureColumns(ctx, "redeem_codes", map[string]string{
 		"sub2api_group_id": "INTEGER NULL",
 		"validity_days":    "INTEGER NOT NULL DEFAULT 0",
+	})
+}
+
+func (s *Store) ensureTierOriginalPayAmountColumns(ctx context.Context) error {
+	if err := s.ensureColumns(ctx, "redeem_tiers", map[string]string{
+		"original_pay_amount_cny": "REAL NULL",
+	}); err != nil {
+		return err
+	}
+	return s.ensureColumns(ctx, "redeem_balance_tiers", map[string]string{
+		"original_pay_amount_cny": "REAL NULL",
 	})
 }
 
@@ -388,10 +404,10 @@ VALUES
 func (s *Store) migrateBalanceTiersToRedeemTiers(ctx context.Context) error {
 	_, err := s.DB.ExecContext(ctx, `
 INSERT INTO redeem_tiers (
-  id, code_type, amount, pay_amount_cny, label, enabled, sort_order,
+  id, code_type, amount, pay_amount_cny, original_pay_amount_cny, label, enabled, sort_order,
   sub2api_group_id, validity_days, created_at, updated_at
 )
-SELECT id, 'balance', amount, pay_amount_cny, label, enabled, sort_order,
+SELECT id, 'balance', amount, pay_amount_cny, original_pay_amount_cny, label, enabled, sort_order,
        NULL, 0, created_at, updated_at
 FROM redeem_balance_tiers bt
 WHERE NOT EXISTS (SELECT 1 FROM redeem_tiers rt WHERE rt.id = bt.id)
