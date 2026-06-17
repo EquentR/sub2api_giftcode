@@ -1,11 +1,11 @@
 <template>
-  <AppLayout title="兑换申请" subtitle="选择余额或订阅档位，审批通过后自动下发兑换码">
+  <AppLayout title="兑换申请" subtitle="选择余额或订阅档位，并选择直充或发码方式">
     <div class="recharge-page">
       <section class="recharge-hero">
         <div>
           <div class="eyebrow">Recharge</div>
           <h1>兑换申请</h1>
-          <p>选择合适的兑换档位，提交后由管理员审批并发放兑换码。提交审批后请主动联系管理员付款！</p>
+          <p>选择合适的兑换档位，提交后由管理员按你选择的方式处理。默认直充到账，也可下发兑换码。提交审批后请主动联系管理员付款！</p>
         </div>
         <div class="wallet-card">
           <span>本次预计获得</span>
@@ -58,7 +58,7 @@
             <div class="section-heading compact">
               <div>
                 <h2>申请状态</h2>
-                <p>最近的申请和发码结果会显示在这里。</p>
+                <p>最近的申请和交付结果会显示在这里。</p>
               </div>
             </div>
             <div v-if="accessRequestRows.length" class="request-list">
@@ -67,6 +67,7 @@
                   <div>
                     <strong>{{ requestTierName(row.request) }}</strong>
                     <span>{{ requestSummary(row.request) }}</span>
+                    <small>{{ requestDeliverySummary(row.request) }}</small>
                     <small v-if="row.request.code_type === 'subscription'">
                       {{ requestLimitSummary(row.request) }}
                     </small>
@@ -92,7 +93,7 @@
                     </div>
                   </div>
                 </div>
-                <div v-else class="request-code-empty">{{ codeEmptyText(row.request.status) }}</div>
+                <div v-else class="request-code-empty">{{ codeEmptyText(row.request) }}</div>
               </div>
             </div>
             <div v-else class="empty-state small">还没有提交过充值申请</div>
@@ -142,6 +143,19 @@
             <div class="summary-line">
               <span>{{ selectedTier && tierCodeType(selectedTier) === 'subscription' ? '订阅内容' : '到账金额' }}</span>
               <strong>{{ selectedTier ? selectedTierHeadline : '-' }}</strong>
+            </div>
+            <div class="summary-line">
+              <span>处理方式</span>
+              <strong>
+                <el-radio-group v-model="form.fulfillmentMode">
+                  <el-radio-button label="direct_charge">直充</el-radio-button>
+                  <el-radio-button label="redeem_code">兑换码</el-radio-button>
+                </el-radio-group>
+              </strong>
+            </div>
+            <div class="summary-hint">
+              <span v-if="form.fulfillmentMode === 'direct_charge'">审批通过后优先直接充入账户，失败自动改为发码</span>
+              <span v-else>审批通过后直接下发兑换码</span>
             </div>
             <div class="summary-line">
               <span>实付金额</span>
@@ -220,13 +234,14 @@ const branding = useBrandingStore()
 const form = reactive({
   tierId: 0,
   note: '',
+  fulfillmentMode: 'direct_charge' as 'direct_charge' | 'redeem_code',
 })
 
 const enabledTiers = computed(() => tiers.value.filter((tier) => tier.enabled))
 const submittableTiers = computed(() => enabledTiers.value.filter((tier) => tierSelectable(tier)))
 const tierMap = computed(() => new Map(tiers.value.map((tier) => [tier.id, tier])))
 const selectedTier = computed(() => tierMap.value.get(form.tierId) ?? null)
-const selectedTierName = computed(() => selectedTier.value ? tierDisplayName(selectedTier.value) : '-')
+const selectedTierName = computed(() => (selectedTier.value ? tierDisplayName(selectedTier.value) : '-'))
 const selectedTierHeadline = computed(() => {
   if (!selectedTier.value) return '-'
   if (tierCodeType(selectedTier.value) === 'subscription') {
@@ -234,7 +249,7 @@ const selectedTierHeadline = computed(() => {
   }
   return `${formatMoney(selectedTier.value.amount)} USD`
 })
-const selectedTierSubmittable = computed(() => selectedTier.value ? tierSelectable(selectedTier.value) : false)
+const selectedTierSubmittable = computed(() => (selectedTier.value ? tierSelectable(selectedTier.value) : false))
 const redeemRequestMap = computed(() => new Map(redeemRequests.value.map((request) => [request.id, request])))
 const codesByAccessRequestId = computed(() => {
   const groups = new Map<number, RedeemCode[]>()
@@ -247,11 +262,15 @@ const codesByAccessRequestId = computed(() => {
   }
   return groups
 })
-const accessRequestRows = computed(() => items.value.slice(0, 5).map((request) => ({
-  request,
-  codes: codesByAccessRequestId.value.get(request.id) ?? [],
-})))
-const unlinkedCodes = computed(() => codes.value.filter((code) => !redeemRequestMap.value.get(code.request_id)?.access_request_id))
+const accessRequestRows = computed(() =>
+  items.value.slice(0, 5).map((request) => ({
+    request,
+    codes: codesByAccessRequestId.value.get(request.id) ?? [],
+  })),
+)
+const unlinkedCodes = computed(() =>
+  codes.value.filter((code) => !redeemRequestMap.value.get(code.request_id)?.access_request_id),
+)
 const loadingData = computed(() => loadingCore.value || loadingCodes.value)
 
 type LoadAllOptions = {
@@ -267,16 +286,13 @@ async function loadCoreData(options: LoadAllOptions = {}) {
     loadingCore.value = true
   }
   try {
-    const [tierData, requestData] = await Promise.all([
-      listRedeemTiers(),
-      listAccessRequests(),
-    ])
+    const [tierData, requestData] = await Promise.all([listRedeemTiers(), listAccessRequests()])
     tiers.value = tierData
     items.value = requestData
     syncDefaultTier()
   } catch (error: any) {
     if (!options.silent) {
-      ElMessage.error(error?.message ?? '加载充值申请失败')
+      ElMessage.error(error?.message ?? '加载兑换申请失败')
     }
   } finally {
     if (!options.silent) {
@@ -290,10 +306,7 @@ async function loadCodes(options: LoadAllOptions = {}) {
     loadingCodes.value = true
   }
   try {
-    const [requestData, codeData] = await Promise.all([
-      listRedeemRequests(),
-      listRedeemCodes(),
-    ])
+    const [requestData, codeData] = await Promise.all([listRedeemRequests(), listRedeemCodes()])
     redeemRequests.value = requestData
     codes.value = codeData
   } catch (error: any) {
@@ -308,20 +321,18 @@ async function loadCodes(options: LoadAllOptions = {}) {
 }
 
 function selectTier(tier: RedeemTier) {
-  if (!tierSelectable(tier)) {
-    return
-  }
+  if (!tierSelectable(tier)) return
   form.tierId = tier.id
-}
-
-function tierById(id: number) {
-  return tierMap.value.get(id)
 }
 
 function tierNameById(id: number) {
   const tier = tierById(id)
   if (!tier) return `#${id}`
-  return tierDisplayName(tier)
+  return tier.label?.trim() || `#${id}`
+}
+
+function tierById(id: number) {
+  return tierMap.value.get(id)
 }
 
 function syncDefaultTier() {
@@ -345,12 +356,13 @@ async function submit() {
   }
   loading.value = true
   try {
-    await createAccessRequest(form.tierId, form.note)
+    await createAccessRequest(form.tierId, form.note, form.fulfillmentMode)
     ElMessage.success('兑换申请已提交')
     form.note = ''
+    form.fulfillmentMode = 'direct_charge'
     await loadAll()
   } catch (error: any) {
-    ElMessage.error(error?.message ?? '提交充值申请失败')
+    ElMessage.error(error?.message ?? '提交兑换申请失败')
   } finally {
     loading.value = false
   }
@@ -367,11 +379,14 @@ function isCodeUsed(code: RedeemCode) {
   return code.status === 'used'
 }
 
-function codeEmptyText(status: string) {
-  if (status === 'consumed' || status === 'approved') return '暂无关联兑换码'
-  if (status === 'rejected') return '申请未通过'
-  if (status === 'expired') return '申请已过期'
-  return '审批通过后会在这里显示兑换码'
+function codeEmptyText(request: AccessRequest) {
+  if (request.fulfilled_via === 'direct_charge') return '已直充到账'
+  if (request.fulfilled_via === 'redeem_code_fallback') return '直充失败，已改为发码'
+  if (request.fulfilled_via === 'redeem_code') return '已发放兑换码'
+  if (request.fulfillment_mode === 'redeem_code') return '待发放兑换码'
+  if (request.status === 'rejected') return '申请未通过'
+  if (request.status === 'expired') return '申请已过期'
+  return '审批通过后会在这里显示交付结果'
 }
 
 function tierDisplayName(tier: RedeemTier) {
@@ -401,6 +416,14 @@ function requestSummary(request: AccessRequest) {
     return `${group} · ${validityDaysText(request)} · ${formatCny(request.pay_amount_cny)}`
   }
   return `${formatMoney(request.amount)} 美元 · ${formatCny(request.pay_amount_cny)}`
+}
+
+function requestDeliverySummary(request: AccessRequest) {
+  if (request.fulfilled_via === 'direct_charge') return '已直充到账'
+  if (request.fulfilled_via === 'redeem_code_fallback') return '直充失败，已改为发码'
+  if (request.fulfilled_via === 'redeem_code') return '已发放兑换码'
+  if (request.fulfillment_mode === 'redeem_code') return '待发放兑换码'
+  return '待处理'
 }
 
 function requestLimitSummary(request: AccessRequest) {
@@ -669,12 +692,27 @@ p {
   color: #64748b;
 }
 
+.summary-line :deep(.el-radio-group) {
+  display: flex;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 0;
+}
+
 .summary-price {
   display: flex;
   align-items: baseline;
   flex-wrap: wrap;
   justify-content: flex-end;
   gap: 8px;
+}
+
+.summary-hint {
+  padding: 10px 0;
+  border-bottom: 1px solid #edf2f7;
+  color: #64748b;
+  font-size: 13px;
+  text-align: right;
 }
 
 .summary-detail {
@@ -875,6 +913,10 @@ p {
   .code-item {
     align-items: flex-start;
   }
+
+  .summary-hint {
+    text-align: left;
+  }
 }
 
 @media (max-width: 520px) {
@@ -889,11 +931,20 @@ p {
   .tier-grid {
     grid-template-columns: 1fr 1fr;
   }
+
   .request-main,
   .code-item,
   .code-actions {
     align-items: stretch;
     display: grid;
+  }
+
+  .summary-line {
+    display: grid;
+  }
+
+  .summary-line :deep(.el-radio-group) {
+    justify-content: flex-start;
   }
 }
 </style>

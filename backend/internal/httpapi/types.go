@@ -36,8 +36,9 @@ type EmbeddedLoginRequest struct {
 }
 
 type AccessRequestCreateRequest struct {
-	TierID int64  `json:"tier_id" binding:"required,gt=0"`
-	Note   string `json:"note"`
+	TierID          int64  `json:"tier_id" binding:"required,gt=0"`
+	Note            string `json:"note"`
+	FulfillmentMode string `json:"fulfillment_mode"`
 }
 
 type AccessRequestConfirmRequest struct {

@@ -76,6 +76,16 @@ type GenerateRedeemCodesInput struct {
 	ValidityDays int
 }
 
+type CreateAndRedeemCodeInput struct {
+	Code         string
+	Type         string
+	Value        float64
+	UserID       int64
+	GroupID      *int64
+	ValidityDays int
+	Notes        string
+}
+
 type envelope struct {
 	Code    int             `json:"code"`
 	Message string          `json:"message"`
@@ -162,6 +172,34 @@ func (c *Client) GenerateRedeemCodes(ctx context.Context, idempotencyKey string,
 		return nil, err
 	}
 	return out, nil
+}
+
+func (c *Client) CreateAndRedeemCode(ctx context.Context, idempotencyKey string, input CreateAndRedeemCodeInput) (*RedeemCode, error) {
+	var out struct {
+		RedeemCode RedeemCode `json:"redeem_code"`
+	}
+	reqBody := map[string]any{
+		"code":    input.Code,
+		"type":    input.Type,
+		"value":   input.Value,
+		"user_id": input.UserID,
+	}
+	if input.GroupID != nil {
+		reqBody["group_id"] = *input.GroupID
+	}
+	if input.ValidityDays != 0 {
+		reqBody["validity_days"] = input.ValidityDays
+	}
+	if strings.TrimSpace(input.Notes) != "" {
+		reqBody["notes"] = strings.TrimSpace(input.Notes)
+	}
+	if err := c.postJSON(ctx, "/api/v1/admin/redeem-codes/create-and-redeem", map[string]string{
+		"x-api-key":       c.AdminAPIKey,
+		"Idempotency-Key": idempotencyKey,
+	}, reqBody, &out); err != nil {
+		return nil, err
+	}
+	return &out.RedeemCode, nil
 }
 
 func (c *Client) ListGroupsAll(ctx context.Context) ([]Group, error) {

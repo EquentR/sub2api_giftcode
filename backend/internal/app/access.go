@@ -11,7 +11,28 @@ import (
 	"sub2api-giftcode/backend/internal/models"
 )
 
-func (s *Service) CreateAccessRequest(ctx context.Context, sessionID string, tierID int64, note string) (*models.AccessRequest, error) {
+const (
+	fulfillmentModeDirectCharge      = "direct_charge"
+	fulfillmentModeRedeemCode        = "redeem_code"
+	fulfillmentResultDirectSucceeded = "direct_charge_succeeded"
+	fulfillmentResultCodeIssued      = "redeem_code_issued"
+	fulfilledViaDirectCharge         = "direct_charge"
+	fulfilledViaRedeemCode           = "redeem_code"
+	fulfilledViaRedeemCodeFallback   = "redeem_code_fallback"
+)
+
+func normalizeFulfillmentMode(raw string) string {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "", fulfillmentModeDirectCharge:
+		return fulfillmentModeDirectCharge
+	case fulfillmentModeRedeemCode:
+		return fulfillmentModeRedeemCode
+	default:
+		return ""
+	}
+}
+
+func (s *Service) CreateAccessRequest(ctx context.Context, sessionID string, tierID int64, note string, fulfillmentMode string) (*models.AccessRequest, error) {
 	sessionUser, err := s.CurrentSession(ctx, sessionID)
 	if err != nil {
 		return nil, err
@@ -50,6 +71,10 @@ func (s *Service) CreateAccessRequest(ctx context.Context, sessionID string, tie
 	} else if existing != nil {
 		return nil, ErrConflict
 	}
+	normalizedMode := normalizeFulfillmentMode(fulfillmentMode)
+	if normalizedMode == "" {
+		return nil, ErrBadRequest
+	}
 	now := s.now()
 	token, err := newRandomToken(32)
 	if err != nil {
@@ -72,6 +97,10 @@ func (s *Service) CreateAccessRequest(ctx context.Context, sessionID string, tie
 		Sub2APIMonthlyLimitUSD:  tier.Sub2APIMonthlyLimitUSD,
 		ValidityDays:            tier.ValidityDays,
 		Note:                    strings.TrimSpace(note),
+		FulfillmentMode:         normalizedMode,
+		FulfillmentResult:       "",
+		FulfilledVia:            "",
+		FulfillmentError:        "",
 		Status:                  "pending",
 		ApprovalTokenHash:       hashToken(token),
 		ApprovalTokenExpiresAt:  now.Add(s.approvalTTL()),
@@ -180,6 +209,9 @@ func (s *Service) ApproveAccessRequestByID(ctx context.Context, id int64) (*mode
 		return nil, nil, err
 	}
 	if req.Status == "consumed" {
+		if req.FulfilledVia == fulfilledViaDirectCharge && req.FulfillmentResult == fulfillmentResultDirectSucceeded {
+			return req, nil, nil
+		}
 		redeemReq, redeemErr := s.getRedeemRequestByAccessRequestID(ctx, req.ID)
 		if redeemErr == nil && redeemReq != nil && redeemReq.Status == "issued" {
 			code, codeErr := s.getRedeemCodeByRequestID(ctx, redeemReq.ID)
@@ -202,12 +234,40 @@ func (s *Service) ApproveAccessRequestByID(ctx context.Context, id int64) (*mode
 	if !tier.Enabled {
 		return nil, nil, ErrForbidden
 	}
-	redeemReq, code, err := s.issueRedeemRequest(ctx, req, tier, req.Note)
-	if err != nil {
-		return nil, nil, err
+	switch normalizeFulfillmentMode(req.FulfillmentMode) {
+	case fulfillmentModeRedeemCode:
+		_, code, issueErr := s.issueRedeemRequest(ctx, req, tier, req.Note, fulfilledViaRedeemCode, "")
+		if issueErr != nil {
+			return nil, nil, issueErr
+		}
+		return req, code, nil
+	case fulfillmentModeDirectCharge:
+		if normalizeCodeType(req.CodeType) == "subscription" {
+			if req.Sub2APIGroupID == nil || *req.Sub2APIGroupID <= 0 || req.ValidityDays <= 0 {
+				return nil, nil, ErrBadRequest
+			}
+		}
+		if err := s.issueDirectCharge(ctx, req, tier); err == nil {
+			return req, nil, nil
+		} else if errors.Is(err, ErrBadRequest) {
+			return nil, nil, err
+		} else if errors.Is(err, ErrConflict) {
+			return nil, nil, err
+		} else {
+			fallbackError := err.Error()
+			if updateErr := s.updateAccessRequestFulfillmentAttempt(ctx, req.ID, fallbackError, s.now()); updateErr != nil {
+				return nil, nil, updateErr
+			}
+			req.FulfillmentError = fallbackError
+			_, code, issueErr := s.issueRedeemRequest(ctx, req, tier, req.Note, fulfilledViaRedeemCodeFallback, fallbackError)
+			if issueErr != nil {
+				return nil, nil, issueErr
+			}
+			return req, code, nil
+		}
+	default:
+		return nil, nil, ErrBadRequest
 	}
-	_ = redeemReq
-	return req, code, nil
 }
 
 func (s *Service) ListMyAccessRequests(ctx context.Context, sessionID string) ([]models.AccessRequest, error) {
@@ -268,9 +328,9 @@ INSERT INTO redeem_access_requests (
   requestor_upstream_user_id, requestor_email, requestor_username, tier_id, code_type, tier_label,
   amount, pay_amount_cny, sub2api_group_id, sub2api_group_name, sub2api_group_platform,
   sub2api_daily_limit_usd, sub2api_weekly_limit_usd, sub2api_monthly_limit_usd, validity_days,
-  note, status, approval_token_hash, approval_token_expires_at, notification_status, notification_error,
-  created_at, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  note, fulfillment_mode, fulfillment_result, fulfilled_via, fulfillment_error, status, approval_token_hash,
+  approval_token_expires_at, notification_status, notification_error, created_at, updated_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `,
 		req.RequestorUpstreamUserID,
 		req.RequestorEmail,
@@ -288,6 +348,10 @@ INSERT INTO redeem_access_requests (
 		req.Sub2APIMonthlyLimitUSD,
 		req.ValidityDays,
 		req.Note,
+		req.FulfillmentMode,
+		req.FulfillmentResult,
+		req.FulfilledVia,
+		req.FulfillmentError,
 		req.Status,
 		req.ApprovalTokenHash,
 		formatTime(req.ApprovalTokenExpiresAt),
@@ -353,6 +417,15 @@ WHERE id = ?
 	return err
 }
 
+func (s *Service) updateAccessRequestFulfillmentAttempt(ctx context.Context, id int64, fulfillmentError string, updatedAt time.Time) error {
+	_, err := s.db().ExecContext(ctx, `
+UPDATE redeem_access_requests
+SET fulfillment_error = ?, updated_at = ?
+WHERE id = ?
+`, strings.TrimSpace(fulfillmentError), formatTime(updatedAt), id)
+	return err
+}
+
 func (s *Service) getAccessRequestByTokenHash(ctx context.Context, tokenHash string) (*models.AccessRequest, error) {
 	return s.getAccessRequestByField(ctx, "approval_token_hash", tokenHash)
 }
@@ -406,8 +479,9 @@ func accessRequestSelectSQL() string {
 SELECT id, requestor_upstream_user_id, requestor_email, requestor_username, tier_id, code_type, tier_label,
        amount, pay_amount_cny, sub2api_group_id, sub2api_group_name, sub2api_group_platform,
        sub2api_daily_limit_usd, sub2api_weekly_limit_usd, sub2api_monthly_limit_usd, validity_days,
-       note, status, approval_token_hash, approval_token_expires_at, approved_at, rejected_at, consumed_at,
-       notification_status, notification_error, notification_sent_at, created_at, updated_at
+       note, fulfillment_mode, fulfillment_result, fulfilled_via, fulfillment_error, status, approval_token_hash,
+       approval_token_expires_at, approved_at, rejected_at, consumed_at, notification_status, notification_error,
+       notification_sent_at, created_at, updated_at
 FROM redeem_access_requests
 `
 }
@@ -445,6 +519,10 @@ func scanAccessRequestRow(scanner interface {
 		&sub2apiMonthlyLimit,
 		&out.ValidityDays,
 		&out.Note,
+		&out.FulfillmentMode,
+		&out.FulfillmentResult,
+		&out.FulfilledVia,
+		&out.FulfillmentError,
 		&out.Status,
 		&out.ApprovalTokenHash,
 		&approvalTokenExpiresAt,
@@ -460,6 +538,7 @@ func scanAccessRequestRow(scanner interface {
 		return nil, err
 	}
 	out.CodeType = normalizeCodeType(out.CodeType)
+	out.FulfillmentMode = normalizeFulfillmentMode(out.FulfillmentMode)
 	out.Sub2APIGroupID = parseNullableInt64(sub2apiGroupID)
 	if sub2apiDailyLimit.Valid {
 		v := sub2apiDailyLimit.Float64

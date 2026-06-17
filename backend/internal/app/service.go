@@ -43,17 +43,18 @@ type UserSummary struct {
 }
 
 type DashboardStats struct {
-	TotalUsers             int        `json:"total_users"`
-	PendingAccessRequests  int        `json:"pending_access_requests"`
-	ApprovedAccessRequests int        `json:"approved_access_requests"`
-	RejectedAccessRequests int        `json:"rejected_access_requests"`
-	ConsumedAccessRequests int        `json:"consumed_access_requests"`
-	RedeemRequests         int        `json:"redeem_requests"`
-	RedeemCodesTotal       int        `json:"redeem_codes_total"`
-	RedeemCodesUnused      int        `json:"redeem_codes_unused"`
-	RedeemCodesUsed        int        `json:"redeem_codes_used"`
-	ActiveTiers            int        `json:"active_tiers"`
-	LastSyncAt             *time.Time `json:"last_sync_at,omitempty"`
+	TotalUsers                 int        `json:"total_users"`
+	PendingAccessRequests      int        `json:"pending_access_requests"`
+	ApprovedAccessRequests     int        `json:"approved_access_requests"`
+	RejectedAccessRequests     int        `json:"rejected_access_requests"`
+	ConsumedAccessRequests     int        `json:"consumed_access_requests"`
+	DirectChargeAccessRequests int        `json:"direct_charge_access_requests"`
+	RedeemRequests             int        `json:"redeem_requests"`
+	RedeemCodesTotal           int        `json:"redeem_codes_total"`
+	RedeemCodesUnused          int        `json:"redeem_codes_unused"`
+	RedeemCodesUsed            int        `json:"redeem_codes_used"`
+	ActiveTiers                int        `json:"active_tiers"`
+	LastSyncAt                 *time.Time `json:"last_sync_at,omitempty"`
 }
 
 func New(cfg *config.RuntimeConfig, store *db.Store, upstream *sub2api.Client, mailer *mail.Mailer) *Service {

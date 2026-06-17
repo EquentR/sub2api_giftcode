@@ -17,6 +17,90 @@ import (
 	"sub2api-giftcode/backend/internal/sub2api"
 )
 
+func TestCreateAccessRequestDefaultsFulfillmentModeToDirectCharge(t *testing.T) {
+	store, err := db.Open("sqlite", ":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+	require.NoError(t, store.Migrate(context.Background()))
+
+	now := time.Now().UTC().Truncate(time.Second)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/auth/me":
+			require.Equal(t, "Bearer access-1", r.Header.Get("Authorization"))
+			writeRedeemTestEnvelope(w, sub2api.User{
+				ID:        1,
+				Email:     "alice@example.com",
+				Username:  "alice",
+				Role:      "user",
+				Status:    "active",
+				CreatedAt: now,
+				UpdatedAt: now,
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(upstream.Close)
+
+	svc := New(
+		&config.RuntimeConfig{},
+		store,
+		sub2api.NewClient(upstream.URL, "admin-key"),
+		mail.New(mail.Config{}),
+	)
+
+	sessionUser, err := svc.LoginWithAccessToken(context.Background(), "access-1", nil)
+	require.NoError(t, err)
+
+	req, err := svc.CreateAccessRequest(context.Background(), sessionUser.Session.ID, 1, "please approve", "")
+	require.NoError(t, err)
+	require.Equal(t, "direct_charge", req.FulfillmentMode)
+	require.Equal(t, "", req.FulfillmentResult)
+	require.Equal(t, "", req.FulfilledVia)
+	require.Equal(t, "", req.FulfillmentError)
+}
+
+func TestCreateAccessRequestStoresRequestedFulfillmentMode(t *testing.T) {
+	store, err := db.Open("sqlite", ":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+	require.NoError(t, store.Migrate(context.Background()))
+
+	now := time.Now().UTC().Truncate(time.Second)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/auth/me":
+			writeRedeemTestEnvelope(w, sub2api.User{
+				ID:        1,
+				Email:     "alice@example.com",
+				Username:  "alice",
+				Role:      "user",
+				Status:    "active",
+				CreatedAt: now,
+				UpdatedAt: now,
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(upstream.Close)
+
+	svc := New(
+		&config.RuntimeConfig{},
+		store,
+		sub2api.NewClient(upstream.URL, "admin-key"),
+		mail.New(mail.Config{}),
+	)
+
+	sessionUser, err := svc.LoginWithAccessToken(context.Background(), "access-1", nil)
+	require.NoError(t, err)
+
+	req, err := svc.CreateAccessRequest(context.Background(), sessionUser.Session.ID, 1, "please approve", "redeem_code")
+	require.NoError(t, err)
+	require.Equal(t, "redeem_code", req.FulfillmentMode)
+}
+
 func TestApproveAccessRequestUsesStoredRedeemValueForRetry(t *testing.T) {
 	store, err := db.Open("sqlite", ":memory:")
 	require.NoError(t, err)
@@ -64,10 +148,10 @@ WHERE id = 1
 	_, err = store.DB.ExecContext(context.Background(), `
 INSERT INTO redeem_access_requests (
   requestor_upstream_user_id, requestor_email, requestor_username, tier_id, note, status,
-  approval_token_hash, approval_token_expires_at, notification_status, notification_error,
+  fulfillment_mode, approval_token_hash, approval_token_expires_at, notification_status, notification_error,
   created_at, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-`, 1, "alice@example.com", "alice", 1, "please approve", "pending", "token-hash", now.Add(time.Hour).Format(time.RFC3339Nano), "sent", "", now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano))
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+`, 1, "alice@example.com", "alice", 1, "please approve", "pending", "redeem_code", "token-hash", now.Add(time.Hour).Format(time.RFC3339Nano), "sent", "", now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano))
 	require.NoError(t, err)
 
 	_, err = store.DB.ExecContext(context.Background(), `
@@ -136,10 +220,10 @@ func TestApproveAccessRequestAvoidsLocalOnlyIdempotencyKey(t *testing.T) {
 	_, err = store.DB.ExecContext(context.Background(), `
 INSERT INTO redeem_access_requests (
   requestor_upstream_user_id, requestor_email, requestor_username, tier_id, amount, pay_amount_cny, note, status,
-  approval_token_hash, approval_token_expires_at, notification_status, notification_error,
+  fulfillment_mode, approval_token_hash, approval_token_expires_at, notification_status, notification_error,
   created_at, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-`, 1, "alice@example.com", "alice", 1, 120.0, 120.0, "please approve", "pending", tokenHash, now.Add(time.Hour).Format(time.RFC3339Nano), "sent", "", now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano))
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+`, 1, "alice@example.com", "alice", 1, 120.0, 120.0, "please approve", "pending", "redeem_code", tokenHash, now.Add(time.Hour).Format(time.RFC3339Nano), "sent", "", now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano))
 	require.NoError(t, err)
 
 	req, code, err := svc.ApproveAccessRequestByID(context.Background(), 1)
@@ -223,7 +307,7 @@ INSERT INTO upstream_users (
 	sessionUser, err := svc.LoginWithAccessToken(context.Background(), "access-1", nil)
 	require.NoError(t, err)
 
-	req, err := svc.CreateAccessRequest(context.Background(), sessionUser.Session.ID, 1, "please approve")
+	req, err := svc.CreateAccessRequest(context.Background(), sessionUser.Session.ID, 1, "please approve", "")
 	require.NoError(t, err)
 
 	_, err = store.DB.ExecContext(context.Background(), `
@@ -241,6 +325,142 @@ WHERE id = 1
 	require.Equal(t, 120.0, sawValue)
 	require.Equal(t, 120.0, approved.Amount)
 	require.Equal(t, 120.0, approved.PayAmountCny)
+}
+
+func TestApproveAccessRequestDirectChargeSucceedsWithoutLocalCode(t *testing.T) {
+	store, err := db.Open("sqlite", ":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+	require.NoError(t, store.Migrate(context.Background()))
+
+	now := time.Now().UTC().Truncate(time.Second)
+	var sawPath string
+	var sawPayload map[string]any
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sawPath = r.URL.Path
+		switch r.URL.Path {
+		case "/api/v1/admin/redeem-codes/create-and-redeem":
+			require.Equal(t, "admin-key", r.Header.Get("x-api-key"))
+			require.NotEmpty(t, r.Header.Get("Idempotency-Key"))
+			require.NoError(t, json.NewDecoder(r.Body).Decode(&sawPayload))
+			writeRedeemTestEnvelope(w, map[string]any{
+				"redeem_code": map[string]any{
+					"id":         501,
+					"code":       "giftcode-access-1",
+					"type":       "balance",
+					"value":      120.0,
+					"status":     "used",
+					"used_by":    1,
+					"used_at":    now.Format(time.RFC3339Nano),
+					"created_at": now.Format(time.RFC3339Nano),
+				},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(upstream.Close)
+
+	svc := New(
+		&config.RuntimeConfig{},
+		store,
+		sub2api.NewClient(upstream.URL, "admin-key"),
+		mail.New(mail.Config{}),
+	)
+
+	_, err = store.DB.ExecContext(context.Background(), `
+INSERT INTO redeem_access_requests (
+  requestor_upstream_user_id, requestor_email, requestor_username, tier_id, code_type, tier_label,
+  amount, pay_amount_cny, note, status, fulfillment_mode, fulfillment_result, fulfilled_via, fulfillment_error,
+  approval_token_hash, approval_token_expires_at, notification_status, notification_error,
+  created_at, updated_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+`, 1, "alice@example.com", "alice", 1, "balance", "$120", 120.0, 120.0, "please approve", "pending", "direct_charge", "", "", "", "token-hash", now.Add(time.Hour).Format(time.RFC3339Nano), "sent", "", now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano))
+	require.NoError(t, err)
+
+	req, code, err := svc.ApproveAccessRequestByID(context.Background(), 1)
+	require.NoError(t, err)
+	require.Equal(t, "/api/v1/admin/redeem-codes/create-and-redeem", sawPath)
+	require.NotNil(t, req)
+	require.Nil(t, code)
+	require.Equal(t, "consumed", req.Status)
+	require.Equal(t, "direct_charge", req.FulfillmentMode)
+	require.Equal(t, "direct_charge_succeeded", req.FulfillmentResult)
+	require.Equal(t, "direct_charge", req.FulfilledVia)
+	require.Equal(t, "", req.FulfillmentError)
+	require.Equal(t, "giftcode-access-1", sawPayload["code"])
+	require.Equal(t, "balance", sawPayload["type"])
+	require.Equal(t, 120.0, sawPayload["value"])
+	require.Equal(t, float64(1), sawPayload["user_id"])
+
+	var redeemRequestCount int
+	require.NoError(t, store.DB.QueryRowContext(context.Background(), `SELECT COUNT(1) FROM redeem_requests WHERE access_request_id = 1`).Scan(&redeemRequestCount))
+	require.Equal(t, 0, redeemRequestCount)
+
+	var redeemCodeCount int
+	require.NoError(t, store.DB.QueryRowContext(context.Background(), `SELECT COUNT(1) FROM redeem_codes`).Scan(&redeemCodeCount))
+	require.Equal(t, 0, redeemCodeCount)
+}
+
+func TestApproveAccessRequestDirectChargeFallsBackToIssuedCode(t *testing.T) {
+	store, err := db.Open("sqlite", ":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+	require.NoError(t, store.Migrate(context.Background()))
+
+	now := time.Now().UTC().Truncate(time.Second)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/admin/redeem-codes/create-and-redeem":
+			w.WriteHeader(http.StatusBadGateway)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"code":    http.StatusBadGateway,
+				"message": "direct charge failed",
+			})
+		case "/api/v1/admin/redeem-codes/generate":
+			require.Equal(t, "admin-key", r.Header.Get("x-api-key"))
+			require.NotEmpty(t, r.Header.Get("Idempotency-Key"))
+			writeRedeemTestEnvelope(w, []sub2api.RedeemCode{{
+				ID:        99,
+				Code:      "code-99",
+				Type:      "balance",
+				Value:     120.0,
+				Status:    "unused",
+				CreatedAt: now,
+			}})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(upstream.Close)
+
+	svc := New(
+		&config.RuntimeConfig{},
+		store,
+		sub2api.NewClient(upstream.URL, "admin-key"),
+		mail.New(mail.Config{}),
+	)
+
+	_, err = store.DB.ExecContext(context.Background(), `
+INSERT INTO redeem_access_requests (
+  requestor_upstream_user_id, requestor_email, requestor_username, tier_id, code_type, tier_label,
+  amount, pay_amount_cny, note, status, fulfillment_mode, fulfillment_result, fulfilled_via, fulfillment_error,
+  approval_token_hash, approval_token_expires_at, notification_status, notification_error,
+  created_at, updated_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+`, 1, "alice@example.com", "alice", 1, "balance", "$120", 120.0, 120.0, "please approve", "pending", "direct_charge", "", "", "", "token-hash", now.Add(time.Hour).Format(time.RFC3339Nano), "sent", "", now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano))
+	require.NoError(t, err)
+
+	req, code, err := svc.ApproveAccessRequestByID(context.Background(), 1)
+	require.NoError(t, err)
+	require.NotNil(t, req)
+	require.NotNil(t, code)
+	require.Equal(t, "consumed", req.Status)
+	require.Equal(t, "direct_charge", req.FulfillmentMode)
+	require.Equal(t, "redeem_code_issued", req.FulfillmentResult)
+	require.Equal(t, "redeem_code_fallback", req.FulfilledVia)
+	require.Contains(t, req.FulfillmentError, "direct charge failed")
+	require.Equal(t, "code-99", code.Code)
 }
 
 func TestApproveAccessRequestIssuesSubscriptionRedeemCode(t *testing.T) {

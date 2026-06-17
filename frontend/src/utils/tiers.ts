@@ -17,7 +17,9 @@ type TierLike = Pick<
 type GroupLike = Pick<SubscriptionGroup, 'name' | 'platform' | 'daily_limit_usd' | 'weekly_limit_usd' | 'monthly_limit_usd'>
 type LimitsLike = Pick<TierLike, 'sub2api_daily_limit_usd' | 'sub2api_weekly_limit_usd' | 'sub2api_monthly_limit_usd'>
 
-export function tierCodeType(tier?: Pick<RedeemTier, 'code_type'> | Pick<RedeemRequest, 'code_type'> | Pick<RedeemCode, 'code_type'> | null) {
+export function tierCodeType(
+  tier?: Pick<RedeemTier, 'code_type'> | Pick<RedeemRequest, 'code_type'> | Pick<RedeemCode, 'code_type'> | null,
+) {
   return tier?.code_type === 'subscription' ? 'subscription' : 'balance'
 }
 
@@ -31,7 +33,7 @@ export function formatTierSummary(tier?: Pick<RedeemTier, 'code_type' | 'amount'
   }
   if (tierCodeType(tier) === 'subscription') {
     const days = Number(tier.validity_days ?? 0)
-    return `${days > 0 ? `${days} 天` : '订阅'} / ${Number(tier.pay_amount_cny).toFixed(0)} 人民币`
+    return `${days > 0 ? `${days} 天订阅` : '订阅'} / ${Number(tier.pay_amount_cny).toFixed(0)} 人民币`
   }
   return `${Number(tier.amount).toFixed(0)} 美元 / ${Number(tier.pay_amount_cny).toFixed(0)} 人民币`
 }
@@ -42,7 +44,7 @@ export function formatTierAmount(tier?: Pick<RedeemTier, 'code_type' | 'amount' 
   }
   if (tierCodeType(tier) === 'subscription') {
     const days = Number(tier.validity_days ?? 0)
-    return days > 0 ? `${days} 天` : '订阅'
+    return days > 0 ? `${days} 天订阅` : '订阅'
   }
   return `${Number(tier.amount).toFixed(0)} 美元`
 }
@@ -107,7 +109,9 @@ export function isSubscriptionTierAvailable(tier?: RedeemTier | null) {
   return tier.upstream_available !== false && !!tier.sub2api_group_id
 }
 
-export function formatCodeValue(item?: Pick<RedeemCode, 'code_type' | 'value' | 'validity_days'> | Pick<RedeemRequest, 'code_type' | 'value' | 'validity_days'> | null) {
+export function formatCodeValue(
+  item?: Pick<RedeemCode, 'code_type' | 'value' | 'validity_days'> | Pick<RedeemRequest, 'code_type' | 'value' | 'validity_days'> | null,
+) {
   if (!item) {
     return '-'
   }

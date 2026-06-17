@@ -213,7 +213,7 @@ async function submit() {
   }
   loading.value = true
   try {
-    await createAccessRequest(form.tierId, form.note)
+    await createAccessRequest(form.tierId, form.note, 'direct_charge')
     ElMessage.success('申请已提交')
     form.note = ''
     dialogVisible.value = false

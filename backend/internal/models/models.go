@@ -42,6 +42,10 @@ type AccessRequest struct {
 	Sub2APIMonthlyLimitUSD  *float64   `json:"sub2api_monthly_limit_usd,omitempty"`
 	ValidityDays            int        `json:"validity_days"`
 	Note                    string     `json:"note"`
+	FulfillmentMode         string     `json:"fulfillment_mode"`
+	FulfillmentResult       string     `json:"fulfillment_result"`
+	FulfilledVia            string     `json:"fulfilled_via"`
+	FulfillmentError        string     `json:"fulfillment_error"`
 	Status                  string     `json:"status"`
 	ApprovalTokenHash       string     `json:"approval_token_hash"`
 	ApprovalTokenExpiresAt  time.Time  `json:"approval_token_expires_at"`

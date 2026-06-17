@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 	"time"
 
@@ -44,7 +45,7 @@ func (s *Service) CreateRedeemRequest(ctx context.Context, sessionID string, tie
 			return redeemReq, existingCode, nil
 		}
 	}
-	return s.issueRedeemRequest(ctx, accessReq, tier, strings.TrimSpace(note))
+	return s.issueRedeemRequest(ctx, accessReq, tier, strings.TrimSpace(note), fulfilledViaRedeemCode, "")
 }
 
 func (s *Service) ListMyRedeemRequests(ctx context.Context, sessionID string) ([]models.RedeemRequest, error) {
@@ -113,7 +114,7 @@ func (s *Service) SyncRedeemCodes(ctx context.Context) (int, error) {
 	return updated, nil
 }
 
-func (s *Service) issueRedeemRequest(ctx context.Context, accessReq *models.AccessRequest, tier *models.RedeemTier, note string) (*models.RedeemRequest, *models.RedeemCode, error) {
+func (s *Service) issueRedeemRequest(ctx context.Context, accessReq *models.AccessRequest, tier *models.RedeemTier, note, fulfilledVia, fulfillmentError string) (*models.RedeemRequest, *models.RedeemCode, error) {
 	if accessReq == nil {
 		return nil, nil, ErrBadRequest
 	}
@@ -253,7 +254,7 @@ func (s *Service) issueRedeemRequest(ctx context.Context, accessReq *models.Acce
 		UpdatedAt:            now,
 	}
 
-	if err := s.persistIssuedRedeemCode(ctx, redeemReq, code, accessReq.ID); err != nil {
+	if err := s.persistIssuedRedeemCode(ctx, redeemReq, code, accessReq.ID, fulfilledVia, fulfillmentError); err != nil {
 		_ = s.updateRedeemRequestFailure(ctx, redeemReq.ID, err.Error(), now)
 		return redeemReq, nil, err
 	}
@@ -267,8 +268,80 @@ func (s *Service) issueRedeemRequest(ctx context.Context, accessReq *models.Acce
 	accessReq.Status = "consumed"
 	accessReq.ApprovedAt = &approvalTime
 	accessReq.ConsumedAt = &approvalTime
+	accessReq.FulfillmentResult = fulfillmentResultCodeIssued
+	accessReq.FulfilledVia = strings.TrimSpace(fulfilledVia)
+	accessReq.FulfillmentError = strings.TrimSpace(fulfillmentError)
 	accessReq.UpdatedAt = approvalTime
 	return redeemReq, code, nil
+}
+
+func (s *Service) issueDirectCharge(ctx context.Context, accessReq *models.AccessRequest, tier *models.RedeemTier) error {
+	if accessReq == nil || tier == nil {
+		return ErrBadRequest
+	}
+	codeType := normalizeCodeType(accessReq.CodeType)
+	if codeType == "" {
+		codeType = normalizeCodeType(tier.CodeType)
+	}
+	if codeType == "" {
+		return ErrBadRequest
+	}
+	userID := accessReq.RequestorUpstreamUserID
+	if userID <= 0 {
+		return ErrBadRequest
+	}
+	code := directChargeCodeForAccessRequest(accessReq.ID)
+	idempotencyKey := directChargeIdempotencyKey(accessReq)
+	input := sub2api.CreateAndRedeemCodeInput{
+		Code:   code,
+		Type:   codeType,
+		Value:  accessReq.Amount,
+		UserID: userID,
+		Notes:  strings.TrimSpace(accessReq.Note),
+	}
+	if codeType == "subscription" {
+		if accessReq.Sub2APIGroupID == nil || *accessReq.Sub2APIGroupID <= 0 || accessReq.ValidityDays <= 0 {
+			return ErrBadRequest
+		}
+		input.GroupID = accessReq.Sub2APIGroupID
+		input.ValidityDays = accessReq.ValidityDays
+		input.Value = 0
+	}
+	created, err := s.upstream.CreateAndRedeemCode(ctx, idempotencyKey, input)
+	if err != nil {
+		var apiErr *sub2api.APIError
+		if errors.As(err, &apiErr) && apiErr.Status == http.StatusConflict {
+			return ErrConflict
+		}
+		return fmt.Errorf("%w: %w", ErrUpstreamFailed, err)
+	}
+	if created == nil || strings.TrimSpace(created.Code) == "" {
+		return fmt.Errorf("%w: empty upstream response", ErrUpstreamFailed)
+	}
+	now := s.now()
+	if err := s.markAccessRequestConsumedWithFulfillment(ctx, accessReq.ID, now, fulfillmentResultDirectSucceeded, fulfilledViaDirectCharge, ""); err != nil {
+		return err
+	}
+	accessReq.Status = "consumed"
+	accessReq.ApprovedAt = &now
+	accessReq.ConsumedAt = &now
+	accessReq.FulfillmentResult = fulfillmentResultDirectSucceeded
+	accessReq.FulfilledVia = fulfilledViaDirectCharge
+	accessReq.FulfillmentError = ""
+	accessReq.UpdatedAt = now
+	return nil
+}
+
+func directChargeCodeForAccessRequest(accessRequestID int64) string {
+	return fmt.Sprintf("giftcode-access-%d", accessRequestID)
+}
+
+func directChargeIdempotencyKey(accessReq *models.AccessRequest) string {
+	tokenHash := strings.TrimSpace(accessReq.ApprovalTokenHash)
+	if tokenHash == "" {
+		tokenHash = "legacy"
+	}
+	return fmt.Sprintf("giftcode-direct-charge-access-%d-%s", accessReq.ID, tokenHash)
 }
 
 func redeemIssueIdempotencyKey(accessReq *models.AccessRequest, redeemReq *models.RedeemRequest) string {
@@ -378,7 +451,7 @@ WHERE id = ?
 	return err
 }
 
-func (s *Service) persistIssuedRedeemCode(ctx context.Context, redeemReq *models.RedeemRequest, code *models.RedeemCode, accessRequestID int64) error {
+func (s *Service) persistIssuedRedeemCode(ctx context.Context, redeemReq *models.RedeemRequest, code *models.RedeemCode, accessRequestID int64, fulfilledVia, fulfillmentError string) error {
 	tx, err := s.db().BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -432,12 +505,21 @@ WHERE id = ?
 	}
 	if _, err := tx.ExecContext(ctx, `
 UPDATE redeem_access_requests
-SET status = 'consumed', approved_at = ?, consumed_at = ?, updated_at = ?
+SET status = 'consumed', approved_at = ?, consumed_at = ?, fulfillment_result = ?, fulfilled_via = ?, fulfillment_error = ?, updated_at = ?
 WHERE id = ?
-`, formatTime(code.UpdatedAt), formatTime(code.UpdatedAt), formatTime(code.UpdatedAt), accessRequestID); err != nil {
+`, formatTime(code.UpdatedAt), formatTime(code.UpdatedAt), fulfillmentResultCodeIssued, strings.TrimSpace(fulfilledVia), strings.TrimSpace(fulfillmentError), formatTime(code.UpdatedAt), accessRequestID); err != nil {
 		return rollback(err)
 	}
 	return tx.Commit()
+}
+
+func (s *Service) markAccessRequestConsumedWithFulfillment(ctx context.Context, id int64, consumedAt time.Time, fulfillmentResult, fulfilledVia, fulfillmentError string) error {
+	_, err := s.db().ExecContext(ctx, `
+UPDATE redeem_access_requests
+SET status = 'consumed', approved_at = ?, consumed_at = ?, fulfillment_result = ?, fulfilled_via = ?, fulfillment_error = ?, updated_at = ?
+WHERE id = ?
+`, formatTime(consumedAt), formatTime(consumedAt), strings.TrimSpace(fulfillmentResult), strings.TrimSpace(fulfilledVia), strings.TrimSpace(fulfillmentError), formatTime(consumedAt), id)
+	return err
 }
 
 func (s *Service) listRedeemRequests(ctx context.Context, userID *int64) ([]models.RedeemRequest, error) {

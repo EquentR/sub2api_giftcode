@@ -22,7 +22,7 @@
           :loading="confirming"
           @click="confirmApproval"
         >
-          确认审批并发码
+          确认处理申请
         </el-button>
       </div>
     </div>
@@ -46,19 +46,34 @@ const request = ref<AccessRequest | null>(null)
 const errorMessage = ref('')
 const token = ref('')
 const confirming = ref(false)
-const detailRows = computed(() => request.value ? approvalRequestDetailRows(request.value) : [])
+const detailRows = computed(() => (request.value ? approvalRequestDetailRows(request.value) : []))
 
 const title = computed(() => {
-  if (state.value === 'success') return '审批已完成'
-  if (state.value === 'error') return '审批没有完成'
-  if (state.value === 'preview') return '确认审批并发码'
+  if (state.value === 'success') return '处理已完成'
+  if (state.value === 'error') return '处理没有完成'
+  if (state.value === 'preview') return '确认处理申请'
   return '正在加载审批申请'
 })
 
 const detail = computed(() => {
-  if (state.value === 'success') return '兑换码已经下发，用户可以回到应用查看并复制。'
-  if (state.value === 'error') return errorMessage.value || '链接可能已过期或已经处理，请返回应用查看最新状态。'
-  if (state.value === 'preview') return '请核对申请人、档位和订阅信息。点击确认后会立即审批并下发兑换码。'
+  if (state.value === 'success') {
+    if (request.value?.fulfilled_via === 'direct_charge') {
+      return '申请已处理完成，权益已直充到账。'
+    }
+    if (request.value?.fulfilled_via === 'redeem_code_fallback') {
+      return '直充失败后已自动改为发码，用户可以回到应用查看兑换码。'
+    }
+    return '申请已处理完成，兑换码已经下发。'
+  }
+  if (state.value === 'error') {
+    return errorMessage.value || '链接可能已过期或已经处理，请返回应用查看最新状态。'
+  }
+  if (state.value === 'preview') {
+    if (request.value?.fulfillment_mode === 'redeem_code') {
+      return '请核对申请人和档位信息。点击确认后会立即处理申请并下发兑换码。'
+    }
+    return '请核对申请人和档位信息。点击确认后会优先直充到账，若失败会自动改为发码。'
+  }
   return '请稍等，系统正在读取这条审批链接。'
 })
 

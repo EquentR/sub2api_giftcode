@@ -4,7 +4,7 @@
       <div class="toolbar">
         <div>
           <div style="font-weight: 700">待处理申请</div>
-          <div class="muted">点击“审批”会打开确认窗口并返回兑换码。</div>
+          <div class="muted">点击“审批”会打开确认窗口，申请方式只读展示。</div>
         </div>
         <el-button :icon="Refresh" :loading="loading" @click="loadAll">刷新</el-button>
       </div>
@@ -14,6 +14,9 @@
         <el-table-column prop="requestor_email" label="邮箱" min-width="220" />
         <el-table-column prop="tier_id" label="档位" min-width="160">
           <template #default="{ row }">{{ tierNameById(row.tier_id) }}</template>
+        </el-table-column>
+        <el-table-column label="方式" width="160">
+          <template #default="{ row }">{{ fulfillmentModeLabel(row.fulfillment_mode) }}</template>
         </el-table-column>
         <el-table-column label="内容" width="130">
           <template #default="{ row }">{{ requestContent(row) }}</template>
@@ -59,6 +62,7 @@
           <el-descriptions-item label="用户">{{ selectedRequest.requestor_username }}</el-descriptions-item>
           <el-descriptions-item label="邮箱">{{ selectedRequest.requestor_email }}</el-descriptions-item>
           <el-descriptions-item label="档位">{{ tierNameById(selectedRequest.tier_id) }}</el-descriptions-item>
+          <el-descriptions-item label="方式">{{ fulfillmentModeLabel(selectedRequest.fulfillment_mode) }}</el-descriptions-item>
           <el-descriptions-item label="内容">{{ requestContent(selectedRequest) }}</el-descriptions-item>
           <el-descriptions-item label="实付金额">{{ Number(selectedRequest.pay_amount_cny).toFixed(0) }} 人民币</el-descriptions-item>
           <el-descriptions-item v-if="selectedRequest.code_type === 'subscription'" label="订阅限额">
@@ -71,7 +75,7 @@
           v-if="issuedCode"
           type="success"
           :closable="false"
-          title="兑换码已发放"
+          :title="issuedCodeTitle"
           style="margin-bottom: 12px"
         />
         <div v-if="issuedCode" style="margin-bottom: 12px">
@@ -98,7 +102,7 @@
           :disabled="!selectedRequest || selectedRequest.status !== 'pending'"
           @click="approveSelected"
         >
-          审批并发码
+          审批并处理
         </el-button>
       </template>
     </el-dialog>
@@ -113,11 +117,17 @@ import { ElMessage } from 'element-plus'
 import AppLayout from '@/components/AppLayout.vue'
 import CodeTable from '@/components/CodeTable.vue'
 import StatusTag from '@/components/StatusTag.vue'
-import { approveAccessRequest, listAccessRequests, listRedeemCodes, listRedeemTiers, listUserRedeemCodes, rejectAccessRequest } from '@/api/admin'
+import {
+  approveAccessRequest,
+  listAccessRequests,
+  listRedeemCodes,
+  listRedeemTiers,
+  listUserRedeemCodes,
+  rejectAccessRequest,
+} from '@/api/admin'
 import type { AccessRequest, RedeemCode, RedeemTier } from '@/api/types'
-import { formatCodeTypeLabel, formatLimitTriplet } from '@/utils/tiers'
 import { copyText } from '@/utils/clipboard'
-
+import { formatCodeTypeLabel, formatLimitTriplet } from '@/utils/tiers'
 
 const route = useRoute()
 const requests = ref<AccessRequest[]>([])
@@ -131,6 +141,11 @@ const loading = ref(false)
 let refreshTimer: number | undefined
 
 const tierMap = computed(() => new Map(tiers.value.map((tier) => [tier.id, tier])))
+const issuedCodeTitle = computed(() => {
+  if (selectedRequest.value?.fulfilled_via === 'direct_charge') return '已直充到账'
+  if (selectedRequest.value?.fulfilled_via === 'redeem_code_fallback') return '直充失败，已改为发码'
+  return '兑换码已发放'
+})
 
 type LoadAllOptions = {
   silent?: boolean
@@ -173,7 +188,7 @@ async function approveSelected() {
     const result = await approveAccessRequest(selectedRequest.value.id)
     selectedRequest.value = result.request
     issuedCode.value = result.code ?? null
-    ElMessage.success('已审批并发码')
+    ElMessage.success('已审批完成')
     await loadAll()
   } catch (error: any) {
     ElMessage.error(error?.message ?? '审批失败')
@@ -216,6 +231,10 @@ function tierNameById(id: number) {
   const tier = tierById(id)
   if (!tier) return `#${id}`
   return tier.label?.trim() || `#${id}`
+}
+
+function fulfillmentModeLabel(mode?: string | null) {
+  return mode === 'redeem_code' ? '兑换码' : '直充'
 }
 
 function requestContent(request: AccessRequest) {

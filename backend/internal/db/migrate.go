@@ -46,6 +46,10 @@ CREATE TABLE IF NOT EXISTS redeem_access_requests (
   sub2api_monthly_limit_usd REAL NULL,
   validity_days INTEGER NOT NULL DEFAULT 0,
   note TEXT NOT NULL DEFAULT '',
+  fulfillment_mode TEXT NOT NULL DEFAULT 'direct_charge',
+  fulfillment_result TEXT NOT NULL DEFAULT '',
+  fulfilled_via TEXT NOT NULL DEFAULT '',
+  fulfillment_error TEXT NOT NULL DEFAULT '',
   status TEXT NOT NULL,
   approval_token_hash TEXT NOT NULL,
   approval_token_expires_at TEXT NOT NULL,
@@ -185,6 +189,10 @@ func (s *Store) ensureAccessRequestSnapshotColumns(ctx context.Context) error {
 		"sub2api_weekly_limit_usd":  "REAL NULL",
 		"sub2api_monthly_limit_usd": "REAL NULL",
 		"validity_days":             "INTEGER NOT NULL DEFAULT 0",
+		"fulfillment_mode":          "TEXT NOT NULL DEFAULT 'direct_charge'",
+		"fulfillment_result":        "TEXT NOT NULL DEFAULT ''",
+		"fulfilled_via":             "TEXT NOT NULL DEFAULT ''",
+		"fulfillment_error":         "TEXT NOT NULL DEFAULT ''",
 	})
 }
 

@@ -2,11 +2,13 @@ import { request } from './http'
 import { asArray } from './arrays'
 import type { AccessRequest } from './types'
 
-export function createAccessRequest(tierId: number, note: string) {
+export type FulfillmentMode = 'direct_charge' | 'redeem_code'
+
+export function createAccessRequest(tierId: number, note: string, fulfillmentMode: FulfillmentMode = 'direct_charge') {
   return request<AccessRequest>({
     method: 'POST',
     url: '/redeem-access-requests',
-    data: { tier_id: tierId, note },
+    data: { tier_id: tierId, note, fulfillment_mode: fulfillmentMode },
   })
 }
 

@@ -6,6 +6,10 @@
         <div class="value">{{ accessRequests.length }}</div>
       </div>
       <div class="stat">
+        <div class="label">直充完成</div>
+        <div class="value">{{ directChargeCount }}</div>
+      </div>
+      <div class="stat">
         <div class="label">已发放兑换码</div>
         <div class="value">{{ redeemCodes.length }}</div>
       </div>
@@ -47,7 +51,7 @@
       <div class="toolbar">
         <div>
           <div style="font-weight: 700">最近申请</div>
-          <div class="muted">每个已审批申请都会对应一个兑换码。</div>
+          <div class="muted">每个已完成申请会以直充或兑换码的形式交付。</div>
         </div>
       </div>
       <el-table :data="accessRequests.slice(0, 5)" stripe size="small" style="width: 100%">
@@ -58,18 +62,12 @@
         <el-table-column label="内容" width="130">
           <template #default="{ row }">{{ requestContent(row) }}</template>
         </el-table-column>
-        <el-table-column label="实付金额" width="130">
-          <template #default="{ row }">{{ Number(row.pay_amount_cny).toFixed(0) }} 人民币</template>
+        <el-table-column label="交付结果" min-width="180">
+          <template #default="{ row }">{{ requestDeliverySummary(row) }}</template>
         </el-table-column>
-        <el-table-column prop="note" label="备注" min-width="220" />
         <el-table-column prop="status" label="状态" width="120">
           <template #default="{ row }">
             <StatusTag :status="row.status" />
-          </template>
-        </el-table-column>
-        <el-table-column prop="notification_status" label="邮件" width="120">
-          <template #default="{ row }">
-            <StatusTag :status="row.notification_status" />
           </template>
         </el-table-column>
         <el-table-column prop="created_at" label="创建时间" min-width="180">
@@ -82,7 +80,7 @@
       <div class="toolbar">
         <div>
           <div style="font-weight: 700">最近兑换码</div>
-          <div class="muted">可以直接复制后到 {{ branding.title }} 使用。</div>
+          <div class="muted">实际发放的兑换码会出现在这里，直充成功不会占用兑换码。</div>
         </div>
       </div>
       <CodeTable :codes="redeemCodes.slice(0, 10)" />
@@ -102,16 +100,16 @@ import { listAccessRequests } from '@/api/access'
 import { listRedeemCodes, listRedeemTiers } from '@/api/redeem'
 import type { AccessRequest, RedeemCode, RedeemTier } from '@/api/types'
 import { tierCodeType } from '@/utils/tiers'
-import { useBrandingStore } from '@/stores/branding'
 
 const router = useRouter()
-const branding = useBrandingStore()
 const accessRequests = ref<AccessRequest[]>([])
 const tiers = ref<RedeemTier[]>([])
 const redeemCodes = ref<RedeemCode[]>([])
 let refreshTimer: number | undefined
+
 const enabledTiers = computed(() => tiers.value.filter((tier) => tier.enabled))
 const tierMap = computed(() => new Map(tiers.value.map((tier) => [tier.id, tier])))
+const directChargeCount = computed(() => accessRequests.value.filter((item) => item.fulfilled_via === 'direct_charge').length)
 
 async function loadAll() {
   try {
@@ -152,6 +150,22 @@ function requestContent(request: AccessRequest) {
     return days > 0 ? `${days} 天订阅` : '订阅'
   }
   return `${Number(request.amount).toFixed(0)} 美元`
+}
+
+function requestDeliverySummary(request: AccessRequest) {
+  if (request.fulfilled_via === 'direct_charge') {
+    return '已直充到账'
+  }
+  if (request.fulfilled_via === 'redeem_code_fallback') {
+    return '直充失败，已改为发码'
+  }
+  if (request.fulfilled_via === 'redeem_code') {
+    return '已发放兑换码'
+  }
+  if (request.fulfillment_mode === 'redeem_code') {
+    return '待发放兑换码'
+  }
+  return '待直充或发码'
 }
 
 function formatTime(value?: string | null) {

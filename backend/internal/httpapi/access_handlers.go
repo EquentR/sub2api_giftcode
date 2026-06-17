@@ -20,7 +20,7 @@ func (h *Handlers) CreateAccessRequest(c *gin.Context) {
 		writeError(c, http.StatusBadRequest, err.Error())
 		return
 	}
-	result, err := h.service.CreateAccessRequest(c.Request.Context(), sessionUser.Session.ID, req.TierID, req.Note)
+	result, err := h.service.CreateAccessRequest(c.Request.Context(), sessionUser.Session.ID, req.TierID, req.Note, req.FulfillmentMode)
 	if err != nil {
 		status, msg, reason := statusForError(err)
 		if reason != "" {

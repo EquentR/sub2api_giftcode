@@ -10,6 +10,7 @@ export function approvalRequestDetailRows(request: AccessRequest): ApprovalDetai
     { label: '申请编号', value: `#${request.id}` },
     { label: '申请人', value: `${request.requestor_username} (${request.requestor_email})` },
     { label: '兑换类型', value: approvalCodeTypeLabel(request.code_type) },
+    { label: '发放方式', value: fulfillmentModeLabel(request.fulfillment_mode) },
     { label: '档位', value: approvalTierLabel(request) },
   ]
 
@@ -58,4 +59,8 @@ function approvalLimitValue(value?: number | null) {
     return '无限制'
   }
   return `${Number(value).toFixed(0)} USD`
+}
+
+function fulfillmentModeLabel(mode?: string | null) {
+  return mode === 'redeem_code' ? '兑换码' : '直充'
 }

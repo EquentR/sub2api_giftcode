@@ -57,7 +57,7 @@ func TestCreateAccessRequestReturnsTierID(t *testing.T) {
 		AdminToAddress: "admin@example.com",
 	}))
 
-	reqBody := strings.NewReader(`{"tier_id":1,"note":"please approve"}`)
+	reqBody := strings.NewReader(`{"tier_id":1,"note":"please approve","fulfillment_mode":"redeem_code"}`)
 	sessionUser, err := svc.LoginWithAccessToken(context.Background(), "access-1", nil)
 	require.NoError(t, err)
 
@@ -89,17 +89,23 @@ func TestCreateAccessRequestReturnsTierID(t *testing.T) {
 	require.NotNil(t, envelope.Data)
 
 	var created struct {
-		ID           int64   `json:"id"`
-		TierID       int64   `json:"tier_id"`
-		Amount       float64 `json:"amount"`
-		PayAmountCny float64 `json:"pay_amount_cny"`
-		Note         string  `json:"note"`
+		ID                int64   `json:"id"`
+		TierID            int64   `json:"tier_id"`
+		Amount            float64 `json:"amount"`
+		PayAmountCny      float64 `json:"pay_amount_cny"`
+		Note              string  `json:"note"`
+		FulfillmentMode   string  `json:"fulfillment_mode"`
+		FulfillmentResult string  `json:"fulfillment_result"`
+		FulfilledVia      string  `json:"fulfilled_via"`
 	}
 	require.NoError(t, json.Unmarshal(envelope.Data, &created))
 	require.Equal(t, int64(1), created.TierID)
 	require.Equal(t, 120.0, created.Amount)
 	require.Equal(t, 120.0, created.PayAmountCny)
 	require.Equal(t, "please approve", created.Note)
+	require.Equal(t, "redeem_code", created.FulfillmentMode)
+	require.Equal(t, "", created.FulfillmentResult)
+	require.Equal(t, "", created.FulfilledVia)
 }
 
 func TestApproveAccessRequestReturnsIssuedCode(t *testing.T) {
@@ -132,7 +138,7 @@ func TestApproveAccessRequestReturnsIssuedCode(t *testing.T) {
 	userSession, err := svc.LoginWithAccessToken(context.Background(), "access-1", nil)
 	require.NoError(t, err)
 
-	req, err := svc.CreateAccessRequest(context.Background(), userSession.Session.ID, 1, "please approve")
+	req, err := svc.CreateAccessRequest(context.Background(), userSession.Session.ID, 1, "please approve", "redeem_code")
 	require.NoError(t, err)
 
 	recorder := httptest.NewRecorder()
@@ -154,12 +160,15 @@ func TestApproveAccessRequestReturnsIssuedCode(t *testing.T) {
 
 	var resp struct {
 		Request struct {
-			ID           int64   `json:"id"`
-			Status       string  `json:"status"`
-			TierID       int64   `json:"tier_id"`
-			Amount       float64 `json:"amount"`
-			PayAmountCny float64 `json:"pay_amount_cny"`
-			UpstreamCode string  `json:"upstream_code"`
+			ID                int64   `json:"id"`
+			Status            string  `json:"status"`
+			TierID            int64   `json:"tier_id"`
+			Amount            float64 `json:"amount"`
+			PayAmountCny      float64 `json:"pay_amount_cny"`
+			UpstreamCode      string  `json:"upstream_code"`
+			FulfillmentMode   string  `json:"fulfillment_mode"`
+			FulfillmentResult string  `json:"fulfillment_result"`
+			FulfilledVia      string  `json:"fulfilled_via"`
 		} `json:"request"`
 		Code struct {
 			ID      int64   `json:"id"`
@@ -174,6 +183,9 @@ func TestApproveAccessRequestReturnsIssuedCode(t *testing.T) {
 	require.Equal(t, 120.0, resp.Request.Amount)
 	require.Equal(t, 120.0, resp.Request.PayAmountCny)
 	require.Equal(t, "consumed", resp.Request.Status)
+	require.Equal(t, "redeem_code", resp.Request.FulfillmentMode)
+	require.Equal(t, "redeem_code_issued", resp.Request.FulfillmentResult)
+	require.Equal(t, "redeem_code", resp.Request.FulfilledVia)
 	require.Equal(t, "code-99", resp.Code.Code)
 	require.Equal(t, 120.0, resp.Code.Value)
 	require.Equal(t, "unused", resp.Code.Status)
@@ -234,7 +246,7 @@ INSERT INTO redeem_access_requests (
 	require.Contains(t, getRecorder.Body.String(), "team reimbursement")
 	require.Contains(t, getRecorder.Body.String(), "120")
 	require.Contains(t, getRecorder.Body.String(), "95")
-	require.Contains(t, getRecorder.Body.String(), "确认审批并发码")
+	require.Contains(t, getRecorder.Body.String(), "确认处理申请")
 	require.Equal(t, 0, upstreamCalls)
 
 	var status string
@@ -247,7 +259,7 @@ INSERT INTO redeem_access_requests (
 	r.ServeHTTP(postRecorder, postReq)
 
 	require.Equal(t, http.StatusOK, postRecorder.Code)
-	require.Contains(t, postRecorder.Body.String(), "已批准")
+	require.Contains(t, postRecorder.Body.String(), "申请已处理")
 	require.Equal(t, 1, upstreamCalls)
 	require.NoError(t, store.DB.QueryRowContext(context.Background(), `SELECT status FROM redeem_access_requests WHERE id = 1`).Scan(&status))
 	require.Equal(t, "consumed", status)

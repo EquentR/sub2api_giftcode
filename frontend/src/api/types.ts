@@ -35,6 +35,10 @@ export interface AccessRequest {
   sub2api_monthly_limit_usd?: number | null
   validity_days: number
   note: string
+  fulfillment_mode: string
+  fulfillment_result: string
+  fulfilled_via: string
+  fulfillment_error: string
   status: string
   approval_token_hash: string
   approval_token_expires_at: string
@@ -143,6 +147,7 @@ export interface DashboardStats {
   approved_access_requests: number
   rejected_access_requests: number
   consumed_access_requests: number
+  direct_charge_access_requests: number
   redeem_requests: number
   redeem_codes_total: number
   redeem_codes_unused: number

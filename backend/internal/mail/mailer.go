@@ -86,7 +86,7 @@ func (m *Mailer) ApprovalEmail(brandTitle, subjectPrefix string, requestID int64
 	if strings.TrimSpace(subjectPrefix) == "" {
 		subjectPrefix = fmt.Sprintf("[%s]", brandTitle)
 	}
-	subject := fmt.Sprintf("%s 兑换码审批申请 #%d", subjectPrefix, requestID)
+	subject := fmt.Sprintf("%s 兑换申请审批 #%d", subjectPrefix, requestID)
 	trimmedNote := strings.TrimSpace(note)
 	if trimmedNote == "" {
 		trimmedNote = "无"
@@ -96,7 +96,7 @@ func (m *Mailer) ApprovalEmail(brandTitle, subjectPrefix string, requestID int64
 		tierLabel = fmt.Sprintf("%.0f 美元", amount)
 	}
 	body := strings.Join([]string{
-		brandTitle + " 兑换码审批申请",
+		brandTitle + " 兑换申请审批",
 		"",
 		fmt.Sprintf("申请编号: %d", requestID),
 		fmt.Sprintf("申请人: %s", requestorUsername),
@@ -106,8 +106,8 @@ func (m *Mailer) ApprovalEmail(brandTitle, subjectPrefix string, requestID int64
 		fmt.Sprintf("实付金额: %.0f 人民币", payAmountCny),
 		fmt.Sprintf("申请理由: %s", trimmedNote),
 		"",
-		"请先核对以上信息。打开链接只会进入确认页，不会直接发码。",
-		"在确认页点击“确认审批并发码”后，系统才会审批并下发兑换码。",
+		"请先核对以上信息。打开链接只会进入确认页，不会立即处理申请。",
+		"在确认页点击“确认处理申请”后，系统才会按申请方式处理本单。",
 		"",
 		"审批确认链接:",
 		approvalURL,

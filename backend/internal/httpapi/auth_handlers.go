@@ -121,12 +121,18 @@ func (h *Handlers) ConfirmAccessRequest(c *gin.Context) {
 		return
 	}
 	frontend := h.appReturnURL()
-	html := "<html><body style=\"font-family: sans-serif; padding: 24px;\">" +
-		"<h2>已批准</h2>" +
-		"<p>申请 #" + fmtInt64(req.ID) + " 已批准，兑换码已经下发。</p>" +
+	result := "兑换码已经下发。"
+	if req.FulfilledVia == "direct_charge" {
+		result = "权益已经直充到账。"
+	} else if req.FulfilledVia == "redeem_code_fallback" {
+		result = "直充失败后已自动改为发码。"
+	}
+	body := "<html><body style=\"font-family: sans-serif; padding: 24px;\">" +
+		"<h2>申请已处理</h2>" +
+		"<p>申请 #" + fmtInt64(req.ID) + " 已处理完成，" + htmlEscape(result) + "</p>" +
 		"<p><a href=\"" + htmlEscape(frontend) + "\">打开应用</a></p>" +
 		"</body></html>"
-	writeHTML(c, http.StatusOK, html)
+	writeHTML(c, http.StatusOK, body)
 }
 
 func (h *Handlers) ConfirmAccessRequestJSON(c *gin.Context) {
@@ -174,13 +180,17 @@ func (h *Handlers) ShowAccessRequestConfirmation(c *gin.Context) {
 		h.writeApprovalResultPage(c, req, app.ErrConflict)
 		return
 	}
+	modeText := "系统会优先直充到账，失败会自动改为发码。"
+	if strings.EqualFold(strings.TrimSpace(req.FulfillmentMode), "redeem_code") {
+		modeText = "系统会按申请直接下发兑换码。"
+	}
 	page := "<html><body style=\"font-family: sans-serif; padding: 24px; max-width: 720px;\">" +
-		"<h2>确认审批并发码</h2>" +
-		"<p style=\"color:#b45309;\">请核对申请人、理由和档位。点击下方按钮后会立即审批并下发兑换码。</p>" +
+		"<h2>确认处理申请</h2>" +
+		"<p style=\"color:#b45309;\">请核对申请人、理由和档位。点击下方按钮后会立即处理申请。" + htmlEscape(modeText) + "</p>" +
 		approvalRequestDetailsHTML(req) +
 		"<form method=\"post\" action=\"/api/admin/redeem-access-requests/confirm\" style=\"margin-top: 20px;\">" +
 		"<input type=\"hidden\" name=\"token\" value=\"" + htmlEscape(token) + "\">" +
-		"<button type=\"submit\" style=\"background:#2563eb;color:white;border:0;border-radius:6px;padding:10px 16px;cursor:pointer;\">确认审批并发码</button>" +
+		"<button type=\"submit\" style=\"background:#2563eb;color:white;border:0;border-radius:6px;padding:10px 16px;cursor:pointer;\">确认处理申请</button>" +
 		"</form>" +
 		"</body></html>"
 	writeHTML(c, http.StatusOK, page)
@@ -188,8 +198,8 @@ func (h *Handlers) ShowAccessRequestConfirmation(c *gin.Context) {
 
 func (h *Handlers) writeApprovalResultPage(c *gin.Context, req *models.AccessRequest, err error) {
 	_ = err
-	title := "审批失败"
-	detail := "这次审批没有完成，请返回应用后重试。"
+	title := "处理失败"
+	detail := "这次处理没有完成，请返回应用后重试。"
 	if req != nil {
 		switch req.Status {
 		case "expired":
@@ -197,7 +207,7 @@ func (h *Handlers) writeApprovalResultPage(c *gin.Context, req *models.AccessReq
 			detail = "这条审批链接已经过期，请联系管理员重新发送。"
 		case "approved", "consumed":
 			title = "已经处理"
-			detail = "这条审批已经完成。"
+			detail = "这条审批申请已经完成处理。"
 		case "rejected":
 			title = "已经拒绝"
 			detail = "这条申请已经被拒绝。"
@@ -242,10 +252,15 @@ func approvalRequestDetailsHTML(req *models.AccessRequest) string {
 	if note == "" {
 		note = "-"
 	}
+	mode := "直充到账（推荐）"
+	if strings.EqualFold(strings.TrimSpace(req.FulfillmentMode), "redeem_code") {
+		mode = "下发兑换码"
+	}
 	rows := []string{
 		approvalDetailRow("申请编号", fmt.Sprintf("#%d", req.ID)),
 		approvalDetailRow("申请人", fmt.Sprintf("%s (%s)", req.RequestorUsername, req.RequestorEmail)),
 		approvalDetailRow("兑换类型", approvalCodeTypeLabel(req.CodeType)),
+		approvalDetailRow("发放方式", mode),
 		approvalDetailRow("档位", approvalTierLabel(req)),
 	}
 	if strings.EqualFold(strings.TrimSpace(req.CodeType), "subscription") {
@@ -261,9 +276,7 @@ func approvalRequestDetailsHTML(req *models.AccessRequest) string {
 		approvalDetailRow("实付金额", fmt.Sprintf("%.0f 人民币", req.PayAmountCny)),
 		approvalDetailRow("申请理由", note),
 	)
-	return "<table style=\"border-collapse:collapse;width:100%;margin-top:16px;\">" +
-		strings.Join(rows, "") +
-		"</table>"
+	return "<table style=\"border-collapse:collapse;width:100%;margin-top:16px;\">" + strings.Join(rows, "") + "</table>"
 }
 
 func approvalDetailRow(label, value string) string {
