@@ -21,7 +21,7 @@ func TestApprovalConfirmURLUsesFrontendBase(t *testing.T) {
 	require.Equal(t, "https://app.example.com/sub2api/approval/confirm?token=abc%2F123", got)
 }
 
-func TestApprovalConfirmURLFallsBackToBackendBaseWhenFrontendBaseMissing(t *testing.T) {
+func TestApprovalConfirmURLFallsBackToFrontendRouteOnBackendBaseWhenFrontendBaseMissing(t *testing.T) {
 	svc := &Service{
 		cfg: &config.RuntimeConfig{},
 	}
@@ -29,7 +29,7 @@ func TestApprovalConfirmURLFallsBackToBackendBaseWhenFrontendBaseMissing(t *test
 
 	got := svc.approvalConfirmURL("abc/123")
 
-	require.Equal(t, "https://api.example.com/api/admin/redeem-access-requests/confirm?token=abc%2F123", got)
+	require.Equal(t, "https://api.example.com/approval/confirm?token=abc%2F123", got)
 }
 
 func TestApprovalTTLDefaultsWhenRuntimeConfigHasNoLoadedDefaults(t *testing.T) {

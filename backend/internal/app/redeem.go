@@ -279,6 +279,9 @@ func (s *Service) issueDirectCharge(ctx context.Context, accessReq *models.Acces
 	if accessReq == nil || tier == nil {
 		return ErrBadRequest
 	}
+	if err := s.requireUpstreamClient(); err != nil {
+		return fmt.Errorf("%w: %w", ErrUpstreamFailed, err)
+	}
 	codeType := normalizeCodeType(accessReq.CodeType)
 	if codeType == "" {
 		codeType = normalizeCodeType(tier.CodeType)
@@ -303,9 +306,12 @@ func (s *Service) issueDirectCharge(ctx context.Context, accessReq *models.Acces
 		if accessReq.Sub2APIGroupID == nil || *accessReq.Sub2APIGroupID <= 0 || accessReq.ValidityDays <= 0 {
 			return ErrBadRequest
 		}
+		if accessReq.PayAmountCny <= 0 {
+			return ErrBadRequest
+		}
 		input.GroupID = accessReq.Sub2APIGroupID
 		input.ValidityDays = accessReq.ValidityDays
-		input.Value = 0
+		input.Value = accessReq.PayAmountCny
 	}
 	created, err := s.upstream.CreateAndRedeemCode(ctx, idempotencyKey, input)
 	if err != nil {
@@ -318,6 +324,9 @@ func (s *Service) issueDirectCharge(ctx context.Context, accessReq *models.Acces
 	if created == nil || strings.TrimSpace(created.Code) == "" {
 		return fmt.Errorf("%w: empty upstream response", ErrUpstreamFailed)
 	}
+	if err := validateDirectChargeRedeemed(created, userID); err != nil {
+		return err
+	}
 	now := s.now()
 	if err := s.markAccessRequestConsumedWithFulfillment(ctx, accessReq.ID, now, fulfillmentResultDirectSucceeded, fulfilledViaDirectCharge, ""); err != nil {
 		return err
@@ -329,6 +338,19 @@ func (s *Service) issueDirectCharge(ctx context.Context, accessReq *models.Acces
 	accessReq.FulfilledVia = fulfilledViaDirectCharge
 	accessReq.FulfillmentError = ""
 	accessReq.UpdatedAt = now
+	return nil
+}
+
+func validateDirectChargeRedeemed(code *sub2api.RedeemCode, expectedUserID int64) error {
+	if code == nil {
+		return fmt.Errorf("%w: empty upstream response", ErrUpstreamFailed)
+	}
+	if normalizeUpstreamCodeStatus(code.Status) != "used" || code.UsedBy == nil {
+		return fmt.Errorf("%w: direct charge code %s not redeemed", ErrUpstreamFailed, strings.TrimSpace(code.Code))
+	}
+	if *code.UsedBy != expectedUserID {
+		return fmt.Errorf("%w: direct charge code %s used by unexpected user %d", ErrConflict, strings.TrimSpace(code.Code), *code.UsedBy)
+	}
 	return nil
 }
 

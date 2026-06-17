@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -461,6 +462,211 @@ INSERT INTO redeem_access_requests (
 	require.Equal(t, "redeem_code_fallback", req.FulfilledVia)
 	require.Contains(t, req.FulfillmentError, "direct charge failed")
 	require.Equal(t, "code-99", code.Code)
+}
+
+func TestApproveAccessRequestDirectChargeFallsBackWhenUpstreamDoesNotRedeem(t *testing.T) {
+	store, err := db.Open("sqlite", ":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+	require.NoError(t, store.Migrate(context.Background()))
+
+	now := time.Now().UTC().Truncate(time.Second)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/admin/redeem-codes/create-and-redeem":
+			writeRedeemTestEnvelope(w, map[string]any{
+				"redeem_code": map[string]any{
+					"id":         501,
+					"code":       "giftcode-access-1",
+					"type":       "balance",
+					"value":      120.0,
+					"status":     "unused",
+					"created_at": now.Format(time.RFC3339Nano),
+				},
+			})
+		case "/api/v1/admin/redeem-codes/generate":
+			writeRedeemTestEnvelope(w, []sub2api.RedeemCode{{
+				ID:        99,
+				Code:      "code-99",
+				Type:      "balance",
+				Value:     120.0,
+				Status:    "unused",
+				CreatedAt: now,
+			}})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(upstream.Close)
+
+	svc := New(
+		&config.RuntimeConfig{},
+		store,
+		sub2api.NewClient(upstream.URL, "admin-key"),
+		mail.New(mail.Config{}),
+	)
+
+	_, err = store.DB.ExecContext(context.Background(), `
+INSERT INTO redeem_access_requests (
+  requestor_upstream_user_id, requestor_email, requestor_username, tier_id, code_type, tier_label,
+  amount, pay_amount_cny, note, status, fulfillment_mode, fulfillment_result, fulfilled_via, fulfillment_error,
+  approval_token_hash, approval_token_expires_at, notification_status, notification_error,
+  created_at, updated_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+`, 1, "alice@example.com", "alice", 1, "balance", "$120", 120.0, 120.0, "please approve", "pending", "direct_charge", "", "", "", "token-hash", now.Add(time.Hour).Format(time.RFC3339Nano), "sent", "", now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano))
+	require.NoError(t, err)
+
+	req, code, err := svc.ApproveAccessRequestByID(context.Background(), 1)
+	require.NoError(t, err)
+	require.NotNil(t, req)
+	require.NotNil(t, code)
+	require.Equal(t, "redeem_code_issued", req.FulfillmentResult)
+	require.Equal(t, "redeem_code_fallback", req.FulfilledVia)
+	require.Contains(t, req.FulfillmentError, "not redeemed")
+	require.Equal(t, "code-99", code.Code)
+}
+
+func TestApproveAccessRequestDirectChargeConflictsWhenUpstreamRedeemsDifferentUser(t *testing.T) {
+	store, err := db.Open("sqlite", ":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+	require.NoError(t, store.Migrate(context.Background()))
+
+	now := time.Now().UTC().Truncate(time.Second)
+	wrongUserID := int64(2)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/admin/redeem-codes/create-and-redeem":
+			writeRedeemTestEnvelope(w, map[string]any{
+				"redeem_code": map[string]any{
+					"id":         501,
+					"code":       "giftcode-access-1",
+					"type":       "balance",
+					"value":      120.0,
+					"status":     "used",
+					"used_by":    wrongUserID,
+					"used_at":    now.Format(time.RFC3339Nano),
+					"created_at": now.Format(time.RFC3339Nano),
+				},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(upstream.Close)
+
+	svc := New(
+		&config.RuntimeConfig{},
+		store,
+		sub2api.NewClient(upstream.URL, "admin-key"),
+		mail.New(mail.Config{}),
+	)
+
+	_, err = store.DB.ExecContext(context.Background(), `
+INSERT INTO redeem_access_requests (
+  requestor_upstream_user_id, requestor_email, requestor_username, tier_id, code_type, tier_label,
+  amount, pay_amount_cny, note, status, fulfillment_mode, fulfillment_result, fulfilled_via, fulfillment_error,
+  approval_token_hash, approval_token_expires_at, notification_status, notification_error,
+  created_at, updated_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+`, 1, "alice@example.com", "alice", 1, "balance", "$120", 120.0, 120.0, "please approve", "pending", "direct_charge", "", "", "", "token-hash", now.Add(time.Hour).Format(time.RFC3339Nano), "sent", "", now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano))
+	require.NoError(t, err)
+
+	req, code, err := svc.ApproveAccessRequestByID(context.Background(), 1)
+	require.Error(t, err)
+	require.True(t, errors.Is(err, ErrConflict))
+	require.Nil(t, req)
+	require.Nil(t, code)
+
+	var status string
+	require.NoError(t, store.DB.QueryRowContext(context.Background(), `SELECT status FROM redeem_access_requests WHERE id = 1`).Scan(&status))
+	require.Equal(t, "pending", status)
+
+	var redeemRequestCount int
+	require.NoError(t, store.DB.QueryRowContext(context.Background(), `SELECT COUNT(1) FROM redeem_requests WHERE access_request_id = 1`).Scan(&redeemRequestCount))
+	require.Equal(t, 0, redeemRequestCount)
+}
+
+func TestApproveAccessRequestDirectChargeSubscriptionUsesPositiveValue(t *testing.T) {
+	store, err := db.Open("sqlite", ":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+	require.NoError(t, store.Migrate(context.Background()))
+
+	now := time.Now().UTC().Truncate(time.Second)
+	var sawPayload map[string]any
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/admin/groups/all":
+			writeRedeemTestEnvelope(w, []sub2api.Group{{
+				ID:               2,
+				Name:             "Claude monthly",
+				Platform:         "anthropic",
+				Status:           "active",
+				SubscriptionType: "subscription",
+			}})
+		case "/api/v1/admin/redeem-codes/create-and-redeem":
+			require.NoError(t, json.NewDecoder(r.Body).Decode(&sawPayload))
+			require.Equal(t, "subscription", sawPayload["type"])
+			require.Equal(t, 88.0, sawPayload["value"])
+			require.Equal(t, float64(2), sawPayload["group_id"])
+			require.Equal(t, float64(30), sawPayload["validity_days"])
+			writeRedeemTestEnvelope(w, map[string]any{
+				"redeem_code": map[string]any{
+					"id":            501,
+					"code":          "giftcode-access-1",
+					"type":          "subscription",
+					"value":         88.0,
+					"status":        "used",
+					"used_by":       1,
+					"used_at":       now.Format(time.RFC3339Nano),
+					"group_id":      2,
+					"validity_days": 30,
+					"created_at":    now.Format(time.RFC3339Nano),
+				},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(upstream.Close)
+
+	svc := New(
+		&config.RuntimeConfig{},
+		store,
+		sub2api.NewClient(upstream.URL, "admin-key"),
+		mail.New(mail.Config{}),
+	)
+	tiers, err := svc.ReplaceRedeemTiers(context.Background(), []models.RedeemTier{{
+		CodeType:       "subscription",
+		PayAmountCny:   88,
+		Label:          "Claude 30 days",
+		Enabled:        true,
+		SortOrder:      10,
+		Sub2APIGroupID: int64Ptr(2),
+		ValidityDays:   30,
+	}})
+	require.NoError(t, err)
+	require.Len(t, tiers, 1)
+
+	_, err = store.DB.ExecContext(context.Background(), `
+INSERT INTO redeem_access_requests (
+  requestor_upstream_user_id, requestor_email, requestor_username, tier_id, code_type,
+  tier_label, amount, pay_amount_cny, sub2api_group_id, sub2api_group_name, sub2api_group_platform,
+  sub2api_daily_limit_usd, sub2api_weekly_limit_usd, sub2api_monthly_limit_usd, validity_days,
+  note, status, fulfillment_mode, fulfillment_result, fulfilled_via, fulfillment_error,
+  approval_token_hash, approval_token_expires_at, notification_status, notification_error,
+  created_at, updated_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+`, 1, "alice@example.com", "alice", tiers[0].ID, "subscription", "Claude 30 days", 0.0, 88.0, 2, "Claude monthly", "anthropic", nil, nil, nil, 30, "please approve", "pending", "direct_charge", "", "", "", "token-hash", now.Add(time.Hour).Format(time.RFC3339Nano), "sent", "", now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano))
+	require.NoError(t, err)
+
+	req, code, err := svc.ApproveAccessRequestByID(context.Background(), 1)
+	require.NoError(t, err)
+	require.NotNil(t, req)
+	require.Nil(t, code)
+	require.Equal(t, "direct_charge_succeeded", req.FulfillmentResult)
+	require.Equal(t, "direct_charge", req.FulfilledVia)
 }
 
 func TestApproveAccessRequestIssuesSubscriptionRedeemCode(t *testing.T) {

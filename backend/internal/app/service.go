@@ -95,14 +95,10 @@ func (s *Service) approvalTTL() time.Duration {
 
 func (s *Service) approvalConfirmURL(token string) string {
 	escapedToken := url.QueryEscape(token)
-	// Approval emails should enter through the public frontend URL. In production
-	// the backend may be bound to an internal port that is not reachable through
-	// the reverse proxy. Only fall back to App.BaseURL when app.frontend_url is
-	// intentionally left empty.
 	if strings.TrimSpace(s.cfg.App.FrontendURL) != "" {
 		return s.frontendURL("/approval/confirm?token=" + escapedToken)
 	}
-	return s.publicURL("/api/admin/redeem-access-requests/confirm?token=" + escapedToken)
+	return s.publicURL("/approval/confirm?token=" + escapedToken)
 }
 
 func (s *Service) publicURL(path string) string {
