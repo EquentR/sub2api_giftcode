@@ -93,6 +93,9 @@ func (s *Service) replaceRedeemTiers(ctx context.Context, tiers []models.RedeemT
 	if err != nil {
 		return nil, err
 	}
+	defer func() {
+		_ = tx.Rollback()
+	}()
 	rollback := func(err error) error {
 		_ = tx.Rollback()
 		return err
@@ -174,6 +177,9 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		allIDs = append(allIDs, id)
 	}
 	if err := rows.Err(); err != nil {
+		return nil, rollback(err)
+	}
+	if err := rows.Close(); err != nil {
 		return nil, rollback(err)
 	}
 	for _, id := range allIDs {

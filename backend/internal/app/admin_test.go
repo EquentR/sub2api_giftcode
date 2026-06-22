@@ -1,7 +1,10 @@
 package app
 
 import (
+	"database/sql"
 	"context"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -185,6 +188,106 @@ func TestReplaceRedeemTiersDisablesBalanceMirrorWhenTypeChanges(t *testing.T) {
 	err = store.DB.QueryRowContext(context.Background(), `SELECT enabled FROM redeem_balance_tiers WHERE id = ?`, id).Scan(&enabled)
 	require.NoError(t, err)
 	require.Zero(t, enabled)
+}
+
+func TestReplaceRedeemTiersCompletesAfterExternalReadLockReleases(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "locked.sqlite") + "?_pragma=busy_timeout(1000)"
+
+	store, err := db.Open("sqlite", path)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+
+	require.NoError(t, store.Migrate(context.Background()))
+
+	svc := New(&config.RuntimeConfig{}, store, nil, nil)
+	tiers, err := svc.ListRedeemTiers(context.Background(), true)
+	require.NoError(t, err)
+	require.NotEmpty(t, tiers)
+	tiers[0].Label = tiers[0].Label + " updated"
+
+	lockDB, err := sql.Open("sqlite", path)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = lockDB.Close() })
+
+	lockTx, err := lockDB.BeginTx(context.Background(), &sql.TxOptions{ReadOnly: true})
+	require.NoError(t, err)
+	rows, err := lockTx.QueryContext(context.Background(), `SELECT id FROM redeem_tiers`)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = rows.Close() })
+	t.Cleanup(func() { _ = lockTx.Rollback() })
+	require.True(t, rows.Next())
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := svc.ReplaceRedeemTiers(context.Background(), tiers)
+		done <- err
+	}()
+
+	time.Sleep(50 * time.Millisecond)
+	require.NoError(t, rows.Close())
+	require.NoError(t, lockTx.Rollback())
+
+	select {
+	case err := <-done:
+		require.NoError(t, err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("ReplaceRedeemTiers did not finish after releasing the read lock")
+	}
+
+	reloaded, err := svc.ListRedeemTiers(context.Background(), true)
+	require.NoError(t, err)
+	byID := make(map[int64]models.RedeemTier, len(reloaded))
+	for _, tier := range reloaded {
+		byID[tier.ID] = tier
+	}
+	require.Equal(t, tiers[0].Label, byID[tiers[0].ID].Label)
+}
+
+func TestReplaceRedeemTiersReleasesConnectionAfterCommitBusy(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "locked.sqlite") + "?_pragma=busy_timeout(50)"
+
+	store, err := db.Open("sqlite", path)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+
+	require.NoError(t, store.Migrate(context.Background()))
+
+	svc := New(&config.RuntimeConfig{}, store, nil, nil)
+	tiers, err := svc.ListRedeemTiers(context.Background(), true)
+	require.NoError(t, err)
+	require.NotEmpty(t, tiers)
+	tiers[0].Label = tiers[0].Label + " commit busy"
+
+	lockDB, err := sql.Open("sqlite", path)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = lockDB.Close() })
+
+	lockTx, err := lockDB.BeginTx(context.Background(), &sql.TxOptions{ReadOnly: true})
+	require.NoError(t, err)
+	rows, err := lockTx.QueryContext(context.Background(), `SELECT id FROM redeem_tiers`)
+	require.NoError(t, err)
+	require.True(t, rows.Next())
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := svc.ReplaceRedeemTiers(context.Background(), tiers)
+		done <- err
+	}()
+
+	err = <-done
+	require.Error(t, err)
+	require.Contains(t, strings.ToLower(err.Error()), "locked")
+
+	require.NoError(t, rows.Close())
+	require.NoError(t, lockTx.Rollback())
+
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+
+	_, err = store.DB.ExecContext(ctx, `UPDATE redeem_tiers SET updated_at = updated_at WHERE id = ?`, tiers[0].ID)
+	require.NoError(t, err)
 }
 
 func int64Ptr(v int64) *int64 {

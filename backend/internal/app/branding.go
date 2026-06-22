@@ -83,6 +83,9 @@ func (s *Service) ReplaceSiteBranding(ctx context.Context, branding models.SiteB
 	if err != nil {
 		return nil, err
 	}
+	defer func() {
+		_ = tx.Rollback()
+	}()
 	rollback := func(err error) error {
 		_ = tx.Rollback()
 		return err

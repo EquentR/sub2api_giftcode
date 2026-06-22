@@ -478,6 +478,9 @@ func (s *Service) persistIssuedRedeemCode(ctx context.Context, redeemReq *models
 	if err != nil {
 		return err
 	}
+	defer func() {
+		_ = tx.Rollback()
+	}()
 	rollback := func(err error) error {
 		_ = tx.Rollback()
 		return err
