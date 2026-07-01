@@ -1,10 +1,9 @@
 package app
 
 import (
-	"database/sql"
 	"context"
+	"database/sql"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -244,7 +243,7 @@ func TestReplaceRedeemTiersCompletesAfterExternalReadLockReleases(t *testing.T) 
 	require.Equal(t, tiers[0].Label, byID[tiers[0].ID].Label)
 }
 
-func TestReplaceRedeemTiersReleasesConnectionAfterCommitBusy(t *testing.T) {
+func TestReplaceRedeemTiersCommitsDuringExternalReadLockWithWAL(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "locked.sqlite") + "?_pragma=busy_timeout(50)"
 
@@ -258,7 +257,7 @@ func TestReplaceRedeemTiersReleasesConnectionAfterCommitBusy(t *testing.T) {
 	tiers, err := svc.ListRedeemTiers(context.Background(), true)
 	require.NoError(t, err)
 	require.NotEmpty(t, tiers)
-	tiers[0].Label = tiers[0].Label + " commit busy"
+	tiers[0].Label = tiers[0].Label + " wal"
 
 	lockDB, err := sql.Open("sqlite", path)
 	require.NoError(t, err)
@@ -276,18 +275,23 @@ func TestReplaceRedeemTiersReleasesConnectionAfterCommitBusy(t *testing.T) {
 		done <- err
 	}()
 
-	err = <-done
-	require.Error(t, err)
-	require.Contains(t, strings.ToLower(err.Error()), "locked")
+	select {
+	case err := <-done:
+		require.NoError(t, err)
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("ReplaceRedeemTiers did not commit while WAL reader was active")
+	}
 
 	require.NoError(t, rows.Close())
 	require.NoError(t, lockTx.Rollback())
 
-	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
-	defer cancel()
-
-	_, err = store.DB.ExecContext(ctx, `UPDATE redeem_tiers SET updated_at = updated_at WHERE id = ?`, tiers[0].ID)
+	reloaded, err := svc.ListRedeemTiers(context.Background(), true)
 	require.NoError(t, err)
+	byID := make(map[int64]models.RedeemTier, len(reloaded))
+	for _, tier := range reloaded {
+		byID[tier.ID] = tier
+	}
+	require.Equal(t, tiers[0].Label, byID[tiers[0].ID].Label)
 }
 
 func int64Ptr(v int64) *int64 {

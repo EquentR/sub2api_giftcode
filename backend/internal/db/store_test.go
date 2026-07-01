@@ -2,6 +2,7 @@ package db
 
 import (
 	"context"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -180,4 +181,37 @@ func TestOpenAndMigrateAddsOptionalOriginalPaidAmountColumns(t *testing.T) {
 		require.NoError(t, rows.Close())
 		require.True(t, found, "expected %s to include original_pay_amount_cny", table)
 	}
+}
+
+func TestOpenUsesWALForFileBackedSQLite(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "wal.sqlite")
+
+	store, err := Open("sqlite", path)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+
+	var mode string
+	require.NoError(t, store.DB.QueryRowContext(context.Background(), `PRAGMA journal_mode`).Scan(&mode))
+	require.Equal(t, "wal", mode)
+}
+
+func TestAppendSQLitePragmasKeepsExistingDistinctPragmas(t *testing.T) {
+	dsn := appendSQLitePragmas("locked.sqlite?_pragma=busy_timeout(50)", []string{
+		"_pragma=foreign_keys(1)",
+		"_pragma=busy_timeout(5000)",
+		"_pragma=journal_mode(WAL)",
+	})
+
+	require.Contains(t, dsn, "_pragma=busy_timeout(50)")
+	require.NotContains(t, dsn, "_pragma=busy_timeout(5000)")
+	require.Contains(t, dsn, "_pragma=foreign_keys(1)")
+	require.Contains(t, dsn, "_pragma=journal_mode(WAL)")
+}
+
+func TestAppendSQLitePragmasDoesNotDuplicateExistingJournalMode(t *testing.T) {
+	dsn := appendSQLitePragmas("app.sqlite?_pragma=journal_mode(WAL)", []string{
+		"_pragma=journal_mode(WAL)",
+	})
+
+	require.Equal(t, "app.sqlite?_pragma=journal_mode(WAL)", dsn)
 }
