@@ -19,14 +19,15 @@ async function bootstrap() {
   const app = createApp(App)
   const pinia = createPinia()
   app.use(pinia)
-  app.use(ElementPlus)
-  app.use(router)
 
   const branding = useBrandingStore()
   await branding.bootstrap()
 
   const session = useSessionStore()
   await session.bootstrap(embeddedContext)
+ 
+  app.use(ElementPlus)
+  app.use(router)
   await router.isReady()
 
   app.mount('#app')
