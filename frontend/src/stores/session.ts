@@ -4,6 +4,7 @@ import type { AuthState, UserProfile } from '@/api/types'
 import type { EmbeddedLaunchContext } from '@/utils/embedded'
 
 const SESSION_TOKEN_KEY = 'giftcode_session_token'
+let bootstrapPromise: Promise<void> | null = null
 
 function readStoredSessionToken() {
   if (typeof window === 'undefined') {
@@ -66,24 +67,31 @@ export const useSessionStore = defineStore('session', {
     },
     async bootstrap(embeddedContext?: EmbeddedLaunchContext | null) {
       if (this.bootstrapped) return
-      this.embeddedMode = Boolean(embeddedContext?.token)
-      try {
-        const auth = embeddedContext?.token
-          ? await embeddedLogin(embeddedContext.token, embeddedContext.userId)
-          : await me()
-        this.applyAuth(auth)
-      } catch (error: any) {
-        this.clearAuth()
-        if (embeddedContext?.token) {
-          this.embeddedMode = true
-          this.embeddedLaunchError = error?.message ?? '嵌入式登录失败'
-        } else {
-          this.embeddedMode = false
-          this.embeddedLaunchError = ''
-        }
-      } finally {
-        this.bootstrapped = true
+      if (bootstrapPromise) {
+        return bootstrapPromise
       }
+      this.embeddedMode = Boolean(embeddedContext?.token)
+      bootstrapPromise = (async () => {
+        try {
+          const auth = embeddedContext?.token
+            ? await embeddedLogin(embeddedContext.token, embeddedContext.userId)
+            : await me()
+          this.applyAuth(auth)
+        } catch (error: any) {
+          this.clearAuth()
+          if (embeddedContext?.token) {
+            this.embeddedMode = true
+            this.embeddedLaunchError = error?.message ?? '嵌入式登录失败'
+          } else {
+            this.embeddedMode = false
+            this.embeddedLaunchError = ''
+          }
+        } finally {
+          this.bootstrapped = true
+          bootstrapPromise = null
+        }
+      })()
+      return bootstrapPromise
     },
     async signIn(email: string, password: string) {
       this.loading = true
