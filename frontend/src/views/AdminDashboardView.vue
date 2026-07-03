@@ -37,6 +37,7 @@
         <div style="display: flex; gap: 8px">
           <el-button :icon="Refresh" @click="loadAll">刷新</el-button>
           <el-button type="primary" :icon="Operation" @click="router.push('/admin/access')">审批队列</el-button>
+          <el-button type="primary" :icon="Connection" @click="router.push('/admin/openai-accounts')">OpenAI UA</el-button>
           <el-button type="primary" :icon="Setting" @click="router.push('/admin/tiers')">档位设置</el-button>
         </div>
       </div>
@@ -63,7 +64,7 @@
 <script setup lang="ts">
 import { onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { Operation, Refresh, Setting } from '@element-plus/icons-vue'
+import { Connection, Operation, Refresh, Setting } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import AppLayout from '@/components/AppLayout.vue'
 import StatusTag from '@/components/StatusTag.vue'

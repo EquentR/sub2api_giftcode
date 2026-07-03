@@ -7,6 +7,7 @@ import ApprovalConfirmView from '@/views/ApprovalConfirmView.vue'
 import RechargeRequestView from '@/views/RechargeRequestView.vue'
 import AdminDashboardView from '@/views/AdminDashboardView.vue'
 import AdminAccessQueueView from '@/views/AdminAccessQueueView.vue'
+import AdminOpenAIAccountsView from '@/views/AdminOpenAIAccountsView.vue'
 import AdminTiersView from '@/views/AdminTiersView.vue'
 
 const router = createRouter({
@@ -21,6 +22,7 @@ const router = createRouter({
     { path: '/redeem-request', redirect: '/recharge-request' },
     { path: '/admin', name: 'admin-dashboard', component: AdminDashboardView, meta: { requiresAuth: true, requiresAdmin: true } },
     { path: '/admin/access', name: 'admin-access', component: AdminAccessQueueView, meta: { requiresAuth: true, requiresAdmin: true } },
+    { path: '/admin/openai-accounts', name: 'admin-openai-accounts', component: AdminOpenAIAccountsView, meta: { requiresAuth: true, requiresAdmin: true } },
     { path: '/admin/tiers', name: 'admin-tiers', component: AdminTiersView, meta: { requiresAuth: true, requiresAdmin: true } },
   ],
 })

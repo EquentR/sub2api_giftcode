@@ -129,6 +129,17 @@ export interface SubscriptionGroup {
   updated_at: string
 }
 
+export interface OpenAIAccount {
+  id: number
+  name: string
+  platform: string
+  type: string
+  status: string
+  credentials?: Record<string, unknown> | null
+  created_at?: string
+  updated_at?: string
+}
+
 export interface UserSummary extends UserProfile {
   profile_json: string
   last_seen_at: string

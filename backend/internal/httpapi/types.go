@@ -79,6 +79,10 @@ type RedeemTierRequest struct {
 	ValidityDays         int      `json:"validity_days"`
 }
 
+type OpenAIAccountUserAgentRequest struct {
+	UserAgent string `json:"user_agent"`
+}
+
 type LoginResponse struct {
 	User             any    `json:"user"`
 	IsAdmin          bool   `json:"is_admin"`

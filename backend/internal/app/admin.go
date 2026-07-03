@@ -376,6 +376,33 @@ func (s *Service) ListSubscriptionGroups(ctx context.Context) ([]sub2api.Group, 
 	return out, nil
 }
 
+func (s *Service) ListOpenAIAccounts(ctx context.Context) ([]sub2api.Account, error) {
+	if err := s.requireUpstreamClient(); err != nil {
+		return nil, err
+	}
+	accounts, err := s.upstream.ListOpenAIAccounts(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]sub2api.Account, 0, len(accounts))
+	for _, account := range accounts {
+		if strings.EqualFold(strings.TrimSpace(account.Platform), "openai") {
+			out = append(out, account)
+		}
+	}
+	return out, nil
+}
+
+func (s *Service) UpdateOpenAIAccountUserAgent(ctx context.Context, accountID int64, userAgent string) (*sub2api.Account, error) {
+	if accountID <= 0 {
+		return nil, ErrBadRequest
+	}
+	if err := s.requireUpstreamClient(); err != nil {
+		return nil, err
+	}
+	return s.upstream.UpdateOpenAIAccountUserAgent(ctx, accountID, strings.TrimSpace(userAgent))
+}
+
 func (s *Service) subscriptionGroupByID(ctx context.Context, groupID int64) (*sub2api.Group, error) {
 	groups, err := s.ListSubscriptionGroups(ctx)
 	if err != nil {

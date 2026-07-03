@@ -56,6 +56,8 @@ func NewRouter(cfg *config.RuntimeConfig, service *app.Service) *gin.Engine {
 			admin.POST("/redeem-access-requests/:id/reject", handlers.RejectAccessRequest)
 			admin.GET("/redeem-codes", handlers.ListAllRedeemCodes)
 			admin.POST("/sync/redeem-codes", handlers.SyncRedeemCodes)
+			admin.GET("/openai-accounts", handlers.ListOpenAIAccounts)
+			admin.PUT("/openai-accounts/:id/user-agent", handlers.UpdateOpenAIAccountUserAgent)
 			admin.GET("/redeem-tiers", handlers.ListRedeemTiers)
 			admin.PUT("/redeem-tiers", handlers.UpdateRedeemTiers)
 			admin.GET("/sub2api-subscription-groups", handlers.ListSubscriptionGroups)

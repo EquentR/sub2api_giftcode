@@ -5,6 +5,7 @@ import type {
   AccessRequest,
   BalanceTier,
   DashboardStats,
+  OpenAIAccount,
   RedeemCode,
   RedeemTier,
   SubscriptionGroup,
@@ -109,4 +110,19 @@ export function listSubscriptionGroups() {
     method: 'GET',
     url: '/admin/sub2api-subscription-groups',
   }).then(asArray)
+}
+
+export function listOpenAIAccounts() {
+  return request<OpenAIAccount[] | null>({
+    method: 'GET',
+    url: '/admin/openai-accounts',
+  }).then(asArray)
+}
+
+export function updateOpenAIAccountUserAgent(id: number, userAgent: string) {
+  return request<OpenAIAccount>({
+    method: 'PUT',
+    url: `/admin/openai-accounts/${id}/user-agent`,
+    data: { user_agent: userAgent },
+  })
 }

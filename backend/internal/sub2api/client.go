@@ -69,6 +69,32 @@ type Group struct {
 	UpdatedAt        time.Time `json:"updated_at"`
 }
 
+type Account struct {
+	ID          int64          `json:"id"`
+	Name        string         `json:"name"`
+	Platform    string         `json:"platform"`
+	Type        string         `json:"type"`
+	Status      string         `json:"status"`
+	Credentials map[string]any `json:"credentials"`
+	CreatedAt   time.Time      `json:"created_at"`
+	UpdatedAt   time.Time      `json:"updated_at"`
+}
+
+func (a Account) UserAgent() string {
+	if a.Credentials == nil {
+		return ""
+	}
+	value, ok := a.Credentials["user_agent"]
+	if !ok {
+		return ""
+	}
+	ua, ok := value.(string)
+	if !ok {
+		return ""
+	}
+	return ua
+}
+
 type GenerateRedeemCodesInput struct {
 	Type         string
 	Value        float64
@@ -105,6 +131,20 @@ type APIError struct {
 	Status  int
 	Message string
 	Reason  string
+}
+
+var sensitiveCredentialKeys = map[string]struct{}{
+	"access_token":          {},
+	"refresh_token":         {},
+	"id_token":              {},
+	"api_key":               {},
+	"session_key":           {},
+	"cookie":                {},
+	"aws_secret_access_key": {},
+	"aws_session_token":     {},
+	"service_account_json":  {},
+	"service_account":       {},
+	"private_key":           {},
 }
 
 func (e *APIError) Error() string {
@@ -222,6 +262,51 @@ func (c *Client) ListRedeemCodes(ctx context.Context, search string, pageSize in
 	return out.Items, nil
 }
 
+func (c *Client) ListOpenAIAccounts(ctx context.Context) ([]Account, error) {
+	var out paginatedEnvelope[Account]
+	path := "/api/v1/admin/accounts?platform=openai&page=1&page_size=200"
+	if err := c.getJSONWithHeaders(ctx, path, map[string]string{"x-api-key": c.AdminAPIKey}, &out); err != nil {
+		return nil, err
+	}
+	return out.Items, nil
+}
+
+func (c *Client) GetAccount(ctx context.Context, accountID int64) (*Account, error) {
+	var out Account
+	if err := c.getJSONWithHeaders(ctx, fmt.Sprintf("/api/v1/admin/accounts/%d", accountID), map[string]string{"x-api-key": c.AdminAPIKey}, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *Client) UpdateOpenAIAccountUserAgent(ctx context.Context, accountID int64, userAgent string) (*Account, error) {
+	existing, err := c.GetAccount(ctx, accountID)
+	if err != nil {
+		return nil, err
+	}
+	credentials := cloneCredentials(existing.Credentials)
+	credentials["user_agent"] = strings.TrimSpace(userAgent)
+	var out Account
+	body := map[string]any{
+		"credentials": credentials,
+	}
+	if err := c.putJSON(ctx, fmt.Sprintf("/api/v1/admin/accounts/%d", accountID), map[string]string{"x-api-key": c.AdminAPIKey}, body, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func cloneCredentials(credentials map[string]any) map[string]any {
+	out := make(map[string]any, len(credentials)+1)
+	for key, value := range credentials {
+		if _, sensitive := sensitiveCredentialKeys[key]; sensitive {
+			continue
+		}
+		out[key] = value
+	}
+	return out
+}
+
 func (c *Client) getJSON(ctx context.Context, path string, accessToken string, out any) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.BaseURL+path, nil)
 	if err != nil {
@@ -247,7 +332,15 @@ func (c *Client) getJSONWithHeaders(ctx context.Context, path string, headers ma
 	return c.do(req, out)
 }
 
+func (c *Client) putJSON(ctx context.Context, path string, headers map[string]string, body any, out any) error {
+	return c.jsonWithBody(ctx, http.MethodPut, path, headers, body, out)
+}
+
 func (c *Client) postJSON(ctx context.Context, path string, headers map[string]string, body any, out any) error {
+	return c.jsonWithBody(ctx, http.MethodPost, path, headers, body, out)
+}
+
+func (c *Client) jsonWithBody(ctx context.Context, method string, path string, headers map[string]string, body any, out any) error {
 	var payload []byte
 	var err error
 	if body != nil {
@@ -256,7 +349,7 @@ func (c *Client) postJSON(ctx context.Context, path string, headers map[string]s
 			return err
 		}
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.BaseURL+path, bytes.NewReader(payload))
+	req, err := http.NewRequestWithContext(ctx, method, c.BaseURL+path, bytes.NewReader(payload))
 	if err != nil {
 		return err
 	}

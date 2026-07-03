@@ -153,6 +153,106 @@ func TestClientListsSubscriptionGroupsAndGeneratesSubscriptionCode(t *testing.T)
 	require.Equal(t, float64(0), sawGenerate["value"])
 }
 
+func TestClientListsOpenAIAccounts(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "/api/v1/admin/accounts", r.URL.Path)
+		require.Equal(t, http.MethodGet, r.Method)
+		require.Equal(t, "admin-key", r.Header.Get("x-api-key"))
+		require.Equal(t, "openai", r.URL.Query().Get("platform"))
+		require.Equal(t, "1", r.URL.Query().Get("page"))
+		require.Equal(t, "200", r.URL.Query().Get("page_size"))
+		writeEnvelope(w, paginatedEnvelope[Account]{
+			Items: []Account{
+				{
+					ID:       42,
+					Name:     "openai-api-key",
+					Platform: "openai",
+					Type:     "api_key",
+					Status:   "active",
+					Credentials: map[string]any{
+						"user_agent": "fixed-upstream-ua",
+					},
+				},
+			},
+			Total:    1,
+			Page:     1,
+			PageSize: 200,
+			Pages:    1,
+		})
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, "admin-key")
+	accounts, err := client.ListOpenAIAccounts(context.Background())
+	require.NoError(t, err)
+	require.Len(t, accounts, 1)
+	require.Equal(t, int64(42), accounts[0].ID)
+	require.Equal(t, "api_key", accounts[0].Type)
+	require.Equal(t, "fixed-upstream-ua", accounts[0].UserAgent())
+}
+
+func TestClientUpdatesOpenAIAccountUserAgentPreservingReturnedCredentials(t *testing.T) {
+	var sawBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			require.Equal(t, "/api/v1/admin/accounts/42", r.URL.Path)
+			require.Equal(t, "admin-key", r.Header.Get("x-api-key"))
+			writeEnvelope(w, Account{
+				ID:       42,
+				Name:     "openai-api-key",
+				Platform: "openai",
+				Type:     "api_key",
+				Status:   "active",
+				Credentials: map[string]any{
+					"base_url":                  "https://openai.example.com/v1",
+					"api_key":                   "redacted-api-key",
+					"model_mapping":             map[string]any{"gpt-5": "gpt-5"},
+					"upstream_supported_models": []any{"gpt-5", "o3"},
+					"user_agent":                "old-ua",
+				},
+			})
+		case http.MethodPut:
+			require.Equal(t, "/api/v1/admin/accounts/42", r.URL.Path)
+			require.Equal(t, "admin-key", r.Header.Get("x-api-key"))
+			require.Equal(t, "application/json", r.Header.Get("Content-Type"))
+			require.NoError(t, json.NewDecoder(r.Body).Decode(&sawBody))
+			writeEnvelope(w, Account{
+				ID:       42,
+				Name:     "openai-api-key",
+				Platform: "openai",
+				Type:     "api_key",
+				Status:   "active",
+				Credentials: map[string]any{
+					"base_url":   "https://openai.example.com/v1",
+					"user_agent": "fixed-upstream-ua",
+				},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, "admin-key")
+	account, err := client.UpdateOpenAIAccountUserAgent(context.Background(), 42, " fixed-upstream-ua ")
+	require.NoError(t, err)
+	require.Equal(t, "fixed-upstream-ua", account.UserAgent())
+	require.Equal(t, map[string]any{
+		"credentials": map[string]any{
+			"base_url":                  "https://openai.example.com/v1",
+			"model_mapping":             map[string]any{"gpt-5": "gpt-5"},
+			"upstream_supported_models": []any{"gpt-5", "o3"},
+			"user_agent":                "fixed-upstream-ua",
+		},
+	}, sawBody)
+	credentials, ok := sawBody["credentials"].(map[string]any)
+	require.True(t, ok)
+	require.NotContains(t, credentials, "api_key")
+	require.NotContains(t, credentials, "access_token")
+	require.NotContains(t, credentials, "refresh_token")
+}
+
 func floatPtr(v float64) *float64 {
 	return &v
 }

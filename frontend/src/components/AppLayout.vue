@@ -30,6 +30,10 @@
           <el-icon><Operation /></el-icon>
           <span>审批队列</span>
         </el-menu-item>
+        <el-menu-item v-if="session.isAdmin" index="/admin/openai-accounts">
+          <el-icon><Connection /></el-icon>
+          <span>OpenAI UA</span>
+        </el-menu-item>
         <el-menu-item v-if="session.isAdmin" index="/admin/tiers">
           <el-icon><Setting /></el-icon>
           <span>档位设置</span>
@@ -69,7 +73,7 @@
 <script setup lang="ts">
 import { computed, nextTick, watchEffect } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { DataLine, Expand, Fold, House, Operation, Setting, SwitchButton, Wallet } from '@element-plus/icons-vue'
+import { Connection, DataLine, Expand, Fold, House, Operation, Setting, SwitchButton, Wallet } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import { useBrandingStore } from '@/stores/branding'
 import { useLayoutStore } from '@/stores/layout'
