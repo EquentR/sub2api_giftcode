@@ -210,6 +210,13 @@ func (s *Service) ApproveAccessRequestByID(ctx context.Context, id int64) (*mode
 	}
 	if req.Status == "consumed" {
 		if req.FulfilledVia == fulfilledViaDirectCharge && req.FulfillmentResult == fulfillmentResultDirectSucceeded {
+			redeemReq, redeemErr := s.getRedeemRequestByAccessRequestID(ctx, req.ID)
+			if redeemErr == nil && redeemReq != nil && redeemReq.Status == "issued" {
+				code, codeErr := s.getRedeemCodeByRequestID(ctx, redeemReq.ID)
+				if codeErr == nil {
+					return req, code, nil
+				}
+			}
 			return req, nil, nil
 		}
 		redeemReq, redeemErr := s.getRedeemRequestByAccessRequestID(ctx, req.ID)
@@ -247,8 +254,8 @@ func (s *Service) ApproveAccessRequestByID(ctx context.Context, id int64) (*mode
 				return nil, nil, ErrBadRequest
 			}
 		}
-		if err := s.issueDirectCharge(ctx, req, tier); err == nil {
-			return req, nil, nil
+		if code, err := s.issueDirectCharge(ctx, req, tier); err == nil {
+			return req, code, nil
 		} else if errors.Is(err, ErrBadRequest) {
 			return nil, nil, err
 		} else if errors.Is(err, ErrConflict) {

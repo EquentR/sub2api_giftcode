@@ -82,3 +82,8 @@ a {
 .compact-form {
   max-width: 760px;
 }
+
+.list-pagination {
+  margin-top: 12px;
+  justify-content: flex-end;
+}

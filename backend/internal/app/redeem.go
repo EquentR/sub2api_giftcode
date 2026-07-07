@@ -275,28 +275,28 @@ func (s *Service) issueRedeemRequest(ctx context.Context, accessReq *models.Acce
 	return redeemReq, code, nil
 }
 
-func (s *Service) issueDirectCharge(ctx context.Context, accessReq *models.AccessRequest, tier *models.RedeemTier) error {
+func (s *Service) issueDirectCharge(ctx context.Context, accessReq *models.AccessRequest, tier *models.RedeemTier) (*models.RedeemCode, error) {
 	if accessReq == nil || tier == nil {
-		return ErrBadRequest
+		return nil, ErrBadRequest
 	}
 	if err := s.requireUpstreamClient(); err != nil {
-		return fmt.Errorf("%w: %w", ErrUpstreamFailed, err)
+		return nil, fmt.Errorf("%w: %w", ErrUpstreamFailed, err)
 	}
 	codeType := normalizeCodeType(accessReq.CodeType)
 	if codeType == "" {
 		codeType = normalizeCodeType(tier.CodeType)
 	}
 	if codeType == "" {
-		return ErrBadRequest
+		return nil, ErrBadRequest
 	}
 	userID := accessReq.RequestorUpstreamUserID
 	if userID <= 0 {
-		return ErrBadRequest
+		return nil, ErrBadRequest
 	}
-	code := directChargeCodeForAccessRequest(accessReq.ID)
+	directCode := directChargeCodeForAccessRequest(accessReq.ID)
 	idempotencyKey := directChargeIdempotencyKey(accessReq)
 	input := sub2api.CreateAndRedeemCodeInput{
-		Code:   code,
+		Code:   directCode,
 		Type:   codeType,
 		Value:  accessReq.Amount,
 		UserID: userID,
@@ -304,10 +304,10 @@ func (s *Service) issueDirectCharge(ctx context.Context, accessReq *models.Acces
 	}
 	if codeType == "subscription" {
 		if accessReq.Sub2APIGroupID == nil || *accessReq.Sub2APIGroupID <= 0 || accessReq.ValidityDays <= 0 {
-			return ErrBadRequest
+			return nil, ErrBadRequest
 		}
 		if accessReq.PayAmountCny <= 0 {
-			return ErrBadRequest
+			return nil, ErrBadRequest
 		}
 		input.GroupID = accessReq.Sub2APIGroupID
 		input.ValidityDays = accessReq.ValidityDays
@@ -317,19 +317,20 @@ func (s *Service) issueDirectCharge(ctx context.Context, accessReq *models.Acces
 	if err != nil {
 		var apiErr *sub2api.APIError
 		if errors.As(err, &apiErr) && apiErr.Status == http.StatusConflict {
-			return ErrConflict
+			return nil, ErrConflict
 		}
-		return fmt.Errorf("%w: %w", ErrUpstreamFailed, err)
+		return nil, fmt.Errorf("%w: %w", ErrUpstreamFailed, err)
 	}
 	if created == nil || strings.TrimSpace(created.Code) == "" {
-		return fmt.Errorf("%w: empty upstream response", ErrUpstreamFailed)
+		return nil, fmt.Errorf("%w: empty upstream response", ErrUpstreamFailed)
 	}
 	if err := validateDirectChargeRedeemed(created, userID); err != nil {
-		return err
+		return nil, err
 	}
 	now := s.now()
-	if err := s.markAccessRequestConsumedWithFulfillment(ctx, accessReq.ID, now, fulfillmentResultDirectSucceeded, fulfilledViaDirectCharge, ""); err != nil {
-		return err
+	code, err := s.persistDirectChargeRedeemCode(ctx, accessReq, tier, created, now)
+	if err != nil {
+		return nil, err
 	}
 	accessReq.Status = "consumed"
 	accessReq.ApprovedAt = &now
@@ -338,7 +339,7 @@ func (s *Service) issueDirectCharge(ctx context.Context, accessReq *models.Acces
 	accessReq.FulfilledVia = fulfilledViaDirectCharge
 	accessReq.FulfillmentError = ""
 	accessReq.UpdatedAt = now
-	return nil
+	return code, nil
 }
 
 func validateDirectChargeRedeemed(code *sub2api.RedeemCode, expectedUserID int64) error {
@@ -352,6 +353,99 @@ func validateDirectChargeRedeemed(code *sub2api.RedeemCode, expectedUserID int64
 		return fmt.Errorf("%w: direct charge code %s used by unexpected user %d", ErrConflict, strings.TrimSpace(code.Code), *code.UsedBy)
 	}
 	return nil
+}
+
+func (s *Service) persistDirectChargeRedeemCode(ctx context.Context, accessReq *models.AccessRequest, tier *models.RedeemTier, upstreamCode *sub2api.RedeemCode, now time.Time) (*models.RedeemCode, error) {
+	if accessReq == nil || tier == nil || upstreamCode == nil {
+		return nil, ErrBadRequest
+	}
+	codeType := normalizeCodeType(upstreamCode.Type)
+	if codeType == "" {
+		codeType = normalizeCodeType(accessReq.CodeType)
+	}
+	if codeType == "" {
+		codeType = normalizeCodeType(tier.CodeType)
+	}
+	value := upstreamCode.Value
+	if value <= 0 && codeType == "balance" {
+		value = accessReq.Amount
+	}
+	groupID := upstreamCode.GroupID
+	if groupID == nil {
+		groupID = accessReq.Sub2APIGroupID
+	}
+	validityDays := upstreamCode.ValidityDays
+	if validityDays <= 0 {
+		validityDays = accessReq.ValidityDays
+	}
+
+	redeemReq, err := s.getRedeemRequestByAccessRequestID(ctx, accessReq.ID)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return nil, err
+	}
+	if redeemReq == nil {
+		redeemReq = &models.RedeemRequest{
+			AccessRequestID:         accessReq.ID,
+			RequestorUpstreamUserID: accessReq.RequestorUpstreamUserID,
+			RequestorEmail:          accessReq.RequestorEmail,
+			RequestorUsername:       accessReq.RequestorUsername,
+			CodeType:                codeType,
+			TierID:                  tier.ID,
+			Value:                   value,
+			Sub2APIGroupID:          groupID,
+			ValidityDays:            validityDays,
+			Status:                  "pending",
+			Note:                    strings.TrimSpace(accessReq.Note),
+			CreatedAt:               now,
+			UpdatedAt:               now,
+		}
+		id, err := s.insertRedeemRequest(ctx, redeemReq)
+		if err != nil {
+			return nil, err
+		}
+		redeemReq.ID = id
+	} else {
+		redeemReq.RequestorUpstreamUserID = accessReq.RequestorUpstreamUserID
+		redeemReq.RequestorEmail = accessReq.RequestorEmail
+		redeemReq.RequestorUsername = accessReq.RequestorUsername
+		redeemReq.CodeType = codeType
+		redeemReq.TierID = tier.ID
+		redeemReq.Value = value
+		redeemReq.Sub2APIGroupID = groupID
+		redeemReq.ValidityDays = validityDays
+		redeemReq.Status = "pending"
+		redeemReq.Note = strings.TrimSpace(accessReq.Note)
+		redeemReq.UpdatedAt = now
+		if err := s.updateRedeemRequest(ctx, redeemReq); err != nil {
+			return nil, err
+		}
+	}
+
+	code := &models.RedeemCode{
+		RequestID:            redeemReq.ID,
+		Code:                 strings.TrimSpace(upstreamCode.Code),
+		CodeType:             codeType,
+		Value:                value,
+		Status:               normalizeUpstreamCodeStatus(upstreamCode.Status),
+		UsedByUpstreamUserID: upstreamCode.UsedBy,
+		UsedAt:               upstreamCode.UsedAt,
+		ExpiresAt:            upstreamCode.ExpiresAt,
+		Sub2APICodeID:        &upstreamCode.ID,
+		Sub2APIGroupID:       groupID,
+		ValidityDays:         validityDays,
+		LastSyncedAt:         &now,
+		CreatedAt:            now,
+		UpdatedAt:            now,
+	}
+	if err := persistRedeemCodeWithFulfillment(ctx, s.db(), redeemReq, code, accessReq.ID, fulfillmentResultDirectSucceeded, fulfilledViaDirectCharge, ""); err != nil {
+		return nil, err
+	}
+	redeemReq.Status = "issued"
+	redeemReq.UpstreamCode = code.Code
+	redeemReq.UpstreamCodeID = code.Sub2APICodeID
+	redeemReq.ErrorMessage = ""
+	redeemReq.UpdatedAt = now
+	return code, nil
 }
 
 func directChargeCodeForAccessRequest(accessRequestID int64) string {
@@ -474,7 +568,11 @@ WHERE id = ?
 }
 
 func (s *Service) persistIssuedRedeemCode(ctx context.Context, redeemReq *models.RedeemRequest, code *models.RedeemCode, accessRequestID int64, fulfilledVia, fulfillmentError string) error {
-	tx, err := s.db().BeginTx(ctx, nil)
+	return persistRedeemCodeWithFulfillment(ctx, s.db(), redeemReq, code, accessRequestID, fulfillmentResultCodeIssued, fulfilledVia, fulfillmentError)
+}
+
+func persistRedeemCodeWithFulfillment(ctx context.Context, db *sql.DB, redeemReq *models.RedeemRequest, code *models.RedeemCode, accessRequestID int64, fulfillmentResult, fulfilledVia, fulfillmentError string) error {
+	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
@@ -532,7 +630,7 @@ WHERE id = ?
 UPDATE redeem_access_requests
 SET status = 'consumed', approved_at = ?, consumed_at = ?, fulfillment_result = ?, fulfilled_via = ?, fulfillment_error = ?, updated_at = ?
 WHERE id = ?
-`, formatTime(code.UpdatedAt), formatTime(code.UpdatedAt), fulfillmentResultCodeIssued, strings.TrimSpace(fulfilledVia), strings.TrimSpace(fulfillmentError), formatTime(code.UpdatedAt), accessRequestID); err != nil {
+`, formatTime(code.UpdatedAt), formatTime(code.UpdatedAt), strings.TrimSpace(fulfillmentResult), strings.TrimSpace(fulfilledVia), strings.TrimSpace(fulfillmentError), formatTime(code.UpdatedAt), accessRequestID); err != nil {
 		return rollback(err)
 	}
 	return tx.Commit()

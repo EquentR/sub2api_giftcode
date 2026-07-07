@@ -328,7 +328,7 @@ WHERE id = 1
 	require.Equal(t, 120.0, approved.PayAmountCny)
 }
 
-func TestApproveAccessRequestDirectChargeSucceedsWithoutLocalCode(t *testing.T) {
+func TestApproveAccessRequestDirectChargePersistsReturnedCode(t *testing.T) {
 	store, err := db.Open("sqlite", ":memory:")
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = store.Close() })
@@ -383,12 +383,16 @@ INSERT INTO redeem_access_requests (
 	require.NoError(t, err)
 	require.Equal(t, "/api/v1/admin/redeem-codes/create-and-redeem", sawPath)
 	require.NotNil(t, req)
-	require.Nil(t, code)
+	require.NotNil(t, code)
 	require.Equal(t, "consumed", req.Status)
 	require.Equal(t, "direct_charge", req.FulfillmentMode)
 	require.Equal(t, "direct_charge_succeeded", req.FulfillmentResult)
 	require.Equal(t, "direct_charge", req.FulfilledVia)
 	require.Equal(t, "", req.FulfillmentError)
+	require.Equal(t, "giftcode-access-1", code.Code)
+	require.Equal(t, "used", code.Status)
+	require.NotNil(t, code.UsedByUpstreamUserID)
+	require.Equal(t, int64(1), *code.UsedByUpstreamUserID)
 	require.Equal(t, "giftcode-access-1", sawPayload["code"])
 	require.Equal(t, "balance", sawPayload["type"])
 	require.Equal(t, 120.0, sawPayload["value"])
@@ -396,11 +400,16 @@ INSERT INTO redeem_access_requests (
 
 	var redeemRequestCount int
 	require.NoError(t, store.DB.QueryRowContext(context.Background(), `SELECT COUNT(1) FROM redeem_requests WHERE access_request_id = 1`).Scan(&redeemRequestCount))
-	require.Equal(t, 0, redeemRequestCount)
+	require.Equal(t, 1, redeemRequestCount)
 
 	var redeemCodeCount int
-	require.NoError(t, store.DB.QueryRowContext(context.Background(), `SELECT COUNT(1) FROM redeem_codes`).Scan(&redeemCodeCount))
-	require.Equal(t, 0, redeemCodeCount)
+	require.NoError(t, store.DB.QueryRowContext(context.Background(), `
+SELECT COUNT(1)
+FROM redeem_codes c
+JOIN redeem_requests r ON r.id = c.request_id
+WHERE r.access_request_id = 1 AND c.code = 'giftcode-access-1'
+`).Scan(&redeemCodeCount))
+	require.Equal(t, 1, redeemCodeCount)
 }
 
 func TestApproveAccessRequestDirectChargeFallsBackToIssuedCode(t *testing.T) {
@@ -664,7 +673,8 @@ INSERT INTO redeem_access_requests (
 	req, code, err := svc.ApproveAccessRequestByID(context.Background(), 1)
 	require.NoError(t, err)
 	require.NotNil(t, req)
-	require.Nil(t, code)
+	require.NotNil(t, code)
+	require.Equal(t, "giftcode-access-1", code.Code)
 	require.Equal(t, "direct_charge_succeeded", req.FulfillmentResult)
 	require.Equal(t, "direct_charge", req.FulfilledVia)
 }

@@ -175,7 +175,10 @@ func (s *Store) Migrate(ctx context.Context) error {
 	if err := s.seedBalanceTiers(ctx); err != nil {
 		return err
 	}
-	return s.migrateBalanceTiersToRedeemTiers(ctx)
+	if err := s.migrateBalanceTiersToRedeemTiers(ctx); err != nil {
+		return err
+	}
+	return s.backfillDirectChargeRedeemCodes(ctx)
 }
 
 func (s *Store) ensureAccessRequestSnapshotColumns(ctx context.Context) error {
@@ -421,6 +424,155 @@ FROM redeem_balance_tiers bt
 WHERE NOT EXISTS (SELECT 1 FROM redeem_tiers rt WHERE rt.id = bt.id)
 `)
 	return err
+}
+
+func (s *Store) backfillDirectChargeRedeemCodes(ctx context.Context) error {
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = tx.Rollback()
+	}()
+	rows, err := tx.QueryContext(ctx, `
+SELECT id, requestor_upstream_user_id, requestor_email, requestor_username, tier_id, code_type,
+       amount, sub2api_group_id, validity_days, note, consumed_at, created_at, updated_at
+FROM redeem_access_requests ar
+WHERE ar.status = 'consumed'
+  AND ar.fulfillment_mode = 'direct_charge'
+  AND ar.fulfillment_result = 'direct_charge_succeeded'
+  AND ar.fulfilled_via = 'direct_charge'
+  AND NOT EXISTS (
+    SELECT 1 FROM redeem_requests rr WHERE rr.access_request_id = ar.id
+  )
+ORDER BY ar.id ASC
+`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	type rowData struct {
+		id                      int64
+		requestorUpstreamUserID int64
+		requestorEmail          string
+		requestorUsername       string
+		tierID                  int64
+		codeType                string
+		amount                  float64
+		sub2apiGroupID          any
+		validityDays            int
+		note                    string
+		consumedAt              string
+		createdAt               string
+		updatedAt               string
+	}
+	items := make([]rowData, 0)
+	for rows.Next() {
+		var item rowData
+		if err := rows.Scan(
+			&item.id,
+			&item.requestorUpstreamUserID,
+			&item.requestorEmail,
+			&item.requestorUsername,
+			&item.tierID,
+			&item.codeType,
+			&item.amount,
+			&item.sub2apiGroupID,
+			&item.validityDays,
+			&item.note,
+			&item.consumedAt,
+			&item.createdAt,
+			&item.updatedAt,
+		); err != nil {
+			return err
+		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	for _, item := range items {
+		timestamp := item.consumedAt
+		if timestamp == "" {
+			timestamp = item.updatedAt
+		}
+		if timestamp == "" {
+			timestamp = item.createdAt
+		}
+		result, err := tx.ExecContext(ctx, `
+INSERT INTO redeem_requests (
+  access_request_id, requestor_upstream_user_id, requestor_email, requestor_username,
+  code_type, tier_id, value, sub2api_group_id, validity_days, status, note, upstream_code,
+  upstream_code_id, error_message, created_at, updated_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'issued', ?, ?, NULL, '', ?, ?)
+ON CONFLICT(access_request_id) DO NOTHING
+`,
+			item.id,
+			item.requestorUpstreamUserID,
+			item.requestorEmail,
+			item.requestorUsername,
+			normalizeMigrationCodeType(item.codeType),
+			item.tierID,
+			item.amount,
+			item.sub2apiGroupID,
+			item.validityDays,
+			item.note,
+			directChargeMigrationCode(item.id),
+			timestamp,
+			timestamp,
+		)
+		if err != nil {
+			return err
+		}
+		affected, err := result.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if affected == 0 {
+			continue
+		}
+		redeemRequestID, err := result.LastInsertId()
+		if err != nil {
+			return err
+		}
+		_, err = tx.ExecContext(ctx, `
+INSERT INTO redeem_codes (
+  request_id, code, code_type, value, status, used_by_upstream_user_id, used_at,
+  expires_at, sub2api_code_id, sub2api_group_id, validity_days, last_synced_at, created_at, updated_at
+) VALUES (?, ?, ?, ?, 'used', ?, ?, NULL, NULL, ?, ?, ?, ?, ?)
+ON CONFLICT(request_id) DO NOTHING
+`,
+			redeemRequestID,
+			directChargeMigrationCode(item.id),
+			normalizeMigrationCodeType(item.codeType),
+			item.amount,
+			item.requestorUpstreamUserID,
+			timestamp,
+			item.sub2apiGroupID,
+			item.validityDays,
+			timestamp,
+			timestamp,
+			timestamp,
+		)
+		if err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+func directChargeMigrationCode(accessRequestID int64) string {
+	return fmt.Sprintf("giftcode-access-%d", accessRequestID)
+}
+
+func normalizeMigrationCodeType(codeType string) string {
+	if codeType == "subscription" {
+		return "subscription"
+	}
+	return "balance"
 }
 
 const timeLayout = "2006-01-02T15:04:05.000000000Z07:00"

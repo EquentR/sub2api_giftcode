@@ -8,7 +8,7 @@
         </div>
         <el-button :icon="Refresh" :loading="loading" @click="loadAll">刷新</el-button>
       </div>
-      <el-table v-loading="loading" :data="requests" stripe size="small" style="width: 100%">
+      <el-table v-loading="loading" :data="paginatedRequests.items" stripe size="small" style="width: 100%">
         <el-table-column prop="id" label="编号" width="80" />
         <el-table-column prop="requestor_username" label="用户" min-width="160" />
         <el-table-column prop="requestor_email" label="邮箱" min-width="220" />
@@ -42,6 +42,14 @@
           </template>
         </el-table-column>
       </el-table>
+      <el-pagination
+        v-if="paginatedRequests.total > requestPageSize"
+        v-model:current-page="requestPage"
+        class="list-pagination"
+        layout="prev, pager, next, total"
+        :page-size="requestPageSize"
+        :total="paginatedRequests.total"
+      />
     </div>
 
     <div class="surface section" style="margin-bottom: 16px">
@@ -52,7 +60,15 @@
         </div>
       </div>
       <div v-loading="loading">
-        <CodeTable :codes="codes" />
+        <CodeTable :codes="paginatedCodes.items" />
+        <el-pagination
+          v-if="paginatedCodes.total > codePageSize"
+          v-model:current-page="codePage"
+          class="list-pagination"
+          layout="prev, pager, next, total"
+          :page-size="codePageSize"
+          :total="paginatedCodes.total"
+        />
       </div>
     </div>
 
@@ -127,12 +143,17 @@ import {
 } from '@/api/admin'
 import type { AccessRequest, RedeemCode, RedeemTier } from '@/api/types'
 import { copyText } from '@/utils/clipboard'
+import { paginateItems } from '@/utils/pagination'
 import { formatCodeTypeLabel, formatLimitTriplet } from '@/utils/tiers'
 
 const route = useRoute()
 const requests = ref<AccessRequest[]>([])
 const codes = ref<RedeemCode[]>([])
 const tiers = ref<RedeemTier[]>([])
+const requestPage = ref(1)
+const codePage = ref(1)
+const requestPageSize = 10
+const codePageSize = 10
 const selectedRequest = ref<AccessRequest | null>(null)
 const issuedCode = ref<RedeemCode | null>(null)
 const reviewDialogVisible = ref(false)
@@ -141,6 +162,8 @@ const loading = ref(false)
 let refreshTimer: number | undefined
 
 const tierMap = computed(() => new Map(tiers.value.map((tier) => [tier.id, tier])))
+const paginatedRequests = computed(() => paginateItems(requests.value, requestPage.value, requestPageSize))
+const paginatedCodes = computed(() => paginateItems(codes.value, codePage.value, codePageSize))
 const issuedCodeTitle = computed(() => {
   if (selectedRequest.value?.fulfilled_via === 'direct_charge') return '已直充到账'
   if (selectedRequest.value?.fulfilled_via === 'redeem_code_fallback') return '直充失败，已改为发码'

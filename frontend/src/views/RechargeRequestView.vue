@@ -97,8 +97,16 @@
               </div>
             </div>
             <div v-else class="empty-state small">还没有提交过充值申请</div>
+            <el-pagination
+              v-if="paginatedAccessRequests.total > accessRequestPageSize"
+              v-model:current-page="accessRequestPage"
+              class="list-pagination"
+              layout="prev, pager, next, total"
+              :page-size="accessRequestPageSize"
+              :total="paginatedAccessRequests.total"
+            />
 
-            <div v-if="unlinkedCodes.length" class="request-list legacy-codes">
+            <div v-if="paginatedUnlinkedCodes.total" class="request-list legacy-codes">
               <div class="request-item">
                 <div class="request-main">
                   <div>
@@ -109,7 +117,7 @@
                 </div>
                 <div class="request-codes">
                   <div
-                    v-for="code in unlinkedCodes"
+                    v-for="code in paginatedUnlinkedCodes.items"
                     :key="code.id"
                     class="code-item"
                     :class="{ used: isCodeUsed(code) }"
@@ -126,6 +134,14 @@
                 </div>
               </div>
             </div>
+            <el-pagination
+              v-if="paginatedUnlinkedCodes.total > legacyCodePageSize"
+              v-model:current-page="legacyCodePage"
+              class="list-pagination"
+              layout="prev, pager, next, total"
+              :page-size="legacyCodePageSize"
+              :total="paginatedUnlinkedCodes.total"
+            />
           </div>
         </section>
 
@@ -210,6 +226,7 @@ import { createAccessRequest, listAccessRequests } from '@/api/access'
 import { listRedeemCodes, listRedeemRequests, listRedeemTiers } from '@/api/redeem'
 import type { AccessRequest, RedeemCode, RedeemRequest, RedeemTier } from '@/api/types'
 import { useBrandingStore } from '@/stores/branding'
+import { paginateItems } from '@/utils/pagination'
 import {
   formatCodeTypeLabel,
   formatCodeValue,
@@ -227,6 +244,10 @@ const tiers = ref<RedeemTier[]>([])
 const items = ref<AccessRequest[]>([])
 const redeemRequests = ref<RedeemRequest[]>([])
 const codes = ref<RedeemCode[]>([])
+const accessRequestPage = ref(1)
+const legacyCodePage = ref(1)
+const accessRequestPageSize = 5
+const legacyCodePageSize = 10
 let refreshTimer: number | undefined
 
 const route = useRoute()
@@ -262,8 +283,9 @@ const codesByAccessRequestId = computed(() => {
   }
   return groups
 })
+const paginatedAccessRequests = computed(() => paginateItems(items.value, accessRequestPage.value, accessRequestPageSize))
 const accessRequestRows = computed(() =>
-  items.value.slice(0, 5).map((request) => ({
+  paginatedAccessRequests.value.items.map((request) => ({
     request,
     codes: codesByAccessRequestId.value.get(request.id) ?? [],
   })),
@@ -271,6 +293,7 @@ const accessRequestRows = computed(() =>
 const unlinkedCodes = computed(() =>
   codes.value.filter((code) => !redeemRequestMap.value.get(code.request_id)?.access_request_id),
 )
+const paginatedUnlinkedCodes = computed(() => paginateItems(unlinkedCodes.value, legacyCodePage.value, legacyCodePageSize))
 const loadingData = computed(() => loadingCore.value || loadingCodes.value)
 
 type LoadAllOptions = {

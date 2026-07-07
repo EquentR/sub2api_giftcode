@@ -183,6 +183,49 @@ func TestOpenAndMigrateAddsOptionalOriginalPaidAmountColumns(t *testing.T) {
 	}
 }
 
+func TestMigrateBackfillsDirectChargeRedeemCodes(t *testing.T) {
+	store, err := Open("sqlite", ":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+
+	ctx := context.Background()
+	require.NoError(t, store.Migrate(ctx))
+	now := "2026-07-07T12:00:00.000000000Z"
+	_, err = store.DB.ExecContext(ctx, `
+INSERT INTO redeem_access_requests (
+  id, requestor_upstream_user_id, requestor_email, requestor_username, tier_id, code_type, tier_label,
+  amount, pay_amount_cny, note, fulfillment_mode, fulfillment_result, fulfilled_via, fulfillment_error,
+  status, approval_token_hash, approval_token_expires_at, approved_at, consumed_at,
+  notification_status, notification_error, created_at, updated_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+`, 42, 7, "alice@example.com", "alice", 1, "balance", "$120", 120.0, 120.0, "legacy direct", "direct_charge", "direct_charge_succeeded", "direct_charge", "", "consumed", "token-hash", now, now, now, "sent", "", now, now)
+	require.NoError(t, err)
+
+	require.NoError(t, store.Migrate(ctx))
+	require.NoError(t, store.Migrate(ctx))
+
+	var requestCount int
+	require.NoError(t, store.DB.QueryRowContext(ctx, `SELECT COUNT(1) FROM redeem_requests WHERE access_request_id = 42`).Scan(&requestCount))
+	require.Equal(t, 1, requestCount)
+
+	var code string
+	var status string
+	var usedBy int64
+	var usedAt string
+	var value float64
+	require.NoError(t, store.DB.QueryRowContext(ctx, `
+SELECT c.code, c.status, c.used_by_upstream_user_id, c.used_at, c.value
+FROM redeem_codes c
+JOIN redeem_requests r ON r.id = c.request_id
+WHERE r.access_request_id = 42
+`).Scan(&code, &status, &usedBy, &usedAt, &value))
+	require.Equal(t, "giftcode-access-42", code)
+	require.Equal(t, "used", status)
+	require.Equal(t, int64(7), usedBy)
+	require.Equal(t, now, usedAt)
+	require.Equal(t, 120.0, value)
+}
+
 func TestOpenUsesWALForFileBackedSQLite(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "wal.sqlite")
 

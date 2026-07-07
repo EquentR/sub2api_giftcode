@@ -54,7 +54,7 @@
           <div class="muted">每个已完成申请会以直充或兑换码的形式交付。</div>
         </div>
       </div>
-      <el-table :data="accessRequests.slice(0, 5)" stripe size="small" style="width: 100%">
+      <el-table :data="paginatedAccessRequests.items" stripe size="small" style="width: 100%">
         <el-table-column prop="id" label="编号" width="80" />
         <el-table-column label="档位" min-width="160">
           <template #default="{ row }">{{ tierNameById(row.tier_id) }}</template>
@@ -74,16 +74,32 @@
           <template #default="{ row }">{{ formatTime(row.created_at) }}</template>
         </el-table-column>
       </el-table>
+      <el-pagination
+        v-if="paginatedAccessRequests.total > accessRequestPageSize"
+        v-model:current-page="accessRequestPage"
+        class="list-pagination"
+        layout="prev, pager, next, total"
+        :page-size="accessRequestPageSize"
+        :total="paginatedAccessRequests.total"
+      />
     </div>
 
     <div class="surface section">
       <div class="toolbar">
         <div>
           <div style="font-weight: 700">最近兑换码</div>
-          <div class="muted">实际发放的兑换码会出现在这里，直充成功不会占用兑换码。</div>
+          <div class="muted">实际发放或直充使用的兑换码会出现在这里。</div>
         </div>
       </div>
-      <CodeTable :codes="redeemCodes.slice(0, 10)" />
+      <CodeTable :codes="paginatedRedeemCodes.items" />
+      <el-pagination
+        v-if="paginatedRedeemCodes.total > redeemCodePageSize"
+        v-model:current-page="redeemCodePage"
+        class="list-pagination"
+        layout="prev, pager, next, total"
+        :page-size="redeemCodePageSize"
+        :total="paginatedRedeemCodes.total"
+      />
     </div>
   </AppLayout>
 </template>
@@ -99,17 +115,24 @@ import StatusTag from '@/components/StatusTag.vue'
 import { listAccessRequests } from '@/api/access'
 import { listRedeemCodes, listRedeemTiers } from '@/api/redeem'
 import type { AccessRequest, RedeemCode, RedeemTier } from '@/api/types'
+import { paginateItems } from '@/utils/pagination'
 import { tierCodeType } from '@/utils/tiers'
 
 const router = useRouter()
 const accessRequests = ref<AccessRequest[]>([])
 const tiers = ref<RedeemTier[]>([])
 const redeemCodes = ref<RedeemCode[]>([])
+const accessRequestPage = ref(1)
+const redeemCodePage = ref(1)
+const accessRequestPageSize = 10
+const redeemCodePageSize = 10
 let refreshTimer: number | undefined
 
 const enabledTiers = computed(() => tiers.value.filter((tier) => tier.enabled))
 const tierMap = computed(() => new Map(tiers.value.map((tier) => [tier.id, tier])))
 const directChargeCount = computed(() => accessRequests.value.filter((item) => item.fulfilled_via === 'direct_charge').length)
+const paginatedAccessRequests = computed(() => paginateItems(accessRequests.value, accessRequestPage.value, accessRequestPageSize))
+const paginatedRedeemCodes = computed(() => paginateItems(redeemCodes.value, redeemCodePage.value, redeemCodePageSize))
 
 async function loadAll() {
   try {
