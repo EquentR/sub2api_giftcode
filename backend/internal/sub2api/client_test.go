@@ -253,6 +253,102 @@ func TestClientUpdatesOpenAIAccountUserAgentPreservingReturnedCredentials(t *tes
 	require.NotContains(t, credentials, "refresh_token")
 }
 
+func TestClientListsUsersSubscriptionsAndCompensates(t *testing.T) {
+	var (
+		userBalanceBody        map[string]any
+		subscriptionExtendBody map[string]any
+	)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/admin/users":
+			require.Equal(t, "admin-key", r.Header.Get("x-api-key"))
+			require.Equal(t, "false", r.URL.Query().Get("include_subscriptions"))
+			require.Equal(t, "1", r.URL.Query().Get("page"))
+			require.Equal(t, "100", r.URL.Query().Get("page_size"))
+			writeEnvelope(w, paginatedEnvelope[User]{
+				Items: []User{{
+					ID:       10,
+					Email:    "alice@example.com",
+					Username: "alice",
+					Status:   "active",
+					Balance:  15,
+				}},
+				Total:    1,
+				Page:     1,
+				PageSize: 100,
+				Pages:    1,
+			})
+		case "/api/v1/admin/subscriptions":
+			require.Equal(t, "admin-key", r.Header.Get("x-api-key"))
+			require.Equal(t, "10", r.URL.Query().Get("user_id"))
+			require.Equal(t, "active", r.URL.Query().Get("status"))
+			writeEnvelope(w, paginatedEnvelope[Subscription]{
+				Items: []Subscription{{
+					ID:        55,
+					UserID:    10,
+					GroupID:   8,
+					Status:    "active",
+					ExpiresAt: time.Now().UTC().Add(30 * 24 * time.Hour),
+				}},
+				Total:    1,
+				Page:     1,
+				PageSize: 100,
+				Pages:    1,
+			})
+		case "/api/v1/admin/users/10/balance":
+			require.Equal(t, "admin-key", r.Header.Get("x-api-key"))
+			require.Equal(t, "balance-idempotency", r.Header.Get("Idempotency-Key"))
+			require.NoError(t, json.NewDecoder(r.Body).Decode(&userBalanceBody))
+			writeEnvelope(w, User{
+				ID:       10,
+				Email:    "alice@example.com",
+				Username: "alice",
+				Status:   "active",
+				Balance:  35,
+			})
+		case "/api/v1/admin/subscriptions/55/extend":
+			require.Equal(t, "admin-key", r.Header.Get("x-api-key"))
+			require.Equal(t, "subscription-idempotency", r.Header.Get("Idempotency-Key"))
+			require.NoError(t, json.NewDecoder(r.Body).Decode(&subscriptionExtendBody))
+			writeEnvelope(w, Subscription{
+				ID:        55,
+				UserID:    10,
+				GroupID:   8,
+				Status:    "active",
+				ExpiresAt: time.Now().UTC().Add(60 * 24 * time.Hour),
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, "admin-key")
+	users, err := client.ListUsersAll(context.Background())
+	require.NoError(t, err)
+	require.Len(t, users, 1)
+	require.Equal(t, int64(10), users[0].ID)
+
+	subs, err := client.ListActiveUserSubscriptions(context.Background(), 10)
+	require.NoError(t, err)
+	require.Len(t, subs, 1)
+	require.Equal(t, int64(55), subs[0].ID)
+
+	updatedUser, err := client.AddUserBalance(context.Background(), "balance-idempotency", 10, 20, "bulk compensation")
+	require.NoError(t, err)
+	require.Equal(t, 35.0, updatedUser.Balance)
+	require.Equal(t, map[string]any{
+		"balance":   20.0,
+		"operation": "add",
+		"notes":     "bulk compensation",
+	}, userBalanceBody)
+
+	updatedSub, err := client.ExtendSubscription(context.Background(), "subscription-idempotency", 55, 30)
+	require.NoError(t, err)
+	require.Equal(t, int64(55), updatedSub.ID)
+	require.Equal(t, map[string]any{"days": float64(30)}, subscriptionExtendBody)
+}
+
 func floatPtr(v float64) *float64 {
 	return &v
 }

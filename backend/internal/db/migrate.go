@@ -142,6 +142,66 @@ CREATE TABLE IF NOT EXISTS sync_state (
   value TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS compensation_batches (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  batch_key TEXT NOT NULL UNIQUE,
+  subscription_days INTEGER NOT NULL,
+  balance_amount REAL NOT NULL,
+  excluded_domains_json TEXT NOT NULL DEFAULT '[]',
+  note TEXT NOT NULL DEFAULT '',
+  operator_upstream_user_id INTEGER NOT NULL,
+  operator_email TEXT NOT NULL DEFAULT '',
+  operator_username TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'running',
+  total_users INTEGER NOT NULL DEFAULT 0,
+  excluded_users INTEGER NOT NULL DEFAULT 0,
+  subscription_compensated_users INTEGER NOT NULL DEFAULT 0,
+  balance_compensated_users INTEGER NOT NULL DEFAULT 0,
+  skipped_zero_balance_users INTEGER NOT NULL DEFAULT 0,
+  failed_users INTEGER NOT NULL DEFAULT 0,
+  detail_count INTEGER NOT NULL DEFAULT 0,
+  upstream_error TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  completed_at TEXT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_compensation_batches_created
+  ON compensation_batches(created_at DESC);
+
+CREATE TABLE IF NOT EXISTS compensation_batch_details (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  batch_id INTEGER NOT NULL,
+  detail_key TEXT NOT NULL UNIQUE,
+  upstream_user_id INTEGER NOT NULL,
+  user_email TEXT NOT NULL DEFAULT '',
+  user_username TEXT NOT NULL DEFAULT '',
+  user_balance REAL NOT NULL DEFAULT 0,
+  excluded INTEGER NOT NULL DEFAULT 0,
+  excluded_domain TEXT NOT NULL DEFAULT '',
+  has_active_subscriptions INTEGER NOT NULL DEFAULT 0,
+  active_subscription_count INTEGER NOT NULL DEFAULT 0,
+  active_subscription_ids_json TEXT NOT NULL DEFAULT '[]',
+  decision_type TEXT NOT NULL DEFAULT '',
+  action_type TEXT NOT NULL DEFAULT '',
+  subscription_days INTEGER NOT NULL DEFAULT 0,
+  balance_amount REAL NOT NULL DEFAULT 0,
+  status TEXT NOT NULL DEFAULT '',
+  result_reason TEXT NOT NULL DEFAULT '',
+  upstream_reference_json TEXT NOT NULL DEFAULT '',
+  remark_requested INTEGER NOT NULL DEFAULT 0,
+  remark_applied INTEGER NOT NULL DEFAULT 0,
+  remark_error TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_compensation_batch_details_batch
+  ON compensation_batch_details(batch_id, id ASC);
+
+CREATE INDEX IF NOT EXISTS idx_compensation_batch_details_user
+  ON compensation_batch_details(upstream_user_id, created_at DESC);
 `
 
 func (s *Store) Migrate(ctx context.Context) error {

@@ -39,6 +39,7 @@
           <el-button type="primary" :icon="Operation" @click="router.push('/admin/access')">审批队列</el-button>
           <el-button type="primary" :icon="Connection" @click="router.push('/admin/openai-accounts')">OpenAI UA</el-button>
           <el-button type="primary" :icon="Setting" @click="router.push('/admin/tiers')">档位设置</el-button>
+          <el-button type="primary" :icon="Connection" @click="router.push('/admin/compensation')">批量补偿</el-button>
         </div>
       </div>
       <el-table :data="users" stripe size="small" style="width: 100%">

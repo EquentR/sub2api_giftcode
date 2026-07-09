@@ -83,6 +83,13 @@ type OpenAIAccountUserAgentRequest struct {
 	UserAgent string `json:"user_agent"`
 }
 
+type CompensationBatchCreateRequest struct {
+	SubscriptionDays int      `json:"subscription_days" binding:"required,gt=0"`
+	BalanceAmount    float64  `json:"balance_amount" binding:"required,gt=0"`
+	ExcludedDomains  []string `json:"excluded_domains"`
+	Note             string   `json:"note"`
+}
+
 type LoginResponse struct {
 	User             any    `json:"user"`
 	IsAdmin          bool   `json:"is_admin"`

@@ -63,6 +63,9 @@ func NewRouter(cfg *config.RuntimeConfig, service *app.Service) *gin.Engine {
 			admin.GET("/sub2api-subscription-groups", handlers.ListSubscriptionGroups)
 			admin.GET("/redeem-balance-tiers", handlers.ListBalanceTiers)
 			admin.PUT("/redeem-balance-tiers", handlers.UpdateBalanceTiers)
+			admin.POST("/compensation-batches", handlers.CreateCompensationBatch)
+			admin.GET("/compensation-batches", handlers.ListCompensationBatches)
+			admin.GET("/compensation-batches/:id/details", handlers.ListCompensationBatchDetails)
 		}
 	}
 

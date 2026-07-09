@@ -9,6 +9,7 @@ import AdminDashboardView from '@/views/AdminDashboardView.vue'
 import AdminAccessQueueView from '@/views/AdminAccessQueueView.vue'
 import AdminOpenAIAccountsView from '@/views/AdminOpenAIAccountsView.vue'
 import AdminTiersView from '@/views/AdminTiersView.vue'
+import AdminCompensationView from '@/views/AdminCompensationView.vue'
 
 const router = createRouter({
   history: createWebHistory(),
@@ -24,6 +25,7 @@ const router = createRouter({
     { path: '/admin/access', name: 'admin-access', component: AdminAccessQueueView, meta: { requiresAuth: true, requiresAdmin: true } },
     { path: '/admin/openai-accounts', name: 'admin-openai-accounts', component: AdminOpenAIAccountsView, meta: { requiresAuth: true, requiresAdmin: true } },
     { path: '/admin/tiers', name: 'admin-tiers', component: AdminTiersView, meta: { requiresAuth: true, requiresAdmin: true } },
+    { path: '/admin/compensation', name: 'admin-compensation', component: AdminCompensationView, meta: { requiresAuth: true, requiresAdmin: true } },
   ],
 })
 
