@@ -5,6 +5,8 @@ import (
 	"strconv"
 
 	"github.com/gin-gonic/gin"
+
+	"sub2api-giftcode/backend/internal/app"
 )
 
 func (h *Handlers) Stats(c *gin.Context) {
@@ -118,4 +120,66 @@ func (h *Handlers) UpdateOpenAIAccountUserAgent(c *gin.Context) {
 		return
 	}
 	writeSuccess(c, account)
+}
+
+func (h *Handlers) CreateCompensationBatch(c *gin.Context) {
+	sessionUser, ok := getSessionUser(c)
+	if !ok || sessionUser == nil {
+		writeError(c, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	var req CompensationBatchCreateRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		writeError(c, http.StatusBadRequest, err.Error())
+		return
+	}
+	batch, err := h.service.RunCompensationBatch(c.Request.Context(), sessionUser, app.CompensationBatchInput{
+		SubscriptionDays: req.SubscriptionDays,
+		BalanceAmount:    req.BalanceAmount,
+		ExcludedDomains:  req.ExcludedDomains,
+		Note:             req.Note,
+	})
+	if err != nil {
+		status, msg, reason := statusForError(err)
+		if reason != "" {
+			writeErrorReason(c, status, msg, reason)
+		} else {
+			writeError(c, status, msg)
+		}
+		return
+	}
+	writeCreated(c, batch)
+}
+
+func (h *Handlers) ListCompensationBatches(c *gin.Context) {
+	items, err := h.service.ListCompensationBatches(c.Request.Context())
+	if err != nil {
+		status, msg, reason := statusForError(err)
+		if reason != "" {
+			writeErrorReason(c, status, msg, reason)
+		} else {
+			writeError(c, status, msg)
+		}
+		return
+	}
+	writeSuccess(c, items)
+}
+
+func (h *Handlers) ListCompensationBatchDetails(c *gin.Context) {
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil {
+		writeError(c, http.StatusBadRequest, "invalid id")
+		return
+	}
+	items, err := h.service.ListCompensationBatchDetails(c.Request.Context(), id)
+	if err != nil {
+		status, msg, reason := statusForError(err)
+		if reason != "" {
+			writeErrorReason(c, status, msg, reason)
+		} else {
+			writeError(c, status, msg)
+		}
+		return
+	}
+	writeSuccess(c, items)
 }

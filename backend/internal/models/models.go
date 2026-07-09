@@ -137,6 +137,57 @@ type SyncState struct {
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
+type CompensationBatch struct {
+	ID                           int64      `json:"id"`
+	BatchKey                     string     `json:"batch_key"`
+	SubscriptionDays             int        `json:"subscription_days"`
+	BalanceAmount                float64    `json:"balance_amount"`
+	ExcludedDomains              []string   `json:"excluded_domains"`
+	Note                         string     `json:"note"`
+	OperatorUpstreamUserID       int64      `json:"operator_upstream_user_id"`
+	OperatorEmail                string     `json:"operator_email"`
+	OperatorUsername             string     `json:"operator_username"`
+	Status                       string     `json:"status"`
+	TotalUsers                   int        `json:"total_users"`
+	ExcludedUsers                int        `json:"excluded_users"`
+	SubscriptionCompensatedUsers int        `json:"subscription_compensated_users"`
+	BalanceCompensatedUsers      int        `json:"balance_compensated_users"`
+	SkippedZeroBalanceUsers      int        `json:"skipped_zero_balance_users"`
+	FailedUsers                  int        `json:"failed_users"`
+	DetailCount                  int        `json:"detail_count"`
+	UpstreamError                string     `json:"upstream_error"`
+	CreatedAt                    time.Time  `json:"created_at"`
+	UpdatedAt                    time.Time  `json:"updated_at"`
+	CompletedAt                  *time.Time `json:"completed_at,omitempty"`
+}
+
+type CompensationBatchDetail struct {
+	ID                      int64     `json:"id"`
+	BatchID                 int64     `json:"batch_id"`
+	DetailKey               string    `json:"detail_key"`
+	UpstreamUserID          int64     `json:"upstream_user_id"`
+	UserEmail               string    `json:"user_email"`
+	UserUsername            string    `json:"user_username"`
+	UserBalance             float64   `json:"user_balance"`
+	Excluded                bool      `json:"excluded"`
+	ExcludedDomain          string    `json:"excluded_domain"`
+	HasActiveSubscriptions  bool      `json:"has_active_subscriptions"`
+	ActiveSubscriptionCount int       `json:"active_subscription_count"`
+	ActiveSubscriptionIDs   []int64   `json:"active_subscription_ids"`
+	DecisionType            string    `json:"decision_type"`
+	ActionType              string    `json:"action_type"`
+	SubscriptionDays        int       `json:"subscription_days"`
+	BalanceAmount           float64   `json:"balance_amount"`
+	Status                  string    `json:"status"`
+	ResultReason            string    `json:"result_reason"`
+	UpstreamReferenceJSON   string    `json:"upstream_reference_json"`
+	RemarkRequested         bool      `json:"remark_requested"`
+	RemarkApplied           bool      `json:"remark_applied"`
+	RemarkError             string    `json:"remark_error"`
+	CreatedAt               time.Time `json:"created_at"`
+	UpdatedAt               time.Time `json:"updated_at"`
+}
+
 type SiteBranding struct {
 	Title             string `json:"title"`
 	Subtitle          string `json:"subtitle"`

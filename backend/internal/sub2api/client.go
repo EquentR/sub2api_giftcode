@@ -69,6 +69,21 @@ type Group struct {
 	UpdatedAt        time.Time `json:"updated_at"`
 }
 
+type Subscription struct {
+	ID         int64      `json:"id"`
+	UserID     int64      `json:"user_id"`
+	GroupID    int64      `json:"group_id"`
+	StartsAt   time.Time  `json:"starts_at"`
+	ExpiresAt  time.Time  `json:"expires_at"`
+	Status     string     `json:"status"`
+	AssignedBy *int64     `json:"assigned_by,omitempty"`
+	AssignedAt *time.Time `json:"assigned_at,omitempty"`
+	Notes      string     `json:"notes,omitempty"`
+	RevokedAt  *time.Time `json:"revoked_at,omitempty"`
+	User       *User      `json:"user,omitempty"`
+	Group      *Group     `json:"group,omitempty"`
+}
+
 type Account struct {
 	ID          int64          `json:"id"`
 	Name        string         `json:"name"`
@@ -248,6 +263,67 @@ func (c *Client) ListGroupsAll(ctx context.Context) ([]Group, error) {
 		return nil, err
 	}
 	return out, nil
+}
+
+func (c *Client) ListUsersAll(ctx context.Context) ([]User, error) {
+	const pageSize = 100
+	page := 1
+	out := make([]User, 0)
+	for {
+		var pageData paginatedEnvelope[User]
+		path := fmt.Sprintf("/api/v1/admin/users?page=%d&page_size=%d&include_subscriptions=false", page, pageSize)
+		if err := c.getJSONWithHeaders(ctx, path, map[string]string{"x-api-key": c.AdminAPIKey}, &pageData); err != nil {
+			return nil, err
+		}
+		out = append(out, pageData.Items...)
+		if len(pageData.Items) == 0 || int64(page*pageSize) >= pageData.Total || page >= pageData.Pages {
+			break
+		}
+		page++
+	}
+	return out, nil
+}
+
+func (c *Client) ListActiveUserSubscriptions(ctx context.Context, userID int64) ([]Subscription, error) {
+	const pageSize = 100
+	page := 1
+	out := make([]Subscription, 0)
+	for {
+		var pageData paginatedEnvelope[Subscription]
+		path := fmt.Sprintf("/api/v1/admin/subscriptions?user_id=%d&status=%s&page=%d&page_size=%d", userID, url.QueryEscape("active"), page, pageSize)
+		if err := c.getJSONWithHeaders(ctx, path, map[string]string{"x-api-key": c.AdminAPIKey}, &pageData); err != nil {
+			return nil, err
+		}
+		out = append(out, pageData.Items...)
+		if len(pageData.Items) == 0 || int64(page*pageSize) >= pageData.Total || page >= pageData.Pages {
+			break
+		}
+		page++
+	}
+	return out, nil
+}
+
+func (c *Client) AddUserBalance(ctx context.Context, userID int64, amount float64, notes string) (*User, error) {
+	var out User
+	body := map[string]any{
+		"balance":   amount,
+		"operation": "add",
+	}
+	if strings.TrimSpace(notes) != "" {
+		body["notes"] = strings.TrimSpace(notes)
+	}
+	if err := c.postJSON(ctx, fmt.Sprintf("/api/v1/admin/users/%d/balance", userID), map[string]string{"x-api-key": c.AdminAPIKey}, body, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *Client) ExtendSubscription(ctx context.Context, subscriptionID int64, days int) (*Subscription, error) {
+	var out Subscription
+	if err := c.postJSON(ctx, fmt.Sprintf("/api/v1/admin/subscriptions/%d/extend", subscriptionID), map[string]string{"x-api-key": c.AdminAPIKey}, map[string]int{"days": days}, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
 }
 
 func (c *Client) ListRedeemCodes(ctx context.Context, search string, pageSize int) ([]RedeemCode, error) {
