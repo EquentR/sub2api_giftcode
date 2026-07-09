@@ -183,7 +183,12 @@ async function submitBatch() {
 }
 
 function parseExcludedDomains(value: string) {
-  return Array.from(new Set(value.split(/[\s,]+/).map((item) => item.trim().replace(/^@/, '').toLowerCase()).filter(Boolean)))
+  const parts = value.split(/[\s,]+/)
+  const normalized = parts
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .map((item) => item.replace(/^@/, '').toLowerCase())
+  return Array.from(new Set(normalized))
 }
 
 function onCurrentBatchChange(batch?: CompensationBatch) {

@@ -26,6 +26,12 @@ type CompensationBatchInput struct {
 	Note             string   `json:"note"`
 }
 
+type balanceUpdateResult struct {
+	User          *sub2api.User
+	RemarkApplied bool
+	RemarkError   string
+}
+
 func (s *Service) RunCompensationBatch(ctx context.Context, operator *SessionUser, input CompensationBatchInput) (*models.CompensationBatch, error) {
 	if err := s.requireUpstreamClient(); err != nil {
 		return nil, err
@@ -97,7 +103,7 @@ func (s *Service) RunCompensationBatch(ctx context.Context, operator *SessionUse
 			RemarkRequested:   input.Note != "",
 			CreatedAt:         s.now(),
 			UpdatedAt:         s.now(),
-			UpstreamReferenceJSON: "{}",
+			UpstreamReferenceJSON: emptyJSONObject(""),
 		}
 
 		if domain := emailDomain(user.Email); domain != "" {
@@ -177,7 +183,7 @@ func (s *Service) RunCompensationBatch(ctx context.Context, operator *SessionUse
 		if user.Balance > 0 {
 			detail.DecisionType = "positive_balance"
 			detail.ActionType = "balance"
-			updatedUser, remarkApplied, remarkError, err := s.addUserBalanceBestEffort(ctx, user.ID, input.BalanceAmount, input.Note)
+			updateResult, err := s.addUserBalanceBestEffort(ctx, user.ID, input.BalanceAmount, input.Note)
 			if err != nil {
 				detail.Status = "failed"
 				detail.ResultReason = err.Error()
@@ -185,12 +191,12 @@ func (s *Service) RunCompensationBatch(ctx context.Context, operator *SessionUse
 			} else {
 				detail.Status = "success"
 				detail.ResultReason = "balance compensation applied"
-				detail.RemarkApplied = remarkApplied
-				detail.RemarkError = remarkError
+				detail.RemarkApplied = updateResult.RemarkApplied
+				detail.RemarkError = updateResult.RemarkError
 				batch.BalanceCompensatedUsers++
 				detail.UpstreamReferenceJSON = marshalJSON(map[string]any{
 					"user_id":         user.ID,
-					"updated_balance": updatedUser.Balance,
+					"updated_balance": updateResult.User.Balance,
 				})
 			}
 			if err := s.insertCompensationBatchDetail(ctx, detail); err != nil {
@@ -305,24 +311,30 @@ ORDER BY id ASC
 	return out, rows.Err()
 }
 
-func (s *Service) addUserBalanceBestEffort(ctx context.Context, userID int64, amount float64, note string) (*sub2api.User, bool, string, error) {
+func (s *Service) addUserBalanceBestEffort(ctx context.Context, userID int64, amount float64, note string) (*balanceUpdateResult, error) {
 	note = strings.TrimSpace(note)
 	if note == "" {
 		user, err := s.upstream.AddUserBalance(ctx, userID, amount, "")
-		return user, false, "", err
+		if err != nil {
+			return nil, err
+		}
+		return &balanceUpdateResult{User: user}, nil
 	}
 	user, err := s.upstream.AddUserBalance(ctx, userID, amount, note)
 	if err == nil {
-		return user, true, "", nil
+		return &balanceUpdateResult{User: user, RemarkApplied: true}, nil
 	}
 	var apiErr *sub2api.APIError
 	if errors.As(err, &apiErr) && apiErr.Status >= 400 && apiErr.Status < 500 {
 		fallbackUser, fallbackErr := s.upstream.AddUserBalance(ctx, userID, amount, "")
 		if fallbackErr == nil {
-			return fallbackUser, false, "upstream balance endpoint rejected notes, retried without notes", nil
+			return &balanceUpdateResult{
+				User:        fallbackUser,
+				RemarkError: "upstream balance endpoint rejected notes, retried without notes",
+			}, nil
 		}
 	}
-	return nil, false, "", err
+	return nil, err
 }
 
 func (s *Service) insertCompensationBatch(ctx context.Context, batch models.CompensationBatch) (int64, error) {
