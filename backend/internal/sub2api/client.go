@@ -290,7 +290,7 @@ func (c *Client) ListActiveUserSubscriptions(ctx context.Context, userID int64) 
 	out := make([]Subscription, 0)
 	for {
 		var pageData paginatedEnvelope[Subscription]
-		path := fmt.Sprintf("/api/v1/admin/subscriptions?user_id=%d&status=%s&page=%d&page_size=%d", userID, url.QueryEscape("active"), page, pageSize)
+		path := fmt.Sprintf("/api/v1/admin/subscriptions?user_id=%d&status=active&page=%d&page_size=%d", userID, page, pageSize)
 		if err := c.getJSONWithHeaders(ctx, path, map[string]string{"x-api-key": c.AdminAPIKey}, &pageData); err != nil {
 			return nil, err
 		}

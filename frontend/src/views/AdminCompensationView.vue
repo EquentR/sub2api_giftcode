@@ -4,7 +4,7 @@
       <div class="toolbar">
         <div>
           <div style="font-weight: 700">执行补偿</div>
-          <div class="muted">有有效订阅补天数，无有效订阅且余额大于 0 补余额，支持排除邮箱域名。</div>
+          <div class="muted">有效订阅补天数，无有效订阅且余额大于 0 补余额，支持排除邮箱域名。</div>
         </div>
         <div style="display: flex; gap: 8px">
           <el-button :icon="Refresh" :loading="loading" @click="loadBatches">刷新批次</el-button>

@@ -141,9 +141,6 @@ func (s *Service) RunCompensationBatch(ctx context.Context, operator *SessionUse
 		if len(subscriptions) > 0 {
 			detail.DecisionType = "active_subscription"
 			detail.ActionType = "subscription"
-			if detail.RemarkRequested {
-				detail.RemarkError = "upstream subscription extend endpoint does not support notes"
-			}
 			extendedIDs := make([]int64, 0, len(subscriptions))
 			failedExtends := make([]map[string]any, 0)
 			for _, subscription := range subscriptions {
