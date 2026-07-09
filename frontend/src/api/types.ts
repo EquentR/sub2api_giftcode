@@ -167,6 +167,57 @@ export interface DashboardStats {
   last_sync_at?: string | null
 }
 
+export interface CompensationBatch {
+  id: number
+  batch_key: string
+  subscription_days: number
+  balance_amount: number
+  excluded_domains: string[]
+  note: string
+  operator_upstream_user_id: number
+  operator_email: string
+  operator_username: string
+  status: string
+  total_users: number
+  excluded_users: number
+  subscription_compensated_users: number
+  balance_compensated_users: number
+  skipped_zero_balance_users: number
+  failed_users: number
+  detail_count: number
+  upstream_error: string
+  created_at: string
+  updated_at: string
+  completed_at?: string | null
+}
+
+export interface CompensationBatchDetail {
+  id: number
+  batch_id: number
+  detail_key: string
+  upstream_user_id: number
+  user_email: string
+  user_username: string
+  user_balance: number
+  excluded: boolean
+  excluded_domain: string
+  has_active_subscriptions: boolean
+  active_subscription_count: number
+  active_subscription_ids: number[]
+  decision_type: string
+  action_type: string
+  subscription_days: number
+  balance_amount: number
+  status: string
+  result_reason: string
+  upstream_reference_json: string
+  remark_requested: boolean
+  remark_applied: boolean
+  remark_error: string
+  created_at: string
+  updated_at: string
+}
+
 export interface SiteBranding {
   title: string
   subtitle: string

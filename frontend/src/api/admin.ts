@@ -4,6 +4,8 @@ import type {
   AccessApprovalResponse,
   AccessRequest,
   BalanceTier,
+  CompensationBatch,
+  CompensationBatchDetail,
   DashboardStats,
   OpenAIAccount,
   RedeemCode,
@@ -125,4 +127,31 @@ export function updateOpenAIAccountUserAgent(id: number, userAgent: string) {
     url: `/admin/openai-accounts/${id}/user-agent`,
     data: { user_agent: userAgent },
   })
+}
+
+export function createCompensationBatch(payload: {
+  subscription_days: number
+  balance_amount: number
+  excluded_domains: string[]
+  note: string
+}) {
+  return request<CompensationBatch>({
+    method: 'POST',
+    url: '/admin/compensation-batches',
+    data: payload,
+  })
+}
+
+export function listCompensationBatches() {
+  return request<CompensationBatch[] | null>({
+    method: 'GET',
+    url: '/admin/compensation-batches',
+  }).then(asArray)
+}
+
+export function listCompensationBatchDetails(id: number) {
+  return request<CompensationBatchDetail[] | null>({
+    method: 'GET',
+    url: `/admin/compensation-batches/${id}/details`,
+  }).then(asArray)
 }

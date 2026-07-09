@@ -38,6 +38,10 @@
           <el-icon><Setting /></el-icon>
           <span>档位设置</span>
         </el-menu-item>
+        <el-menu-item v-if="session.isAdmin" index="/admin/compensation">
+          <el-icon><Wallet /></el-icon>
+          <span>批量补偿</span>
+        </el-menu-item>
       </el-menu>
     </el-aside>
 
