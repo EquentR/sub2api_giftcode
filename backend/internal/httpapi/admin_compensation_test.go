@@ -125,4 +125,3 @@ func TestCompensationHandlersCreateListAndDetails(t *testing.T) {
 	require.NoError(t, json.Unmarshal(detailEnvelope.Data, &details))
 	require.Len(t, details, 2)
 }
-
