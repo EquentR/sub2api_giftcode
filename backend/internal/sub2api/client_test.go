@@ -297,6 +297,7 @@ func TestClientListsUsersSubscriptionsAndCompensates(t *testing.T) {
 			})
 		case "/api/v1/admin/users/10/balance":
 			require.Equal(t, "admin-key", r.Header.Get("x-api-key"))
+			require.Equal(t, "balance-idempotency", r.Header.Get("Idempotency-Key"))
 			require.NoError(t, json.NewDecoder(r.Body).Decode(&userBalanceBody))
 			writeEnvelope(w, User{
 				ID:       10,
@@ -307,6 +308,7 @@ func TestClientListsUsersSubscriptionsAndCompensates(t *testing.T) {
 			})
 		case "/api/v1/admin/subscriptions/55/extend":
 			require.Equal(t, "admin-key", r.Header.Get("x-api-key"))
+			require.Equal(t, "subscription-idempotency", r.Header.Get("Idempotency-Key"))
 			require.NoError(t, json.NewDecoder(r.Body).Decode(&subscriptionExtendBody))
 			writeEnvelope(w, Subscription{
 				ID:        55,
@@ -332,7 +334,7 @@ func TestClientListsUsersSubscriptionsAndCompensates(t *testing.T) {
 	require.Len(t, subs, 1)
 	require.Equal(t, int64(55), subs[0].ID)
 
-	updatedUser, err := client.AddUserBalance(context.Background(), 10, 20, "bulk compensation")
+	updatedUser, err := client.AddUserBalance(context.Background(), "balance-idempotency", 10, 20, "bulk compensation")
 	require.NoError(t, err)
 	require.Equal(t, 35.0, updatedUser.Balance)
 	require.Equal(t, map[string]any{
@@ -341,7 +343,7 @@ func TestClientListsUsersSubscriptionsAndCompensates(t *testing.T) {
 		"notes":     "bulk compensation",
 	}, userBalanceBody)
 
-	updatedSub, err := client.ExtendSubscription(context.Background(), 55, 30)
+	updatedSub, err := client.ExtendSubscription(context.Background(), "subscription-idempotency", 55, 30)
 	require.NoError(t, err)
 	require.Equal(t, int64(55), updatedSub.ID)
 	require.Equal(t, map[string]any{"days": float64(30)}, subscriptionExtendBody)

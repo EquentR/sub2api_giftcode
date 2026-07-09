@@ -92,17 +92,16 @@ func (s *Service) RunCompensationBatch(ctx context.Context, operator *SessionUse
 	batch.TotalUsers = len(users)
 	for _, user := range users {
 		detail := models.CompensationBatchDetail{
-			BatchID:           batch.ID,
-			DetailKey:         fmt.Sprintf("%s:%d", batch.BatchKey, user.ID),
-			UpstreamUserID:    user.ID,
-			UserEmail:         strings.TrimSpace(user.Email),
-			UserUsername:      strings.TrimSpace(user.Username),
-			UserBalance:       user.Balance,
-			SubscriptionDays:  input.SubscriptionDays,
-			BalanceAmount:     input.BalanceAmount,
-			RemarkRequested:   input.Note != "",
-			CreatedAt:         s.now(),
-			UpdatedAt:         s.now(),
+			BatchID:               batch.ID,
+			DetailKey:             fmt.Sprintf("%s:%d", batch.BatchKey, user.ID),
+			UpstreamUserID:        user.ID,
+			UserEmail:             strings.TrimSpace(user.Email),
+			UserUsername:          strings.TrimSpace(user.Username),
+			UserBalance:           user.Balance,
+			SubscriptionDays:      input.SubscriptionDays,
+			BalanceAmount:         input.BalanceAmount,
+			CreatedAt:             s.now(),
+			UpdatedAt:             s.now(),
 			UpstreamReferenceJSON: emptyJSONObject(""),
 		}
 
@@ -150,7 +149,8 @@ func (s *Service) RunCompensationBatch(ctx context.Context, operator *SessionUse
 			extendedIDs := make([]int64, 0, len(subscriptions))
 			failedExtends := make([]map[string]any, 0)
 			for _, subscription := range subscriptions {
-				if _, err := s.upstream.ExtendSubscription(ctx, subscription.ID, input.SubscriptionDays); err != nil {
+				idempotencyKey := compensationSubscriptionExtensionIdempotencyKey(batch.BatchKey, user.ID, subscription.ID)
+				if _, err := s.upstream.ExtendSubscription(ctx, idempotencyKey, subscription.ID, input.SubscriptionDays); err != nil {
 					failedExtends = append(failedExtends, map[string]any{
 						"subscription_id": subscription.ID,
 						"error":           err.Error(),
@@ -160,8 +160,8 @@ func (s *Service) RunCompensationBatch(ctx context.Context, operator *SessionUse
 				extendedIDs = append(extendedIDs, subscription.ID)
 			}
 			detail.UpstreamReferenceJSON = marshalJSON(map[string]any{
-				"subscription_ids": detail.ActiveSubscriptionIDs,
-				"extended_ids":     extendedIDs,
+				"subscription_ids":  detail.ActiveSubscriptionIDs,
+				"extended_ids":      extendedIDs,
 				"failed_extensions": failedExtends,
 			})
 			if len(failedExtends) > 0 {
@@ -183,7 +183,8 @@ func (s *Service) RunCompensationBatch(ctx context.Context, operator *SessionUse
 		if user.Balance > 0 {
 			detail.DecisionType = "positive_balance"
 			detail.ActionType = "balance"
-			updateResult, err := s.addUserBalanceBestEffort(ctx, user.ID, input.BalanceAmount, input.Note)
+			detail.RemarkRequested = input.Note != ""
+			updateResult, err := s.addUserBalanceBestEffort(ctx, batch.BatchKey, user.ID, input.BalanceAmount, input.Note)
 			if err != nil {
 				detail.Status = "failed"
 				detail.ResultReason = err.Error()
@@ -311,22 +312,22 @@ ORDER BY id ASC
 	return out, rows.Err()
 }
 
-func (s *Service) addUserBalanceBestEffort(ctx context.Context, userID int64, amount float64, note string) (*balanceUpdateResult, error) {
+func (s *Service) addUserBalanceBestEffort(ctx context.Context, batchKey string, userID int64, amount float64, note string) (*balanceUpdateResult, error) {
 	note = strings.TrimSpace(note)
 	if note == "" {
-		user, err := s.upstream.AddUserBalance(ctx, userID, amount, "")
+		user, err := s.upstream.AddUserBalance(ctx, compensationBalanceIdempotencyKey(batchKey, userID, "without-note"), userID, amount, "")
 		if err != nil {
 			return nil, err
 		}
 		return &balanceUpdateResult{User: user}, nil
 	}
-	user, err := s.upstream.AddUserBalance(ctx, userID, amount, note)
+	user, err := s.upstream.AddUserBalance(ctx, compensationBalanceIdempotencyKey(batchKey, userID, "with-note"), userID, amount, note)
 	if err == nil {
 		return &balanceUpdateResult{User: user, RemarkApplied: true}, nil
 	}
 	var apiErr *sub2api.APIError
 	if errors.As(err, &apiErr) && apiErr.Status >= 400 && apiErr.Status < 500 {
-		fallbackUser, fallbackErr := s.upstream.AddUserBalance(ctx, userID, amount, "")
+		fallbackUser, fallbackErr := s.upstream.AddUserBalance(ctx, compensationBalanceIdempotencyKey(batchKey, userID, "without-note"), userID, amount, "")
 		if fallbackErr == nil {
 			return &balanceUpdateResult{
 				User:        fallbackUser,
@@ -335,6 +336,14 @@ func (s *Service) addUserBalanceBestEffort(ctx context.Context, userID int64, am
 		}
 	}
 	return nil, err
+}
+
+func compensationBalanceIdempotencyKey(batchKey string, userID int64, mode string) string {
+	return fmt.Sprintf("giftcode-compensation-batch-%s-user-%d-balance-%s", strings.TrimSpace(batchKey), userID, mode)
+}
+
+func compensationSubscriptionExtensionIdempotencyKey(batchKey string, userID, subscriptionID int64) string {
+	return fmt.Sprintf("giftcode-compensation-batch-%s-user-%d-subscription-%d-extend", strings.TrimSpace(batchKey), userID, subscriptionID)
 }
 
 func (s *Service) insertCompensationBatch(ctx context.Context, batch models.CompensationBatch) (int64, error) {
@@ -439,11 +448,11 @@ func scanCompensationBatchRow(scanner interface {
 	Scan(dest ...any) error
 }) (*models.CompensationBatch, error) {
 	var (
-		out               models.CompensationBatch
-		excludedDomains   string
-		createdAt         string
-		updatedAt         string
-		completedAt       sql.NullString
+		out             models.CompensationBatch
+		excludedDomains string
+		createdAt       string
+		updatedAt       string
+		completedAt     sql.NullString
 	)
 	if err := scanner.Scan(
 		&out.ID,
@@ -471,7 +480,9 @@ func scanCompensationBatchRow(scanner interface {
 		return nil, err
 	}
 	if strings.TrimSpace(excludedDomains) != "" {
-		_ = json.Unmarshal([]byte(excludedDomains), &out.ExcludedDomains)
+		if err := json.Unmarshal([]byte(excludedDomains), &out.ExcludedDomains); err != nil {
+			return nil, fmt.Errorf("decode excluded_domains_json: %w", err)
+		}
 	}
 	var err error
 	if out.CreatedAt, err = parseNonNullTime(createdAt); err != nil {
@@ -490,14 +501,14 @@ func scanCompensationBatchDetailRow(scanner interface {
 	Scan(dest ...any) error
 }) (*models.CompensationBatchDetail, error) {
 	var (
-		out                   models.CompensationBatchDetail
-		excluded              int
+		out                    models.CompensationBatchDetail
+		excluded               int
 		hasActiveSubscriptions int
-		activeSubscriptionIDs string
-		remarkRequested       int
-		remarkApplied         int
-		createdAt             string
-		updatedAt             string
+		activeSubscriptionIDs  string
+		remarkRequested        int
+		remarkApplied          int
+		createdAt              string
+		updatedAt              string
 	)
 	if err := scanner.Scan(
 		&out.ID,
@@ -532,7 +543,9 @@ func scanCompensationBatchDetailRow(scanner interface {
 	out.RemarkRequested = remarkRequested != 0
 	out.RemarkApplied = remarkApplied != 0
 	if strings.TrimSpace(activeSubscriptionIDs) != "" {
-		_ = json.Unmarshal([]byte(activeSubscriptionIDs), &out.ActiveSubscriptionIDs)
+		if err := json.Unmarshal([]byte(activeSubscriptionIDs), &out.ActiveSubscriptionIDs); err != nil {
+			return nil, fmt.Errorf("decode active_subscription_ids_json: %w", err)
+		}
 	}
 	var err error
 	if out.CreatedAt, err = parseNonNullTime(createdAt); err != nil {

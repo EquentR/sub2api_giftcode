@@ -303,7 +303,7 @@ func (c *Client) ListActiveUserSubscriptions(ctx context.Context, userID int64) 
 	return out, nil
 }
 
-func (c *Client) AddUserBalance(ctx context.Context, userID int64, amount float64, notes string) (*User, error) {
+func (c *Client) AddUserBalance(ctx context.Context, idempotencyKey string, userID int64, amount float64, notes string) (*User, error) {
 	var out User
 	body := map[string]any{
 		"balance":   amount,
@@ -312,15 +312,21 @@ func (c *Client) AddUserBalance(ctx context.Context, userID int64, amount float6
 	if strings.TrimSpace(notes) != "" {
 		body["notes"] = strings.TrimSpace(notes)
 	}
-	if err := c.postJSON(ctx, fmt.Sprintf("/api/v1/admin/users/%d/balance", userID), map[string]string{"x-api-key": c.AdminAPIKey}, body, &out); err != nil {
+	if err := c.postJSON(ctx, fmt.Sprintf("/api/v1/admin/users/%d/balance", userID), map[string]string{
+		"x-api-key":       c.AdminAPIKey,
+		"Idempotency-Key": idempotencyKey,
+	}, body, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
 }
 
-func (c *Client) ExtendSubscription(ctx context.Context, subscriptionID int64, days int) (*Subscription, error) {
+func (c *Client) ExtendSubscription(ctx context.Context, idempotencyKey string, subscriptionID int64, days int) (*Subscription, error) {
 	var out Subscription
-	if err := c.postJSON(ctx, fmt.Sprintf("/api/v1/admin/subscriptions/%d/extend", subscriptionID), map[string]string{"x-api-key": c.AdminAPIKey}, map[string]int{"days": days}, &out); err != nil {
+	if err := c.postJSON(ctx, fmt.Sprintf("/api/v1/admin/subscriptions/%d/extend", subscriptionID), map[string]string{
+		"x-api-key":       c.AdminAPIKey,
+		"Idempotency-Key": idempotencyKey,
+	}, map[string]int{"days": days}, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil

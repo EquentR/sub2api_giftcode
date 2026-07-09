@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -18,7 +19,9 @@ import (
 func TestRunCompensationBatchRecordsSummaryAndDetails(t *testing.T) {
 	var (
 		balanceBodies []map[string]any
+		balanceKeys   []string
 		extendedIDs   []int64
+		extendKeys    []string
 	)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -61,12 +64,15 @@ func TestRunCompensationBatchRecordsSummaryAndDetails(t *testing.T) {
 			var body map[string]any
 			require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
 			balanceBodies = append(balanceBodies, body)
+			balanceKeys = append(balanceKeys, r.Header.Get("Idempotency-Key"))
 			writeEnvelope(w, sub2api.User{ID: 3, Email: "bal@example.com", Username: "bal", Status: "active", Balance: 15})
 		case "/api/v1/admin/subscriptions/101/extend":
 			extendedIDs = append(extendedIDs, 101)
+			extendKeys = append(extendKeys, r.Header.Get("Idempotency-Key"))
 			writeEnvelope(w, sub2api.Subscription{ID: 101, UserID: 2, GroupID: 7, Status: "active", ExpiresAt: time.Now().UTC().Add(60 * 24 * time.Hour)})
 		case "/api/v1/admin/subscriptions/102/extend":
 			extendedIDs = append(extendedIDs, 102)
+			extendKeys = append(extendKeys, r.Header.Get("Idempotency-Key"))
 			writeEnvelope(w, sub2api.Subscription{ID: 102, UserID: 2, GroupID: 8, Status: "active", ExpiresAt: time.Now().UTC().Add(70 * 24 * time.Hour)})
 		default:
 			http.NotFound(w, r)
@@ -103,26 +109,40 @@ func TestRunCompensationBatchRecordsSummaryAndDetails(t *testing.T) {
 	require.NotNil(t, batch.CompletedAt)
 
 	require.Equal(t, []int64{101, 102}, extendedIDs)
+	require.Equal(t, []string{
+		fmt.Sprintf("giftcode-compensation-batch-%s-user-2-subscription-101-extend", batch.BatchKey),
+		fmt.Sprintf("giftcode-compensation-batch-%s-user-2-subscription-102-extend", batch.BatchKey),
+	}, extendKeys)
 	require.Len(t, balanceBodies, 1)
 	require.Equal(t, map[string]any{
 		"balance":   10.0,
 		"operation": "add",
 		"notes":     "bulk compensation",
 	}, balanceBodies[0])
+	require.Equal(t, []string{
+		fmt.Sprintf("giftcode-compensation-batch-%s-user-3-balance-with-note", batch.BatchKey),
+	}, balanceKeys)
 
 	details, err := svc.ListCompensationBatchDetails(context.Background(), batch.ID)
 	require.NoError(t, err)
 	require.Len(t, details, 4)
 	require.Equal(t, "excluded_domain", details[0].DecisionType)
+	require.False(t, details[0].RemarkRequested)
 	require.Equal(t, "active_subscription", details[1].DecisionType)
 	require.Equal(t, 2, details[1].ActiveSubscriptionCount)
+	require.False(t, details[1].RemarkRequested)
 	require.Equal(t, "positive_balance", details[2].DecisionType)
+	require.True(t, details[2].RemarkRequested)
 	require.True(t, details[2].RemarkApplied)
 	require.Equal(t, "non_positive_balance", details[3].DecisionType)
+	require.False(t, details[3].RemarkRequested)
 }
 
 func TestRunCompensationBatchRetriesBalanceWithoutRemarkWhenUpstreamRejectsNotes(t *testing.T) {
-	var balanceBodies []map[string]any
+	var (
+		balanceBodies []map[string]any
+		balanceKeys   []string
+	)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/api/v1/admin/users":
@@ -147,6 +167,7 @@ func TestRunCompensationBatchRetriesBalanceWithoutRemarkWhenUpstreamRejectsNotes
 			var body map[string]any
 			require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
 			balanceBodies = append(balanceBodies, body)
+			balanceKeys = append(balanceKeys, r.Header.Get("Idempotency-Key"))
 			if len(balanceBodies) == 1 {
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusUnprocessableEntity)
@@ -193,6 +214,10 @@ func TestRunCompensationBatchRetriesBalanceWithoutRemarkWhenUpstreamRejectsNotes
 		"balance":   10.0,
 		"operation": "add",
 	}, balanceBodies[1])
+	require.Equal(t, []string{
+		fmt.Sprintf("giftcode-compensation-batch-%s-user-3-balance-with-note", batch.BatchKey),
+		fmt.Sprintf("giftcode-compensation-batch-%s-user-3-balance-without-note", batch.BatchKey),
+	}, balanceKeys)
 
 	details, err := svc.ListCompensationBatchDetails(context.Background(), batch.ID)
 	require.NoError(t, err)
@@ -205,6 +230,7 @@ func TestRunCompensationBatchRetriesBalanceWithoutRemarkWhenUpstreamRejectsNotes
 }
 
 func TestRunCompensationBatchMarksPartialSubscriptionExtensionFailures(t *testing.T) {
+	var extendKeys []string
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/api/v1/admin/users":
@@ -229,8 +255,10 @@ func TestRunCompensationBatchMarksPartialSubscriptionExtensionFailures(t *testin
 				"pages":     1,
 			})
 		case "/api/v1/admin/subscriptions/101/extend":
+			extendKeys = append(extendKeys, r.Header.Get("Idempotency-Key"))
 			writeEnvelope(w, sub2api.Subscription{ID: 101, UserID: 2, GroupID: 7, Status: "active", ExpiresAt: time.Now().UTC().Add(60 * 24 * time.Hour)})
 		case "/api/v1/admin/subscriptions/102/extend":
+			extendKeys = append(extendKeys, r.Header.Get("Idempotency-Key"))
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusBadGateway)
 			_ = json.NewEncoder(w).Encode(map[string]any{
@@ -263,6 +291,10 @@ func TestRunCompensationBatchMarksPartialSubscriptionExtensionFailures(t *testin
 	require.Equal(t, compensationBatchStatusCompletedWithFailures, batch.Status)
 	require.Equal(t, 0, batch.SubscriptionCompensatedUsers)
 	require.Equal(t, 1, batch.FailedUsers)
+	require.Equal(t, []string{
+		fmt.Sprintf("giftcode-compensation-batch-%s-user-2-subscription-101-extend", batch.BatchKey),
+		fmt.Sprintf("giftcode-compensation-batch-%s-user-2-subscription-102-extend", batch.BatchKey),
+	}, extendKeys)
 
 	details, err := svc.ListCompensationBatchDetails(context.Background(), batch.ID)
 	require.NoError(t, err)
@@ -270,6 +302,7 @@ func TestRunCompensationBatchMarksPartialSubscriptionExtensionFailures(t *testin
 	require.Equal(t, "active_subscription", details[0].DecisionType)
 	require.Equal(t, "failed", details[0].Status)
 	require.Equal(t, 2, details[0].ActiveSubscriptionCount)
+	require.False(t, details[0].RemarkRequested)
 
 	var upstreamRef map[string]any
 	require.NoError(t, json.Unmarshal([]byte(details[0].UpstreamReferenceJSON), &upstreamRef))
@@ -282,6 +315,60 @@ func TestRunCompensationBatchMarksPartialSubscriptionExtensionFailures(t *testin
 	require.True(t, ok)
 	require.Equal(t, float64(102), failedEntry["subscription_id"])
 	require.Equal(t, "extend failed", failedEntry["error"])
+}
+
+func TestListCompensationBatchesReturnsMalformedExcludedDomainsJSON(t *testing.T) {
+	ctx := context.Background()
+	store, err := db.Open("sqlite", ":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+	require.NoError(t, store.Migrate(ctx))
+
+	now := formatTime(time.Now().UTC())
+	_, err = store.DB.ExecContext(ctx, `
+INSERT INTO compensation_batches (
+  batch_key, subscription_days, balance_amount, excluded_domains_json,
+  operator_upstream_user_id, status, created_at, updated_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+`, "bad-excluded-domains", 15, 10.0, "{not-json", 900, compensationBatchStatusCompleted, now, now)
+	require.NoError(t, err)
+
+	svc := New(&config.RuntimeConfig{}, store, nil, nil)
+	_, err = svc.ListCompensationBatches(ctx)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "excluded_domains_json")
+}
+
+func TestListCompensationBatchDetailsReturnsMalformedActiveSubscriptionIDsJSON(t *testing.T) {
+	ctx := context.Background()
+	store, err := db.Open("sqlite", ":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+	require.NoError(t, store.Migrate(ctx))
+
+	now := formatTime(time.Now().UTC())
+	result, err := store.DB.ExecContext(ctx, `
+INSERT INTO compensation_batches (
+  batch_key, subscription_days, balance_amount, excluded_domains_json,
+  operator_upstream_user_id, status, created_at, updated_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+`, "bad-active-subscription-ids", 15, 10.0, "[]", 900, compensationBatchStatusCompleted, now, now)
+	require.NoError(t, err)
+	batchID, err := result.LastInsertId()
+	require.NoError(t, err)
+
+	_, err = store.DB.ExecContext(ctx, `
+INSERT INTO compensation_batch_details (
+  batch_id, detail_key, upstream_user_id, active_subscription_ids_json,
+  decision_type, action_type, status, created_at, updated_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+`, batchID, "bad-detail", 2, "[not-json", "active_subscription", "subscription", "success", now, now)
+	require.NoError(t, err)
+
+	svc := New(&config.RuntimeConfig{}, store, nil, nil)
+	_, err = svc.ListCompensationBatchDetails(ctx, batchID)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "active_subscription_ids_json")
 }
 
 func writeEnvelope(w http.ResponseWriter, data any) {
