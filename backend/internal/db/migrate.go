@@ -45,6 +45,7 @@ CREATE TABLE IF NOT EXISTS redeem_access_requests (
   sub2api_weekly_limit_usd REAL NULL,
   sub2api_monthly_limit_usd REAL NULL,
   validity_days INTEGER NOT NULL DEFAULT 0,
+  concurrency INTEGER NOT NULL DEFAULT 0,
   note TEXT NOT NULL DEFAULT '',
   fulfillment_mode TEXT NOT NULL DEFAULT 'direct_charge',
   fulfillment_result TEXT NOT NULL DEFAULT '',
@@ -133,9 +134,29 @@ CREATE TABLE IF NOT EXISTS redeem_tiers (
   sort_order INTEGER NOT NULL DEFAULT 0,
   sub2api_group_id INTEGER NULL,
   validity_days INTEGER NOT NULL DEFAULT 0,
+  concurrency INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS subscription_concurrency_grants (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  access_request_id INTEGER NOT NULL UNIQUE,
+  upstream_user_id INTEGER NOT NULL,
+  tier_id INTEGER NOT NULL,
+  sub2api_group_id INTEGER NOT NULL,
+  desired_concurrency INTEGER NOT NULL,
+  upstream_subscription_id INTEGER NULL,
+  status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'active', 'inactive')),
+  upstream_expires_at TEXT NULL,
+  last_synced_at TEXT NULL,
+  last_error TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_subscription_concurrency_grants_user_status
+  ON subscription_concurrency_grants(upstream_user_id, status);
 
 CREATE TABLE IF NOT EXISTS sync_state (
   key TEXT PRIMARY KEY,
@@ -223,6 +244,9 @@ func (s *Store) Migrate(ctx context.Context) error {
 	if err := s.ensureTierOriginalPayAmountColumns(ctx); err != nil {
 		return err
 	}
+	if err := s.ensureRedeemTierConcurrencyColumn(ctx); err != nil {
+		return err
+	}
 	if err := s.ensureAccessRequestSnapshotColumns(ctx); err != nil {
 		return err
 	}
@@ -252,10 +276,17 @@ func (s *Store) ensureAccessRequestSnapshotColumns(ctx context.Context) error {
 		"sub2api_weekly_limit_usd":  "REAL NULL",
 		"sub2api_monthly_limit_usd": "REAL NULL",
 		"validity_days":             "INTEGER NOT NULL DEFAULT 0",
+		"concurrency":               "INTEGER NOT NULL DEFAULT 0",
 		"fulfillment_mode":          "TEXT NOT NULL DEFAULT 'direct_charge'",
 		"fulfillment_result":        "TEXT NOT NULL DEFAULT ''",
 		"fulfilled_via":             "TEXT NOT NULL DEFAULT ''",
 		"fulfillment_error":         "TEXT NOT NULL DEFAULT ''",
+	})
+}
+
+func (s *Store) ensureRedeemTierConcurrencyColumn(ctx context.Context) error {
+	return s.ensureColumns(ctx, "redeem_tiers", map[string]string{
+		"concurrency": "INTEGER NOT NULL DEFAULT 0",
 	})
 }
 

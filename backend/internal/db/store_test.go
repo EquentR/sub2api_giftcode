@@ -149,6 +149,47 @@ func TestOpenAndMigrateAddsRedeemTierSubscriptionColumns(t *testing.T) {
 	require.True(t, foundValidityDays, "expected redeem_tiers to include validity_days")
 }
 
+func TestOpenAndMigrateAddsSubscriptionConcurrencySchema(t *testing.T) {
+	store, err := Open("sqlite", ":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+
+	require.NoError(t, store.Migrate(context.Background()))
+
+	for _, table := range []string{"redeem_tiers", "redeem_access_requests"} {
+		var count int
+		require.NoError(t, store.DB.QueryRowContext(context.Background(), `
+SELECT COUNT(1) FROM pragma_table_info(?)
+WHERE name = 'concurrency' AND type = 'INTEGER' AND [notnull] = 1 AND dflt_value = '0'
+`, table).Scan(&count))
+		require.Equal(t, 1, count, "expected %s.concurrency", table)
+	}
+
+	var grantColumns int
+	require.NoError(t, store.DB.QueryRowContext(context.Background(), `
+SELECT COUNT(1) FROM pragma_table_info('subscription_concurrency_grants')
+WHERE name IN (
+  'id', 'access_request_id', 'upstream_user_id', 'tier_id', 'sub2api_group_id',
+  'desired_concurrency', 'upstream_subscription_id', 'status', 'upstream_expires_at',
+  'last_synced_at', 'last_error', 'created_at', 'updated_at'
+)
+`).Scan(&grantColumns))
+	require.Equal(t, 13, grantColumns)
+
+	var uniqueAccessRequestIndex int
+	require.NoError(t, store.DB.QueryRowContext(context.Background(), `
+SELECT COUNT(1) FROM pragma_index_list('subscription_concurrency_grants') WHERE [unique] = 1
+`).Scan(&uniqueAccessRequestIndex))
+	require.Equal(t, 1, uniqueAccessRequestIndex)
+
+	var userStatusIndex int
+	require.NoError(t, store.DB.QueryRowContext(context.Background(), `
+SELECT COUNT(1) FROM sqlite_master
+WHERE type = 'index' AND name = 'idx_subscription_concurrency_grants_user_status'
+`).Scan(&userStatusIndex))
+	require.Equal(t, 1, userStatusIndex)
+}
+
 func TestOpenAndMigrateAddsOptionalOriginalPaidAmountColumns(t *testing.T) {
 	store, err := Open("sqlite", ":memory:")
 	require.NoError(t, err)

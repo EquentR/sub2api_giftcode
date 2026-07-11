@@ -96,6 +96,7 @@ func (s *Service) CreateAccessRequest(ctx context.Context, sessionID string, tie
 		Sub2APIWeeklyLimitUSD:   tier.Sub2APIWeeklyLimitUSD,
 		Sub2APIMonthlyLimitUSD:  tier.Sub2APIMonthlyLimitUSD,
 		ValidityDays:            tier.ValidityDays,
+		Concurrency:             tier.Concurrency,
 		Note:                    strings.TrimSpace(note),
 		FulfillmentMode:         normalizedMode,
 		FulfillmentResult:       "",
@@ -335,9 +336,10 @@ INSERT INTO redeem_access_requests (
   requestor_upstream_user_id, requestor_email, requestor_username, tier_id, code_type, tier_label,
   amount, pay_amount_cny, sub2api_group_id, sub2api_group_name, sub2api_group_platform,
   sub2api_daily_limit_usd, sub2api_weekly_limit_usd, sub2api_monthly_limit_usd, validity_days,
+  concurrency,
   note, fulfillment_mode, fulfillment_result, fulfilled_via, fulfillment_error, status, approval_token_hash,
   approval_token_expires_at, notification_status, notification_error, created_at, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `,
 		req.RequestorUpstreamUserID,
 		req.RequestorEmail,
@@ -354,6 +356,7 @@ INSERT INTO redeem_access_requests (
 		req.Sub2APIWeeklyLimitUSD,
 		req.Sub2APIMonthlyLimitUSD,
 		req.ValidityDays,
+		req.Concurrency,
 		req.Note,
 		req.FulfillmentMode,
 		req.FulfillmentResult,
@@ -486,6 +489,7 @@ func accessRequestSelectSQL() string {
 SELECT id, requestor_upstream_user_id, requestor_email, requestor_username, tier_id, code_type, tier_label,
        amount, pay_amount_cny, sub2api_group_id, sub2api_group_name, sub2api_group_platform,
        sub2api_daily_limit_usd, sub2api_weekly_limit_usd, sub2api_monthly_limit_usd, validity_days,
+       concurrency,
        note, fulfillment_mode, fulfillment_result, fulfilled_via, fulfillment_error, status, approval_token_hash,
        approval_token_expires_at, approved_at, rejected_at, consumed_at, notification_status, notification_error,
        notification_sent_at, created_at, updated_at
@@ -525,6 +529,7 @@ func scanAccessRequestRow(scanner interface {
 		&sub2apiWeeklyLimit,
 		&sub2apiMonthlyLimit,
 		&out.ValidityDays,
+		&out.Concurrency,
 		&out.Note,
 		&out.FulfillmentMode,
 		&out.FulfillmentResult,

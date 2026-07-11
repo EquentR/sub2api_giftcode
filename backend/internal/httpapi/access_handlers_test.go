@@ -108,6 +108,31 @@ func TestCreateAccessRequestReturnsTierID(t *testing.T) {
 	require.Equal(t, "", created.FulfilledVia)
 }
 
+func TestUpdateRedeemTiersMapsConcurrency(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	store, err := db.Open("sqlite", ":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+	require.NoError(t, store.Migrate(context.Background()))
+
+	svc := app.New(&config.RuntimeConfig{}, store, nil, nil)
+	handlers := &Handlers{cfg: &config.RuntimeConfig{}, service: svc}
+	r := gin.New()
+	r.PUT("/api/admin/redeem-tiers", handlers.UpdateRedeemTiers)
+	req := httptest.NewRequest(http.MethodPut, "/api/admin/redeem-tiers", strings.NewReader(`[
+  {"code_type":"subscription","pay_amount_cny":88,"label":"Claude","enabled":true,"sub2api_group_id":2,"validity_days":30,"concurrency":12}
+]`))
+	req.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+	r.ServeHTTP(recorder, req)
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	tiers, err := svc.ListRedeemTiers(context.Background(), true)
+	require.NoError(t, err)
+	require.Len(t, tiers, 1)
+	require.Equal(t, 12, tiers[0].Concurrency)
+}
+
 func TestApproveAccessRequestReturnsIssuedCode(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

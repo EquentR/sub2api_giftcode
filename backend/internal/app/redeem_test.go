@@ -102,6 +102,42 @@ func TestCreateAccessRequestStoresRequestedFulfillmentMode(t *testing.T) {
 	require.Equal(t, "redeem_code", req.FulfillmentMode)
 }
 
+func TestCreateAccessRequestSnapshotsSubscriptionConcurrency(t *testing.T) {
+	store, err := db.Open("sqlite", ":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+	require.NoError(t, store.Migrate(context.Background()))
+
+	now := time.Now().UTC().Truncate(time.Second)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/auth/me":
+			writeRedeemTestEnvelope(w, sub2api.User{ID: 1, Email: "alice@example.com", Username: "alice", Status: "active", CreatedAt: now, UpdatedAt: now})
+		case "/api/v1/admin/groups/all":
+			writeRedeemTestEnvelope(w, []sub2api.Group{{ID: 2, Name: "Claude", Status: "active", SubscriptionType: "subscription"}})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(upstream.Close)
+
+	svc := New(&config.RuntimeConfig{}, store, sub2api.NewClient(upstream.URL, "admin-key"), mail.New(mail.Config{}))
+	tiers, err := svc.ReplaceRedeemTiers(context.Background(), []models.RedeemTier{{
+		CodeType: "subscription", PayAmountCny: 88, Sub2APIGroupID: int64Ptr(2), ValidityDays: 30, Concurrency: 10, Enabled: true,
+	}})
+	require.NoError(t, err)
+	sessionUser, err := svc.LoginWithAccessToken(context.Background(), "access-1", nil)
+	require.NoError(t, err)
+
+	req, err := svc.CreateAccessRequest(context.Background(), sessionUser.Session.ID, tiers[0].ID, "please approve", "direct_charge")
+	require.NoError(t, err)
+	require.Equal(t, 10, req.Concurrency)
+
+	reloaded, err := svc.GetAccessRequestByID(context.Background(), req.ID)
+	require.NoError(t, err)
+	require.Equal(t, 10, reloaded.Concurrency)
+}
+
 func TestApproveAccessRequestUsesStoredRedeemValueForRetry(t *testing.T) {
 	store, err := db.Open("sqlite", ":memory:")
 	require.NoError(t, err)
@@ -648,6 +684,7 @@ func TestApproveAccessRequestDirectChargeSubscriptionUsesPositiveValue(t *testin
 	)
 	tiers, err := svc.ReplaceRedeemTiers(context.Background(), []models.RedeemTier{{
 		CodeType:       "subscription",
+		Concurrency:    10,
 		PayAmountCny:   88,
 		Label:          "Claude 30 days",
 		Enabled:        true,
@@ -731,6 +768,7 @@ func TestApproveAccessRequestIssuesSubscriptionRedeemCode(t *testing.T) {
 	)
 	tiers, err := svc.ReplaceRedeemTiers(context.Background(), []models.RedeemTier{{
 		CodeType:       "subscription",
+		Concurrency:    10,
 		PayAmountCny:   88,
 		Label:          "Claude 30 days",
 		Enabled:        true,

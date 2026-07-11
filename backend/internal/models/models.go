@@ -41,6 +41,7 @@ type AccessRequest struct {
 	Sub2APIWeeklyLimitUSD   *float64   `json:"sub2api_weekly_limit_usd,omitempty"`
 	Sub2APIMonthlyLimitUSD  *float64   `json:"sub2api_monthly_limit_usd,omitempty"`
 	ValidityDays            int        `json:"validity_days"`
+	Concurrency             int        `json:"concurrency"`
 	Note                    string     `json:"note"`
 	FulfillmentMode         string     `json:"fulfillment_mode"`
 	FulfillmentResult       string     `json:"fulfillment_result"`
@@ -113,6 +114,7 @@ type RedeemTier struct {
 	Sub2APIWeeklyLimitUSD  *float64  `json:"sub2api_weekly_limit_usd,omitempty"`
 	Sub2APIMonthlyLimitUSD *float64  `json:"sub2api_monthly_limit_usd,omitempty"`
 	ValidityDays           int       `json:"validity_days"`
+	Concurrency            int       `json:"concurrency"`
 	UpstreamAvailable      bool      `json:"upstream_available"`
 	UpstreamError          string    `json:"upstream_error"`
 	CreatedAt              time.Time `json:"created_at"`
