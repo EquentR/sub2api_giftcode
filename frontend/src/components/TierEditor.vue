@@ -118,6 +118,21 @@
         </template>
       </el-table-column>
 
+      <el-table-column prop="concurrency" label="并发数" width="140">
+        <template #default="{ row }">
+          <el-input-number
+            v-if="tierCodeType(row) === 'subscription'"
+            v-model="row.concurrency"
+            :min="1"
+            :step="1"
+            controls-position="right"
+            style="width: 100%"
+            @change="emitUpdate"
+          />
+          <span v-else class="muted">-</span>
+        </template>
+      </el-table-column>
+
       <el-table-column prop="sort_order" label="排序" width="130">
         <template #default="{ row }">
           <el-input-number
@@ -158,10 +173,12 @@ const props = withDefaults(defineProps<{
   subscriptionGroups?: SubscriptionGroup[]
   groupsLoading?: boolean
   groupsError?: string
+  defaultConcurrency?: number
 }>(), {
   subscriptionGroups: () => [],
   groupsLoading: false,
   groupsError: '',
+  defaultConcurrency: 0,
 })
 
 const emit = defineEmits<{
@@ -198,6 +215,7 @@ function sanitizedRows() {
         original_pay_amount_cny: normalizeOriginalPayAmount(tier.original_pay_amount_cny),
         sub2api_group_id: tier.sub2api_group_id ?? null,
         validity_days: Number(tier.validity_days ?? 30),
+        concurrency: Math.max(1, Number(tier.concurrency || subscriptionConcurrencyDefault())),
       }
     }
     return {
@@ -211,6 +229,7 @@ function sanitizedRows() {
       sub2api_weekly_limit_usd: null,
       sub2api_monthly_limit_usd: null,
       validity_days: 0,
+      concurrency: 0,
     }
   })
 }
@@ -222,6 +241,7 @@ function emitUpdate() {
 function addRow(codeType: 'balance' | 'subscription') {
   const baseAmount = codeType === 'balance' ? 120 : 0
   const validityDays = codeType === 'subscription' ? 30 : 0
+  const concurrency = codeType === 'subscription' ? subscriptionConcurrencyDefault() : 0
   rows.value.push({
     id: 0,
     code_type: codeType,
@@ -244,6 +264,7 @@ function addRow(codeType: 'balance' | 'subscription') {
     sub2api_weekly_limit_usd: null,
     sub2api_monthly_limit_usd: null,
     validity_days: validityDays,
+    concurrency,
     upstream_available: true,
     upstream_error: '',
     created_at: '',
@@ -266,12 +287,18 @@ function onTypeChange(row: RedeemTier) {
   if (tierCodeType(row) === 'subscription') {
     row.amount = 0
     row.validity_days = Number(row.validity_days || 30)
+    row.concurrency = Math.max(1, Number(row.concurrency || subscriptionConcurrencyDefault()))
   } else {
     row.amount = Number(row.amount || 120)
     row.sub2api_group_id = null
     row.validity_days = 0
+    row.concurrency = 0
   }
   emitUpdate()
+}
+
+function subscriptionConcurrencyDefault() {
+  return props.defaultConcurrency > 0 ? props.defaultConcurrency : 5
 }
 
 function onGroupChange(row: RedeemTier) {

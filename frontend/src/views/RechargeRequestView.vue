@@ -47,6 +47,7 @@
               <span v-if="tierCodeType(tier) === 'balance'">到账 {{ formatMoney(tier.amount) }} 美元</span>
               <template v-else>
                 <span>{{ tierGroupLabel(tier) }} · {{ validityDaysText(tier) }}</span>
+                <small>并发数 {{ tierConcurrency(tier) }}</small>
                 <small>{{ formatLimitTriplet(tier) }}</small>
                 <small v-if="!tierSelectable(tier)" class="tier-error">{{ tier.upstream_error || '订阅分组不可用' }}</small>
               </template>
@@ -184,6 +185,7 @@
             </div>
             <div v-if="selectedTier && tierCodeType(selectedTier) === 'subscription'" class="summary-detail">
               <span>{{ tierGroupLabel(selectedTier) }}</span>
+              <small>并发数 {{ tierConcurrency(selectedTier) }}</small>
               <small>{{ formatLimitTriplet(selectedTier) }}</small>
               <small v-if="!selectedTierSubmittable" class="tier-error">
                 {{ selectedTier.upstream_error || '订阅分组不可用，请刷新后重试' }}
@@ -429,6 +431,10 @@ function validityDaysText(tier: Pick<RedeemTier, 'validity_days'>) {
   return days > 0 ? `${days} 天订阅` : '订阅'
 }
 
+function tierConcurrency(tier: Pick<RedeemTier, 'concurrency'>) {
+  return Math.max(0, Number(tier.concurrency ?? 0))
+}
+
 function requestTierName(request: AccessRequest) {
   return request.tier_label?.trim() || tierNameById(request.tier_id)
 }
@@ -436,7 +442,7 @@ function requestTierName(request: AccessRequest) {
 function requestSummary(request: AccessRequest) {
   if (request.code_type === 'subscription') {
     const group = request.sub2api_group_name?.trim() || '订阅分组'
-    return `${group} · ${validityDaysText(request)} · ${formatCny(request.pay_amount_cny)}`
+    return `${group} · ${validityDaysText(request)} · 并发数 ${tierConcurrency(request)} · ${formatCny(request.pay_amount_cny)}`
   }
   return `${formatMoney(request.amount)} 美元 · ${formatCny(request.pay_amount_cny)}`
 }
