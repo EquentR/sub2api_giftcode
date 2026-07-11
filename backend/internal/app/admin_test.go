@@ -142,6 +142,10 @@ func TestReplaceRedeemTiersNormalizesBalanceConcurrency(t *testing.T) {
 	}})
 	require.NoError(t, err)
 	require.Zero(t, tiers[0].Concurrency)
+	reloaded, err := svc.ListRedeemTiers(context.Background(), true)
+	require.NoError(t, err)
+	require.Len(t, reloaded, 1)
+	require.Zero(t, reloaded[0].Concurrency)
 }
 
 func TestReplaceRedeemTiersRequiresPositiveSubscriptionConcurrency(t *testing.T) {

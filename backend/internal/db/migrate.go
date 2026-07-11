@@ -507,10 +507,10 @@ func (s *Store) migrateBalanceTiersToRedeemTiers(ctx context.Context) error {
 	_, err := s.DB.ExecContext(ctx, `
 INSERT INTO redeem_tiers (
   id, code_type, amount, pay_amount_cny, original_pay_amount_cny, label, enabled, sort_order,
-  sub2api_group_id, validity_days, created_at, updated_at
+  sub2api_group_id, validity_days, concurrency, created_at, updated_at
 )
 SELECT id, 'balance', amount, pay_amount_cny, original_pay_amount_cny, label, enabled, sort_order,
-       NULL, 0, created_at, updated_at
+       NULL, 0, 0, created_at, updated_at
 FROM redeem_balance_tiers bt
 WHERE NOT EXISTS (SELECT 1 FROM redeem_tiers rt WHERE rt.id = bt.id)
 `)
