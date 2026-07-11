@@ -304,19 +304,19 @@ func TestEnsureSubscriptionConcurrencyGrantIsIdempotentAndUsesLegacyTierValue(t 
 	require.Equal(t, 9, desired)
 }
 
-func TestConsumedApprovalReplaySurfacesMissingGrantPersistenceFailure(t *testing.T) {
+func TestConsumedApprovalReplayKeepsSuccessfulResultWhenGrantRepairFails(t *testing.T) {
 	store, err := db.Open("sqlite", ":memory:")
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = store.Close() })
 	require.NoError(t, store.Migrate(context.Background()))
 	now := time.Now().UTC().Truncate(time.Second)
-	require.NoError(t, insertConcurrencyGrantFixture(context.Background(), store, 101, 1, 7, 12, "redeem_code", now))
+	require.NoError(t, insertConcurrencyGrantFixture(context.Background(), store, 101, 1, 7, 12, "direct_charge", now))
 	_, err = store.DB.Exec(`DROP TABLE subscription_concurrency_grants`)
 	require.NoError(t, err)
 	svc := New(&config.RuntimeConfig{}, store, nil, mail.New(mail.Config{}))
 
 	req, code, err := svc.ApproveAccessRequestByID(context.Background(), 101)
-	require.Error(t, err)
+	require.NoError(t, err)
 	require.NotNil(t, req)
 	require.Nil(t, code)
 }
@@ -350,11 +350,12 @@ func TestDirectApprovalGrantFailureDoesNotIssueFallbackCode(t *testing.T) {
 	t.Cleanup(upstream.Close)
 	svc := New(&config.RuntimeConfig{}, store, sub2api.NewClient(upstream.URL, "key"), mail.New(mail.Config{}))
 	req, code, err := svc.ApproveAccessRequestByID(context.Background(), 101)
-	require.ErrorContains(t, err, "grant persistence failed")
+	require.NoError(t, err)
 	require.NotNil(t, req)
 	require.NotNil(t, code)
 	require.Equal(t, "consumed", req.Status)
 	require.Equal(t, 0, fallbackCalls)
+	require.ErrorContains(t, svc.ReconcileSubscriptionConcurrency(context.Background()), "repair request 101 grant")
 }
 
 func TestDirectApprovalReconciliationFailureIsNonfatalAndDoesNotIssueFallback(t *testing.T) {
@@ -400,7 +401,7 @@ func TestDirectApprovalReconciliationFailureIsNonfatalAndDoesNotIssueFallback(t 
 	require.NotEmpty(t, lastError)
 }
 
-func TestRedeemCodeApprovalSurfacesGrantPersistenceFailureAfterFulfillment(t *testing.T) {
+func TestRedeemCodeApprovalKeepsSuccessfulResultWhenGrantPersistenceFails(t *testing.T) {
 	store, err := db.Open("sqlite", ":memory:")
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = store.Close() })
@@ -428,13 +429,30 @@ func TestRedeemCodeApprovalSurfacesGrantPersistenceFailureAfterFulfillment(t *te
 	t.Cleanup(upstream.Close)
 	svc := New(&config.RuntimeConfig{}, store, sub2api.NewClient(upstream.URL, "key"), mail.New(mail.Config{}))
 	req, code, err := svc.ApproveAccessRequestByID(context.Background(), 101)
-	require.ErrorContains(t, err, "grant persistence failed")
+	require.NoError(t, err)
 	require.NotNil(t, req)
 	require.NotNil(t, code)
 	require.Equal(t, "code-501", code.Code)
 	var status string
 	require.NoError(t, store.DB.QueryRow(`SELECT status FROM redeem_access_requests WHERE id = 101`).Scan(&status))
 	require.Equal(t, "consumed", status)
+}
+
+func TestReconcileSubscriptionConcurrencyRepairsMissingFulfilledGrant(t *testing.T) {
+	store, err := db.Open("sqlite", ":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+	require.NoError(t, store.Migrate(context.Background()))
+	now := time.Now().UTC().Truncate(time.Second)
+	require.NoError(t, insertConcurrencyGrantFixture(context.Background(), store, 101, 1, 7, 12, "direct_charge", now))
+	svc := newConcurrencyTestService(t, store, now, 12, []map[string]any{{"id": 77, "user_id": 1, "group_id": 7, "status": "active", "expires_at": formatTime(now.Add(time.Hour))}})
+
+	require.NoError(t, svc.ReconcileSubscriptionConcurrency(context.Background()))
+	var count int
+	var status string
+	require.NoError(t, store.DB.QueryRow(`SELECT COUNT(1), MAX(status) FROM subscription_concurrency_grants WHERE access_request_id = 101`).Scan(&count, &status))
+	require.Equal(t, 1, count)
+	require.Equal(t, "active", status)
 }
 
 func insertConcurrencyGrantFixture(ctx context.Context, store *db.Store, accessRequestID, userID, groupID int64, concurrency int, fulfilledVia string, now time.Time) error {

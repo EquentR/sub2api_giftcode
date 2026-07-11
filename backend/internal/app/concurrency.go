@@ -27,7 +27,35 @@ func (s *Service) ReconcileSubscriptionConcurrency(ctx context.Context) error {
 	}
 	s.concurrencyMu.Lock()
 	defer s.concurrencyMu.Unlock()
-	return s.reconcileSubscriptionConcurrency(ctx, 0)
+	repairErr := s.repairMissingSubscriptionConcurrencyGrants(ctx)
+	reconcileErr := s.reconcileSubscriptionConcurrency(ctx, 0)
+	return errors.Join(repairErr, reconcileErr)
+}
+
+func (s *Service) repairMissingSubscriptionConcurrencyGrants(ctx context.Context) error {
+	requests, err := s.listAccessRequests(ctx, nil)
+	if err != nil {
+		return err
+	}
+	var errs []error
+	for i := range requests {
+		request := &requests[i]
+		if request.Status != "consumed" || normalizeCodeType(request.CodeType) != "subscription" {
+			continue
+		}
+		var exists int
+		if err := s.db().QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM subscription_concurrency_grants WHERE access_request_id = ?)`, request.ID).Scan(&exists); err != nil {
+			errs = append(errs, fmt.Errorf("inspect request %d grant: %w", request.ID, err))
+			continue
+		}
+		if exists != 0 {
+			continue
+		}
+		if err := s.ensureSubscriptionConcurrencyGrant(ctx, request); err != nil {
+			errs = append(errs, fmt.Errorf("repair request %d grant: %w", request.ID, err))
+		}
+	}
+	return errors.Join(errs...)
 }
 
 func (s *Service) reconcileSubscriptionConcurrencyForUser(ctx context.Context, userID int64) error {
