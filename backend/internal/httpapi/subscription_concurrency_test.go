@@ -93,6 +93,22 @@ func TestSubscriptionConcurrencyMonitorStatusEndpointRequiresAdminAndReturnsStat
 	require.Equal(t, 1, envelope.Data.ManualOverrideUsers)
 	require.Equal(t, "user 2: upstream unavailable", envelope.Data.LatestError)
 	require.Equal(t, now.Format(time.RFC3339Nano), envelope.Data.LatestErrorAt)
+
+	detailsRequest := httptest.NewRequest(http.MethodGet, "/api/admin/subscription-concurrency/details", nil)
+	detailsRequest.Header.Set("Authorization", "Bearer "+token)
+	detailsResponse := httptest.NewRecorder()
+	r.ServeHTTP(detailsResponse, detailsRequest)
+	require.Equal(t, http.StatusOK, detailsResponse.Code)
+	var detailsEnvelope struct {
+		Data []struct {
+			UpstreamUserID      int64 `json:"upstream_user_id"`
+			ManualOverrideUsers bool  `json:"manual_override"`
+		} `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(detailsResponse.Body.Bytes(), &detailsEnvelope))
+	require.Len(t, detailsEnvelope.Data, 1)
+	require.Equal(t, int64(1), detailsEnvelope.Data[0].UpstreamUserID)
+	require.True(t, detailsEnvelope.Data[0].ManualOverrideUsers)
 }
 
 func TestSubscriptionConcurrencyMonitorStatusEndpointReportsDefaultFailure(t *testing.T) {

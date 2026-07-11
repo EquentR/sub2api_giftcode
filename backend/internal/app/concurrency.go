@@ -49,6 +49,21 @@ type SubscriptionConcurrencyMonitorStatus struct {
 	LatestErrorAt           *time.Time `json:"latest_error_at,omitempty"`
 }
 
+// SubscriptionConcurrencyMonitorDetail is the latest local reconciliation snapshot for one managed user.
+type SubscriptionConcurrencyMonitorDetail struct {
+	UpstreamUserID     int64      `json:"upstream_user_id"`
+	Username           string     `json:"username"`
+	Email              string     `json:"email"`
+	CurrentConcurrency *int       `json:"current_concurrency,omitempty"`
+	TargetConcurrency  int        `json:"target_concurrency"`
+	ManualOverride     bool       `json:"manual_override"`
+	ActiveGrants       int        `json:"active_grants"`
+	PendingGrants      int        `json:"pending_grants"`
+	InactiveGrants     int        `json:"inactive_grants"`
+	LastSyncedAt       *time.Time `json:"last_synced_at,omitempty"`
+	LastError          string     `json:"last_error"`
+}
+
 // ReconcileSubscriptionConcurrency applies the current upstream entitlement state to every managed user.
 func (s *Service) ReconcileSubscriptionConcurrency(ctx context.Context) (err error) {
 	defer func() { err = errors.Join(err, s.recordSubscriptionConcurrencyReconciliation(err)) }()
@@ -105,6 +120,110 @@ FROM subscription_concurrency_grants`)
 	}
 	status.DefaultConcurrency = defaultConcurrency
 	return status, nil
+}
+
+// SubscriptionConcurrencyMonitorDetails aggregates the latest persisted monitor state without per-user upstream reads.
+func (s *Service) SubscriptionConcurrencyMonitorDetails(ctx context.Context) ([]SubscriptionConcurrencyMonitorDetail, error) {
+	rows, err := s.db().QueryContext(ctx, `
+WITH grant_stats AS (
+  SELECT
+    upstream_user_id,
+    SUM(CASE WHEN status = 'active' THEN 1 ELSE 0 END) AS active_grants,
+    SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) AS pending_grants,
+    SUM(CASE WHEN status = 'inactive' THEN 1 ELSE 0 END) AS inactive_grants,
+    MAX(CASE WHEN status = 'active' THEN desired_concurrency ELSE 0 END) AS active_target,
+    COALESCE(MAX(last_synced_at), '') AS last_synced_at
+  FROM subscription_concurrency_grants
+  GROUP BY upstream_user_id
+)
+SELECT
+  gs.upstream_user_id,
+  COALESCE((
+    SELECT ar.requestor_username FROM redeem_access_requests ar
+    WHERE ar.requestor_upstream_user_id = gs.upstream_user_id
+    ORDER BY ar.created_at DESC, ar.id DESC LIMIT 1
+  ), ''),
+  COALESCE((
+    SELECT ar.requestor_email FROM redeem_access_requests ar
+    WHERE ar.requestor_upstream_user_id = gs.upstream_user_id
+    ORDER BY ar.created_at DESC, ar.id DESC LIMIT 1
+  ), ''),
+  CASE WHEN COALESCE(us.manual_override, 0) = 1
+    THEN us.manual_override_concurrency ELSE us.last_applied_concurrency END,
+  COALESCE(us.manual_override, 0),
+  gs.active_grants,
+  gs.pending_grants,
+  gs.inactive_grants,
+  gs.active_target,
+  gs.last_synced_at,
+  COALESCE((
+    SELECT g.last_error FROM subscription_concurrency_grants g
+    WHERE g.upstream_user_id = gs.upstream_user_id AND TRIM(g.last_error) <> ''
+    ORDER BY g.updated_at DESC, g.id DESC LIMIT 1
+  ), '')
+FROM grant_stats gs
+LEFT JOIN subscription_concurrency_user_states us ON us.upstream_user_id = gs.upstream_user_id
+ORDER BY gs.upstream_user_id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	details := make([]SubscriptionConcurrencyMonitorDetail, 0)
+	needsDefaultConcurrency := false
+	for rows.Next() {
+		var detail SubscriptionConcurrencyMonitorDetail
+		var current sql.NullInt64
+		var manualOverride int
+		var activeTarget int
+		var lastSyncedAt string
+		if err := rows.Scan(
+			&detail.UpstreamUserID,
+			&detail.Username,
+			&detail.Email,
+			&current,
+			&manualOverride,
+			&detail.ActiveGrants,
+			&detail.PendingGrants,
+			&detail.InactiveGrants,
+			&activeTarget,
+			&lastSyncedAt,
+			&detail.LastError,
+		); err != nil {
+			return nil, err
+		}
+		if current.Valid {
+			value := int(current.Int64)
+			detail.CurrentConcurrency = &value
+		}
+		detail.ManualOverride = manualOverride != 0
+		detail.TargetConcurrency = activeTarget
+		if detail.TargetConcurrency <= 0 {
+			needsDefaultConcurrency = true
+		}
+		detail.LastSyncedAt, err = parseOptionalTime(lastSyncedAt)
+		if err != nil {
+			return nil, err
+		}
+		details = append(details, detail)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if needsDefaultConcurrency {
+		if err := s.requireUpstreamClient(); err != nil {
+			return nil, err
+		}
+		defaultConcurrency, err := s.upstream.GetDefaultConcurrency(ctx)
+		if err != nil {
+			return nil, err
+		}
+		for i := range details {
+			if details[i].TargetConcurrency <= 0 {
+				details[i].TargetConcurrency = defaultConcurrency
+			}
+		}
+	}
+	return details, nil
 }
 
 func (s *Service) recordSubscriptionConcurrencyReconciliation(runErr error) error {

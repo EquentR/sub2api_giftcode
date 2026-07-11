@@ -119,6 +119,81 @@ func TestSubscriptionConcurrencyMonitorStatusReportsDefaultReadFailure(t *testin
 	require.Contains(t, status.DefaultConcurrencyError, "invalid default concurrency")
 }
 
+func TestSubscriptionConcurrencyMonitorDetailsAggregatesOneRowPerUser(t *testing.T) {
+	store, err := db.Open("sqlite", ":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+	require.NoError(t, store.Migrate(context.Background()))
+	now := time.Now().UTC().Truncate(time.Second)
+	require.NoError(t, insertConcurrencyGrantFixture(context.Background(), store, 101, 1, 7, 12, "direct_charge", now))
+	require.NoError(t, insertConcurrencyGrantFixture(context.Background(), store, 102, 1, 7, 8, "redeem_code", now.Add(time.Second)))
+	require.NoError(t, insertConcurrencyGrantFixture(context.Background(), store, 201, 2, 8, 6, "direct_charge", now))
+	_, err = store.DB.Exec(`
+INSERT INTO subscription_concurrency_grants (access_request_id, upstream_user_id, tier_id, sub2api_group_id, desired_concurrency, status, last_synced_at, last_error, created_at, updated_at)
+VALUES (101, 1, 1, 7, 12, 'active', ?, '', ?, ?),
+       (102, 1, 1, 7, 8, 'pending', ?, '', ?, ?),
+       (201, 2, 1, 8, 6, 'inactive', ?, 'subscription expired', ?, ?)
+`, formatTime(now), formatTime(now), formatTime(now), formatTime(now), formatTime(now), formatTime(now), formatTime(now), formatTime(now), formatTime(now))
+	require.NoError(t, err)
+	_, err = store.DB.Exec(`
+INSERT INTO subscription_concurrency_user_states (upstream_user_id, last_applied_concurrency, manual_override, manual_override_concurrency, created_at, updated_at)
+VALUES (1, 12, 1, 20, ?, ?), (2, 3, 0, NULL, ?, ?)
+`, formatTime(now), formatTime(now), formatTime(now), formatTime(now))
+	require.NoError(t, err)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "/api/v1/admin/settings", r.URL.Path)
+		writeRedeemTestEnvelope(w, map[string]any{"default_concurrency": 3})
+	}))
+	t.Cleanup(upstream.Close)
+	svc := New(&config.RuntimeConfig{}, store, sub2api.NewClient(upstream.URL, "key"), mail.New(mail.Config{}))
+
+	details, err := svc.SubscriptionConcurrencyMonitorDetails(context.Background())
+	require.NoError(t, err)
+	require.Len(t, details, 2)
+	require.Equal(t, int64(1), details[0].UpstreamUserID)
+	require.Equal(t, "user", details[0].Username)
+	require.Equal(t, "user@example.com", details[0].Email)
+	require.Equal(t, 20, *details[0].CurrentConcurrency)
+	require.Equal(t, 12, details[0].TargetConcurrency)
+	require.True(t, details[0].ManualOverride)
+	require.Equal(t, 1, details[0].ActiveGrants)
+	require.Equal(t, 1, details[0].PendingGrants)
+	require.Zero(t, details[0].InactiveGrants)
+	require.Equal(t, &now, details[0].LastSyncedAt)
+	require.Empty(t, details[0].LastError)
+	require.Equal(t, int64(2), details[1].UpstreamUserID)
+	require.Equal(t, 3, *details[1].CurrentConcurrency)
+	require.Equal(t, 3, details[1].TargetConcurrency)
+	require.False(t, details[1].ManualOverride)
+	require.Zero(t, details[1].ActiveGrants)
+	require.Equal(t, 1, details[1].InactiveGrants)
+	require.Equal(t, "subscription expired", details[1].LastError)
+}
+
+func TestSubscriptionConcurrencyMonitorDetailsDoesNotReadDefaultForActiveUsers(t *testing.T) {
+	store, err := db.Open("sqlite", ":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+	require.NoError(t, store.Migrate(context.Background()))
+	now := time.Now().UTC().Truncate(time.Second)
+	require.NoError(t, insertConcurrencyGrantFixture(context.Background(), store, 101, 1, 7, 12, "direct_charge", now))
+	_, err = store.DB.Exec(`INSERT INTO subscription_concurrency_grants (access_request_id, upstream_user_id, tier_id, sub2api_group_id, desired_concurrency, status, last_synced_at, created_at, updated_at) VALUES (101, 1, 1, 7, 12, 'active', ?, ?, ?)`, formatTime(now), formatTime(now), formatTime(now))
+	require.NoError(t, err)
+	settingsCalls := 0
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		settingsCalls++
+		http.Error(w, "settings unavailable", http.StatusBadGateway)
+	}))
+	t.Cleanup(upstream.Close)
+	svc := New(&config.RuntimeConfig{}, store, sub2api.NewClient(upstream.URL, "key"), mail.New(mail.Config{}))
+
+	details, err := svc.SubscriptionConcurrencyMonitorDetails(context.Background())
+	require.NoError(t, err)
+	require.Len(t, details, 1)
+	require.Equal(t, 12, details[0].TargetConcurrency)
+	require.Zero(t, settingsCalls)
+}
+
 func TestReconcileSubscriptionConcurrencyRecordsRunFailureAndReturnsIt(t *testing.T) {
 	store, err := db.Open("sqlite", ":memory:")
 	require.NoError(t, err)

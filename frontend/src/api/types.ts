@@ -182,6 +182,20 @@ export interface SubscriptionConcurrencyMonitorStatus {
   latest_error_at?: string | null
 }
 
+export interface SubscriptionConcurrencyMonitorDetail {
+  upstream_user_id: number
+  username: string
+  email: string
+  current_concurrency?: number | null
+  target_concurrency: number
+  manual_override: boolean
+  active_grants: number
+  pending_grants: number
+  inactive_grants: number
+  last_synced_at?: string | null
+  last_error: string
+}
+
 export interface CompensationBatch {
   id: number
   batch_key: string

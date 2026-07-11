@@ -11,6 +11,7 @@ import type {
   RedeemCode,
   RedeemTier,
   SubscriptionGroup,
+  SubscriptionConcurrencyMonitorDetail,
   SubscriptionConcurrencyMonitorStatus,
   UserSummary,
 } from './types'
@@ -27,6 +28,13 @@ export function listSubscriptionConcurrencyStatus() {
     method: 'GET',
     url: '/admin/subscription-concurrency/status',
   })
+}
+
+export function listSubscriptionConcurrencyDetails() {
+  return request<SubscriptionConcurrencyMonitorDetail[] | null>({
+    method: 'GET',
+    url: '/admin/subscription-concurrency/details',
+  }).then(asArray)
 }
 
 export function listUsers() {

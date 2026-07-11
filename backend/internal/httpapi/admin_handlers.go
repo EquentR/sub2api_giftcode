@@ -37,6 +37,20 @@ func (h *Handlers) SubscriptionConcurrencyMonitorStatus(c *gin.Context) {
 	writeSuccess(c, status)
 }
 
+func (h *Handlers) SubscriptionConcurrencyMonitorDetails(c *gin.Context) {
+	items, err := h.service.SubscriptionConcurrencyMonitorDetails(c.Request.Context())
+	if err != nil {
+		statusCode, message, reason := statusForError(err)
+		if reason != "" {
+			writeErrorReason(c, statusCode, message, reason)
+		} else {
+			writeError(c, statusCode, message)
+		}
+		return
+	}
+	writeSuccess(c, items)
+}
+
 func (h *Handlers) ListUsers(c *gin.Context) {
 	items, err := h.service.ListUsers(c.Request.Context())
 	if err != nil {
