@@ -273,7 +273,9 @@ func (s *Service) issueRedeemRequest(ctx context.Context, accessReq *models.Acce
 	accessReq.FulfillmentError = strings.TrimSpace(fulfillmentError)
 	accessReq.UpdatedAt = approvalTime
 	if normalizeCodeType(accessReq.CodeType) == "subscription" {
-		_ = s.ensureSubscriptionConcurrencyGrant(ctx, accessReq)
+		if err := s.ensureSubscriptionConcurrencyGrant(ctx, accessReq); err != nil {
+			return redeemReq, code, err
+		}
 	}
 	return redeemReq, code, nil
 }

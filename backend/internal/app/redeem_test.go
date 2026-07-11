@@ -640,6 +640,7 @@ func TestApproveAccessRequestDirectChargeSubscriptionUsesPositiveValue(t *testin
 
 	now := time.Now().UTC().Truncate(time.Second)
 	var sawPayload map[string]any
+	var concurrencyUpdates int
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/api/v1/admin/groups/all":
@@ -670,6 +671,18 @@ func TestApproveAccessRequestDirectChargeSubscriptionUsesPositiveValue(t *testin
 					"created_at":    now.Format(time.RFC3339Nano),
 				},
 			})
+		case "/api/v1/admin/users/1":
+			if r.Method == http.MethodGet {
+				writeRedeemTestEnvelope(w, map[string]any{"id": 1, "concurrency": 2})
+				return
+			}
+			concurrencyUpdates++
+			var input map[string]int
+			require.NoError(t, json.NewDecoder(r.Body).Decode(&input))
+			require.Equal(t, 10, input["concurrency"])
+			writeRedeemTestEnvelope(w, map[string]any{"id": 1, "concurrency": 10})
+		case "/api/v1/admin/subscriptions":
+			writeRedeemTestEnvelope(w, map[string]any{"items": []map[string]any{{"id": 77, "user_id": 1, "group_id": 2, "status": "active", "expires_at": now.Add(30 * 24 * time.Hour).Format(time.RFC3339Nano)}}, "total": 1, "pages": 1})
 		default:
 			http.NotFound(w, r)
 		}
@@ -714,7 +727,10 @@ INSERT INTO redeem_access_requests (
 	require.Equal(t, "giftcode-access-1", code.Code)
 	require.Equal(t, "direct_charge_succeeded", req.FulfillmentResult)
 	require.Equal(t, "direct_charge", req.FulfilledVia)
+	require.Equal(t, 1, concurrencyUpdates)
 
+	_, err = store.DB.ExecContext(context.Background(), `DELETE FROM subscription_concurrency_grants WHERE access_request_id = ?`, req.ID)
+	require.NoError(t, err)
 	_, _, err = svc.ApproveAccessRequestByID(context.Background(), req.ID)
 	require.NoError(t, err)
 	var grantCount, desired int
