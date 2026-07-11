@@ -210,6 +210,12 @@ func (s *Service) ApproveAccessRequestByID(ctx context.Context, id int64) (*mode
 		return nil, nil, err
 	}
 	if req.Status == "consumed" {
+		if normalizeCodeType(req.CodeType) == "subscription" {
+			_ = s.ensureSubscriptionConcurrencyGrant(ctx, req)
+			if req.FulfilledVia == fulfilledViaDirectCharge && req.FulfillmentResult == fulfillmentResultDirectSucceeded {
+				_ = s.reconcileSubscriptionConcurrencyForUser(ctx, req.RequestorUpstreamUserID)
+			}
+		}
 		if req.FulfilledVia == fulfilledViaDirectCharge && req.FulfillmentResult == fulfillmentResultDirectSucceeded {
 			redeemReq, redeemErr := s.getRedeemRequestByAccessRequestID(ctx, req.ID)
 			if redeemErr == nil && redeemReq != nil && redeemReq.Status == "issued" {
@@ -256,6 +262,10 @@ func (s *Service) ApproveAccessRequestByID(ctx context.Context, id int64) (*mode
 			}
 		}
 		if code, err := s.issueDirectCharge(ctx, req, tier); err == nil {
+			if normalizeCodeType(req.CodeType) == "subscription" {
+				_ = s.ensureSubscriptionConcurrencyGrant(ctx, req)
+				_ = s.reconcileSubscriptionConcurrencyForUser(ctx, req.RequestorUpstreamUserID)
+			}
 			return req, code, nil
 		} else if errors.Is(err, ErrBadRequest) {
 			return nil, nil, err

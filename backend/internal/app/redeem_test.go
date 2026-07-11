@@ -714,6 +714,13 @@ INSERT INTO redeem_access_requests (
 	require.Equal(t, "giftcode-access-1", code.Code)
 	require.Equal(t, "direct_charge_succeeded", req.FulfillmentResult)
 	require.Equal(t, "direct_charge", req.FulfilledVia)
+
+	_, _, err = svc.ApproveAccessRequestByID(context.Background(), req.ID)
+	require.NoError(t, err)
+	var grantCount, desired int
+	require.NoError(t, store.DB.QueryRowContext(context.Background(), `SELECT COUNT(1), MAX(desired_concurrency) FROM subscription_concurrency_grants WHERE access_request_id = ?`, req.ID).Scan(&grantCount, &desired))
+	require.Equal(t, 1, grantCount)
+	require.Equal(t, 10, desired)
 }
 
 func TestApproveAccessRequestIssuesSubscriptionRedeemCode(t *testing.T) {
@@ -800,6 +807,9 @@ INSERT INTO redeem_access_requests (
 	require.Equal(t, 30, code.ValidityDays)
 	require.Equal(t, "subscription", req.CodeType)
 	require.Equal(t, "Claude monthly", req.Sub2APIGroupName)
+	var grantStatus string
+	require.NoError(t, store.DB.QueryRowContext(context.Background(), `SELECT status FROM subscription_concurrency_grants WHERE access_request_id = ?`, req.ID).Scan(&grantStatus))
+	require.Equal(t, "pending", grantStatus)
 }
 
 func floatPtr(v float64) *float64 {
