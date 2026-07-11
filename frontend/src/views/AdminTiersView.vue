@@ -35,9 +35,14 @@
             <span>已失效 {{ monitorStatus.inactive_grants }}</span>
             <span>失败 {{ monitorStatus.error_grants }}</span>
           </div>
-          <div v-if="monitorStatus.default_concurrency_error || monitorStatus.latest_error" class="monitor-error">
-            {{ monitorStatus.default_concurrency_error || monitorStatus.latest_error }}
-            <template v-if="monitorStatus.latest_error_at">（{{ formatTime(monitorStatus.latest_error_at) }}）</template>
+          <div v-if="monitorStatus.default_concurrency_error || monitorStatus.latest_error" class="monitor-errors">
+            <div v-if="monitorStatus.default_concurrency_error" class="monitor-error">
+              默认并发读取失败：{{ monitorStatus.default_concurrency_error }}
+            </div>
+            <div v-if="monitorStatus.latest_error" class="monitor-error">
+              最近协调错误：{{ monitorStatus.latest_error }}
+              <template v-if="monitorStatus.latest_error_at">（{{ formatTime(monitorStatus.latest_error_at) }}）</template>
+            </div>
           </div>
         </template>
         <div v-else-if="monitorError" class="monitor-error">{{ monitorError }}</div>
@@ -170,5 +175,10 @@ onMounted(loadAll)
   color: #b42318;
   font-size: 13px;
   overflow-wrap: anywhere;
+}
+
+.monitor-errors {
+  display: grid;
+  gap: 4px;
 }
 </style>
