@@ -1,12 +1,12 @@
 <template>
   <AppLayout title="档位设置" subtitle="调整用户可申请的余额和订阅档位">
     <div class="surface section" style="margin-bottom: 16px">
-      <div class="toolbar">
-        <div>
+      <div class="toolbar admin-tier-toolbar">
+        <div class="toolbar-copy">
           <div style="font-weight: 700">同步状态</div>
           <div class="muted">最近一次与 {{ branding.title }} 的本地同步时间，订阅分组限额实时读取。</div>
         </div>
-        <div style="display: flex; gap: 8px">
+        <div class="toolbar-actions">
           <el-button :icon="Refresh" :loading="loading" @click="loadAll">刷新</el-button>
           <el-button :icon="Upload" @click="sync">同步兑换码</el-button>
           <el-button type="primary" :icon="Check" @click="save">保存档位</el-button>
@@ -151,6 +151,28 @@ onMounted(loadAll)
 </script>
 
 <style scoped>
+.toolbar-copy {
+  min-width: 0;
+}
+
+.toolbar-actions {
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+@media (max-width: 720px) {
+  .admin-tier-toolbar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .toolbar-actions {
+    justify-content: flex-start;
+  }
+}
+
 .concurrency-monitor {
   display: grid;
   gap: 10px;
