@@ -215,7 +215,7 @@ function sanitizedRows() {
         original_pay_amount_cny: normalizeOriginalPayAmount(tier.original_pay_amount_cny),
         sub2api_group_id: tier.sub2api_group_id ?? null,
         validity_days: Number(tier.validity_days ?? 30),
-        concurrency: Math.max(1, Number(tier.concurrency || subscriptionConcurrencyDefault())),
+        concurrency: Math.max(0, Number(tier.concurrency || 0)),
       }
     }
     return {
@@ -287,7 +287,7 @@ function onTypeChange(row: RedeemTier) {
   if (tierCodeType(row) === 'subscription') {
     row.amount = 0
     row.validity_days = Number(row.validity_days || 30)
-    row.concurrency = Math.max(1, Number(row.concurrency || subscriptionConcurrencyDefault()))
+    row.concurrency = Number(row.concurrency) > 0 ? Number(row.concurrency) : subscriptionConcurrencyDefault()
   } else {
     row.amount = Number(row.amount || 120)
     row.sub2api_group_id = null
@@ -298,7 +298,7 @@ function onTypeChange(row: RedeemTier) {
 }
 
 function subscriptionConcurrencyDefault() {
-  return props.defaultConcurrency > 0 ? props.defaultConcurrency : 5
+  return props.defaultConcurrency > 0 ? props.defaultConcurrency : 0
 }
 
 function onGroupChange(row: RedeemTier) {

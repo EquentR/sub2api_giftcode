@@ -69,6 +69,7 @@ import TierEditor from '@/components/TierEditor.vue'
 import { listRedeemTiers, listSubscriptionConcurrencyStatus, listSubscriptionGroups, syncRedeemCodes, updateRedeemTiers, stats as fetchStats } from '@/api/admin'
 import type { DashboardStats, RedeemTier, SubscriptionConcurrencyMonitorStatus, SubscriptionGroup } from '@/api/types'
 import { useBrandingStore } from '@/stores/branding'
+import { tierCodeType } from '@/utils/tiers'
 
 const tiers = ref<RedeemTier[]>([])
 const subscriptionGroups = ref<SubscriptionGroup[]>([])
@@ -86,33 +87,33 @@ async function loadAll() {
   loading.value = true
   groupsLoading.value = true
   groupsError.value = ''
-  monitorError.value = ''
+  const monitorLoad = loadMonitorStatus()
   try {
-    const [tierData, groupData, statData, concurrencyData] = await Promise.all([
+    const [tierData, groupData, statData] = await Promise.all([
       listRedeemTiers(),
       listSubscriptionGroups().catch((error: any) => {
         groupsError.value = error?.message ?? '订阅分组加载失败'
         return []
       }),
       fetchStats(),
-      listSubscriptionConcurrencyStatus().catch((error: any) => {
-        monitorError.value = error?.message ?? '订阅并发监控状态加载失败'
-        return null
-      }),
     ])
     tiers.value = tierData
     subscriptionGroups.value = groupData
     stats.value = statData
-    monitorStatus.value = concurrencyData
   } catch (error: any) {
     ElMessage.error(error?.message ?? '加载档位失败')
   } finally {
+    await monitorLoad
     loading.value = false
     groupsLoading.value = false
   }
 }
 
 async function save() {
+  if (tiers.value.some((tier) => tierCodeType(tier) === 'subscription' && Number(tier.concurrency) <= 0)) {
+    ElMessage.warning('请为所有订阅档位设置大于 0 的并发数')
+    return
+  }
   try {
     tiers.value = await updateRedeemTiers(tiers.value)
     ElMessage.success('已保存')
@@ -128,6 +129,16 @@ async function sync() {
     await loadAll()
   } catch (error: any) {
     ElMessage.error(error?.message ?? '同步失败')
+  }
+}
+
+async function loadMonitorStatus() {
+  monitorStatus.value = null
+  monitorError.value = ''
+  try {
+    monitorStatus.value = await listSubscriptionConcurrencyStatus()
+  } catch (error: any) {
+    monitorError.value = error?.message ?? '订阅并发监控状态加载失败'
   }
 }
 
