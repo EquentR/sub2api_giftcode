@@ -177,6 +177,7 @@ export interface SubscriptionConcurrencyMonitorStatus {
   pending_grants: number
   inactive_grants: number
   error_grants: number
+  manual_override_users: number
   latest_error: string
   latest_error_at?: string | null
 }

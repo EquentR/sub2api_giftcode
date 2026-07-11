@@ -218,6 +218,16 @@ WHERE name IN (
 	}
 	require.NoError(t, indexRows.Close())
 	require.Equal(t, []string{"upstream_user_id", "status"}, userStatusColumns)
+
+	var stateColumns int
+	require.NoError(t, store.DB.QueryRowContext(context.Background(), `
+SELECT COUNT(1) FROM pragma_table_info('subscription_concurrency_user_states')
+WHERE name IN (
+  'upstream_user_id', 'last_applied_concurrency', 'manual_override',
+  'manual_override_concurrency', 'created_at', 'updated_at'
+)
+`).Scan(&stateColumns))
+	require.Equal(t, 6, stateColumns)
 }
 
 func TestMigrateUpgradesLegacyConcurrencyColumnsWithoutLosingRows(t *testing.T) {

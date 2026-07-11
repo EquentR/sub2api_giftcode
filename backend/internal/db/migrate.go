@@ -158,6 +158,15 @@ CREATE TABLE IF NOT EXISTS subscription_concurrency_grants (
 CREATE INDEX IF NOT EXISTS idx_subscription_concurrency_grants_user_status
   ON subscription_concurrency_grants(upstream_user_id, status);
 
+CREATE TABLE IF NOT EXISTS subscription_concurrency_user_states (
+  upstream_user_id INTEGER PRIMARY KEY,
+  last_applied_concurrency INTEGER NULL,
+  manual_override INTEGER NOT NULL DEFAULT 0,
+  manual_override_concurrency INTEGER NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS sync_state (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL,

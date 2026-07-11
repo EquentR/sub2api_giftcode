@@ -29,6 +29,8 @@ func TestSubscriptionConcurrencyMonitorStatusEndpointRequiresAdminAndReturnsStat
 		_, err := store.DB.Exec(`INSERT INTO subscription_concurrency_grants (access_request_id, upstream_user_id, tier_id, sub2api_group_id, desired_concurrency, status, last_error, created_at, updated_at) VALUES (?, 1, 1, 7, 12, ?, ?, ?, ?)`, i+1, status, map[bool]string{true: "retry failed", false: ""}[i == 3], now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano))
 		require.NoError(t, err)
 	}
+	_, err = store.DB.Exec(`INSERT INTO subscription_concurrency_user_states (upstream_user_id, manual_override, manual_override_concurrency, created_at, updated_at) VALUES (1, 1, 20, ?, ?)`, now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano))
+	require.NoError(t, err)
 	_, err = store.DB.Exec(`INSERT INTO sync_state (key, value, updated_at) VALUES (?, ?, ?), (?, ?, ?), (?, ?, ?)`,
 		"subscription_concurrency_last_reconciliation_at", now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano),
 		"subscription_concurrency_latest_error", "user 2: upstream unavailable", now.Format(time.RFC3339Nano),
@@ -74,6 +76,7 @@ func TestSubscriptionConcurrencyMonitorStatusEndpointRequiresAdminAndReturnsStat
 			PendingGrants           int    `json:"pending_grants"`
 			InactiveGrants          int    `json:"inactive_grants"`
 			ErrorGrants             int    `json:"error_grants"`
+			ManualOverrideUsers     int    `json:"manual_override_users"`
 			LatestError             string `json:"latest_error"`
 			LatestErrorAt           string `json:"latest_error_at"`
 		} `json:"data"`
@@ -87,6 +90,7 @@ func TestSubscriptionConcurrencyMonitorStatusEndpointRequiresAdminAndReturnsStat
 	require.Equal(t, 1, envelope.Data.PendingGrants)
 	require.Equal(t, 2, envelope.Data.InactiveGrants)
 	require.Equal(t, 1, envelope.Data.ErrorGrants)
+	require.Equal(t, 1, envelope.Data.ManualOverrideUsers)
 	require.Equal(t, "user 2: upstream unavailable", envelope.Data.LatestError)
 	require.Equal(t, now.Format(time.RFC3339Nano), envelope.Data.LatestErrorAt)
 }

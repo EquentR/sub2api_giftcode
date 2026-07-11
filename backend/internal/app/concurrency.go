@@ -20,10 +20,18 @@ type concurrencyGrantRecord struct {
 	CodeUsedBy   sql.NullInt64
 }
 
+type concurrencyUserState struct {
+	Exists                    bool
+	LastAppliedConcurrency    sql.NullInt64
+	ManualOverride            bool
+	ManualOverrideConcurrency sql.NullInt64
+}
+
 const (
 	subscriptionConcurrencyLastReconciliationAtKey = "subscription_concurrency_last_reconciliation_at"
 	subscriptionConcurrencyLatestErrorKey          = "subscription_concurrency_latest_error"
 	subscriptionConcurrencyLatestErrorAtKey        = "subscription_concurrency_latest_error_at"
+	subscriptionConcurrencyControlBootstrappedKey  = "subscription_concurrency_control_bootstrapped"
 )
 
 // SubscriptionConcurrencyMonitorStatus describes the current local grant state
@@ -36,6 +44,7 @@ type SubscriptionConcurrencyMonitorStatus struct {
 	PendingGrants           int        `json:"pending_grants"`
 	InactiveGrants          int        `json:"inactive_grants"`
 	ErrorGrants             int        `json:"error_grants"`
+	ManualOverrideUsers     int        `json:"manual_override_users"`
 	LatestError             string     `json:"latest_error"`
 	LatestErrorAt           *time.Time `json:"latest_error_at,omitempty"`
 }
@@ -49,7 +58,18 @@ func (s *Service) ReconcileSubscriptionConcurrency(ctx context.Context) (err err
 	s.concurrencyMu.Lock()
 	defer s.concurrencyMu.Unlock()
 	repairErr := s.repairMissingSubscriptionConcurrencyGrants(ctx)
-	reconcileErr := s.reconcileSubscriptionConcurrency(ctx, 0)
+	bootstrapState, bootstrapErr := s.getSyncState(ctx, subscriptionConcurrencyControlBootstrappedKey)
+	if errors.Is(bootstrapErr, sql.ErrNoRows) {
+		bootstrapErr = nil
+	}
+	if bootstrapErr != nil {
+		return errors.Join(repairErr, bootstrapErr)
+	}
+	protectUntracked := bootstrapState != "1"
+	reconcileErr := s.reconcileSubscriptionConcurrency(ctx, 0, protectUntracked)
+	if repairErr == nil && reconcileErr == nil && protectUntracked {
+		reconcileErr = s.setSyncState(ctx, subscriptionConcurrencyControlBootstrappedKey, "1", s.now())
+	}
 	return errors.Join(repairErr, reconcileErr)
 }
 
@@ -66,6 +86,9 @@ SELECT
   COALESCE(SUM(CASE WHEN status = 'error' OR TRIM(last_error) <> '' THEN 1 ELSE 0 END), 0)
 FROM subscription_concurrency_grants`)
 	if err := row.Scan(&status.ActiveGrants, &status.PendingGrants, &status.InactiveGrants, &status.ErrorGrants); err != nil {
+		return nil, err
+	}
+	if err := s.db().QueryRowContext(ctx, `SELECT COUNT(1) FROM subscription_concurrency_user_states WHERE manual_override = 1`).Scan(&status.ManualOverrideUsers); err != nil {
 		return nil, err
 	}
 	if err := s.loadSubscriptionConcurrencyRunMetadata(ctx, status); err != nil {
@@ -175,24 +198,31 @@ func (s *Service) reconcileSubscriptionConcurrencyForUser(ctx context.Context, u
 	}
 	s.concurrencyMu.Lock()
 	defer s.concurrencyMu.Unlock()
-	return s.reconcileSubscriptionConcurrency(ctx, userID)
+	bootstrapState, err := s.getSyncState(ctx, subscriptionConcurrencyControlBootstrappedKey)
+	if errors.Is(err, sql.ErrNoRows) {
+		err = nil
+	}
+	if err != nil {
+		return err
+	}
+	return s.reconcileSubscriptionConcurrency(ctx, userID, bootstrapState != "1")
 }
 
-func (s *Service) reconcileSubscriptionConcurrency(ctx context.Context, onlyUserID int64) error {
+func (s *Service) reconcileSubscriptionConcurrency(ctx context.Context, onlyUserID int64, protectUntracked bool) error {
 	userIDs, err := s.listConcurrencyGrantUserIDs(ctx, onlyUserID)
 	if err != nil {
 		return err
 	}
 	var errs []error
 	for _, userID := range userIDs {
-		if err := s.reconcileSubscriptionConcurrencyUser(ctx, userID); err != nil {
+		if err := s.reconcileSubscriptionConcurrencyUser(ctx, userID, protectUntracked); err != nil {
 			errs = append(errs, fmt.Errorf("user %d: %w", userID, err))
 		}
 	}
 	return errors.Join(errs...)
 }
 
-func (s *Service) reconcileSubscriptionConcurrencyUser(ctx context.Context, userID int64) error {
+func (s *Service) reconcileSubscriptionConcurrencyUser(ctx context.Context, userID int64, protectUntracked bool) error {
 	grants, err := s.listConcurrencyGrantRecords(ctx, userID)
 	if err != nil {
 		return err
@@ -242,14 +272,89 @@ func (s *Service) reconcileSubscriptionConcurrencyUser(ctx context.Context, user
 			return err
 		}
 	}
-	if user.Concurrency == target {
-		return nil
+	return s.reconcileConcurrencyUserTarget(ctx, userID, user.Concurrency, target, protectUntracked)
+}
+
+func (s *Service) reconcileConcurrencyUserTarget(ctx context.Context, userID int64, current, target int, protectUntracked bool) error {
+	state, err := s.loadConcurrencyUserState(ctx, userID)
+	if err != nil {
+		return err
 	}
+	if !state.Exists {
+		if protectUntracked && current != target {
+			return s.saveConcurrencyUserState(ctx, userID, sql.NullInt64{}, true, sql.NullInt64{Int64: int64(current), Valid: true})
+		}
+		if current == target {
+			return s.saveManagedConcurrencyUserState(ctx, userID, target)
+		}
+		return s.applyManagedConcurrencyTarget(ctx, userID, target)
+	}
+	if state.ManualOverride {
+		if current == target {
+			return s.saveManagedConcurrencyUserState(ctx, userID, target)
+		}
+		return s.saveConcurrencyUserState(ctx, userID, state.LastAppliedConcurrency, true, sql.NullInt64{Int64: int64(current), Valid: true})
+	}
+	if current == target {
+		return s.saveManagedConcurrencyUserState(ctx, userID, target)
+	}
+	if !state.LastAppliedConcurrency.Valid || current != int(state.LastAppliedConcurrency.Int64) {
+		return s.saveConcurrencyUserState(ctx, userID, state.LastAppliedConcurrency, true, sql.NullInt64{Int64: int64(current), Valid: true})
+	}
+	return s.applyManagedConcurrencyTarget(ctx, userID, target)
+}
+
+func (s *Service) applyManagedConcurrencyTarget(ctx context.Context, userID int64, target int) error {
 	if _, err := s.upstream.UpdateUserConcurrency(ctx, userID, target); err != nil {
 		s.recordConcurrencyGrantError(ctx, userID, err.Error())
 		return err
 	}
-	return nil
+	return s.saveManagedConcurrencyUserState(ctx, userID, target)
+}
+
+func (s *Service) loadConcurrencyUserState(ctx context.Context, userID int64) (concurrencyUserState, error) {
+	var state concurrencyUserState
+	var manualOverride int
+	err := s.db().QueryRowContext(ctx, `
+SELECT last_applied_concurrency, manual_override, manual_override_concurrency
+FROM subscription_concurrency_user_states WHERE upstream_user_id = ?`, userID).Scan(
+		&state.LastAppliedConcurrency, &manualOverride, &state.ManualOverrideConcurrency,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return state, nil
+	}
+	if err != nil {
+		return state, err
+	}
+	state.Exists = true
+	state.ManualOverride = manualOverride != 0
+	return state, nil
+}
+
+func (s *Service) saveManagedConcurrencyUserState(ctx context.Context, userID int64, concurrency int) error {
+	return s.saveConcurrencyUserState(ctx, userID, sql.NullInt64{Int64: int64(concurrency), Valid: true}, false, sql.NullInt64{})
+}
+
+func (s *Service) saveConcurrencyUserState(ctx context.Context, userID int64, lastApplied sql.NullInt64, manualOverride bool, overrideConcurrency sql.NullInt64) error {
+	now := s.now()
+	_, err := s.db().ExecContext(ctx, `
+INSERT INTO subscription_concurrency_user_states (
+  upstream_user_id, last_applied_concurrency, manual_override, manual_override_concurrency, created_at, updated_at
+) VALUES (?, ?, ?, ?, ?, ?)
+ON CONFLICT(upstream_user_id) DO UPDATE SET
+  last_applied_concurrency = excluded.last_applied_concurrency,
+  manual_override = excluded.manual_override,
+  manual_override_concurrency = excluded.manual_override_concurrency,
+  updated_at = excluded.updated_at
+`, userID, nullableInt64Value(lastApplied), boolToInt(manualOverride), nullableInt64Value(overrideConcurrency), formatTime(now), formatTime(now))
+	return err
+}
+
+func nullableInt64Value(value sql.NullInt64) any {
+	if !value.Valid {
+		return nil
+	}
+	return value.Int64
 }
 
 func matchingSubscription(grant concurrencyGrantRecord, subscriptions []sub2api.Subscription, now time.Time) *sub2api.Subscription {
@@ -307,6 +412,16 @@ func (s *Service) ensureSubscriptionConcurrencyGrant(ctx context.Context, reques
 	if desired <= 0 && request.TierID > 0 {
 		if tier, err := s.getRedeemTierByID(ctx, request.TierID); err == nil {
 			desired = tier.Concurrency
+		}
+	}
+	if desired <= 0 {
+		err := s.db().QueryRowContext(ctx, `
+SELECT concurrency FROM redeem_tiers
+WHERE code_type = 'subscription' AND sub2api_group_id = ? AND concurrency > 0
+ORDER BY enabled DESC, sort_order ASC, id ASC
+LIMIT 1`, *request.Sub2APIGroupID).Scan(&desired)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("look up subscription concurrency for group %d: %w", *request.Sub2APIGroupID, err)
 		}
 	}
 	if desired <= 0 {

@@ -12,7 +12,7 @@ Prevent the subscription concurrency monitor from overwriting concurrency values
 - A detected manual override has higher priority than active subscriptions and expiry fallback. The monitor observes the user but does not update their upstream concurrency.
 - Manual override is per upstream user and persists across restarts and subscription expiry.
 - An override clears automatically when the administrator changes the upstream concurrency to the monitor's current computed target. Monitoring resumes from that value.
-- On the first reconciliation after this feature is deployed, a user without local control state is treated conservatively: if upstream concurrency differs from the computed target, preserve it as a pre-existing manual override; if it matches, establish the managed baseline.
+- On the first global reconciliation after this feature is deployed, a user without local control state is treated conservatively: if upstream concurrency differs from the computed target, preserve it as a pre-existing manual override; if it matches, establish the managed baseline. After that bootstrap completes, approval-time reconciliation for new subscriptions applies their target normally.
 - Historical fulfilled requests whose concurrency snapshot is zero may recover concurrency from a current subscription tier with the same sub2api group ID. Existing tier validation guarantees all tiers in a group use the same concurrency.
 
 ## Architecture

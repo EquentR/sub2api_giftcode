@@ -34,6 +34,7 @@
             <span>待激活 {{ monitorStatus.pending_grants }}</span>
             <span>已失效 {{ monitorStatus.inactive_grants }}</span>
             <span>失败 {{ monitorStatus.error_grants }}</span>
+            <span>人工接管 {{ monitorStatus.manual_override_users }}</span>
           </div>
           <div v-if="monitorStatus.default_concurrency_error || monitorStatus.latest_error" class="monitor-errors">
             <div v-if="monitorStatus.default_concurrency_error" class="monitor-error">

@@ -695,6 +695,7 @@ func TestApproveAccessRequestDirectChargeSubscriptionUsesPositiveValue(t *testin
 		sub2api.NewClient(upstream.URL, "admin-key"),
 		mail.New(mail.Config{}),
 	)
+	require.NoError(t, svc.setSyncState(context.Background(), subscriptionConcurrencyControlBootstrappedKey, "1", now))
 	tiers, err := svc.ReplaceRedeemTiers(context.Background(), []models.RedeemTier{{
 		CodeType:       "subscription",
 		Concurrency:    10,
