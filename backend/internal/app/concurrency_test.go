@@ -119,6 +119,39 @@ func TestReconcileSubscriptionConcurrencyReadFailurePreservesStatus(t *testing.T
 	require.NotEmpty(t, lastError)
 }
 
+func TestReconcileSubscriptionConcurrencySubscriptionReadFailurePreservesActiveGrantAndSkipsUpdate(t *testing.T) {
+	store, err := db.Open("sqlite", ":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+	require.NoError(t, store.Migrate(context.Background()))
+	now := time.Now().UTC().Truncate(time.Second)
+	require.NoError(t, insertConcurrencyGrantFixture(context.Background(), store, 101, 1, 7, 12, "direct_charge", now))
+	_, err = store.DB.Exec(`INSERT INTO subscription_concurrency_grants (access_request_id, upstream_user_id, tier_id, sub2api_group_id, desired_concurrency, status, created_at, updated_at) VALUES (101, 1, 1, 7, 12, 'active', ?, ?)`, formatTime(now), formatTime(now))
+	require.NoError(t, err)
+	putCalls := 0
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/admin/users/1":
+			if r.Method == http.MethodPut {
+				putCalls++
+			}
+			writeRedeemTestEnvelope(w, map[string]any{"id": 1, "concurrency": 2})
+		case "/api/v1/admin/subscriptions":
+			http.Error(w, "subscriptions unavailable", http.StatusBadGateway)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(upstream.Close)
+	svc := New(&config.RuntimeConfig{}, store, sub2api.NewClient(upstream.URL, "key"), mail.New(mail.Config{}))
+	require.Error(t, svc.ReconcileSubscriptionConcurrency(context.Background()))
+	var status, lastError string
+	require.NoError(t, store.DB.QueryRow(`SELECT status, last_error FROM subscription_concurrency_grants`).Scan(&status, &lastError))
+	require.Equal(t, "active", status)
+	require.NotEmpty(t, lastError)
+	require.Equal(t, 0, putCalls)
+}
+
 func TestReconcileSubscriptionConcurrencyRedeemGateAndRetry(t *testing.T) {
 	store, err := db.Open("sqlite", ":memory:")
 	require.NoError(t, err)
@@ -322,6 +355,49 @@ func TestDirectApprovalGrantFailureDoesNotIssueFallbackCode(t *testing.T) {
 	require.NotNil(t, code)
 	require.Equal(t, "consumed", req.Status)
 	require.Equal(t, 0, fallbackCalls)
+}
+
+func TestDirectApprovalReconciliationFailureIsNonfatalAndDoesNotIssueFallback(t *testing.T) {
+	store, err := db.Open("sqlite", ":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+	require.NoError(t, store.Migrate(context.Background()))
+	now := time.Now().UTC().Truncate(time.Second)
+	result, err := store.DB.Exec(`INSERT INTO redeem_tiers (code_type, amount, pay_amount_cny, label, enabled, sort_order, sub2api_group_id, validity_days, concurrency, created_at, updated_at) VALUES ('subscription', 0, 88, 'Subscription', 1, 1, 7, 30, 12, ?, ?)`, formatTime(now), formatTime(now))
+	require.NoError(t, err)
+	tierID, err := result.LastInsertId()
+	require.NoError(t, err)
+	_, err = store.DB.Exec(`INSERT INTO redeem_access_requests (id, requestor_upstream_user_id, requestor_email, requestor_username, tier_id, code_type, tier_label, amount, pay_amount_cny, sub2api_group_id, validity_days, concurrency, status, fulfillment_mode, approval_token_hash, approval_token_expires_at, notification_status, notification_error, created_at, updated_at) VALUES (101, 1, 'user@example.com', 'user', ?, 'subscription', 'Subscription', 0, 88, 7, 30, 12, 'pending', 'direct_charge', 'token', ?, 'sent', '', ?, ?)`, tierID, formatTime(now.Add(time.Hour)), formatTime(now), formatTime(now))
+	require.NoError(t, err)
+	fallbackCalls := 0
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/admin/redeem-codes/create-and-redeem":
+			writeRedeemTestEnvelope(w, map[string]any{"redeem_code": map[string]any{"id": 501, "code": "giftcode-access-101", "type": "subscription", "value": 88, "status": "used", "used_by": 1, "used_at": formatTime(now), "group_id": 7, "validity_days": 30, "created_at": formatTime(now)}})
+		case "/api/v1/admin/users/1":
+			writeRedeemTestEnvelope(w, map[string]any{"id": 1, "concurrency": 2})
+		case "/api/v1/admin/subscriptions":
+			http.Error(w, "subscriptions unavailable", http.StatusBadGateway)
+		case "/api/v1/admin/redeem-codes/generate":
+			fallbackCalls++
+			writeRedeemTestEnvelope(w, []any{})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(upstream.Close)
+	svc := New(&config.RuntimeConfig{}, store, sub2api.NewClient(upstream.URL, "key"), mail.New(mail.Config{}))
+	req, code, err := svc.ApproveAccessRequestByID(context.Background(), 101)
+	require.NoError(t, err)
+	require.NotNil(t, req)
+	require.NotNil(t, code)
+	require.Equal(t, "consumed", req.Status)
+	require.Equal(t, 0, fallbackCalls)
+	var count int
+	var lastError string
+	require.NoError(t, store.DB.QueryRow(`SELECT COUNT(1), MAX(last_error) FROM subscription_concurrency_grants WHERE access_request_id = 101`).Scan(&count, &lastError))
+	require.Equal(t, 1, count)
+	require.NotEmpty(t, lastError)
 }
 
 func TestRedeemCodeApprovalSurfacesGrantPersistenceFailureAfterFulfillment(t *testing.T) {
