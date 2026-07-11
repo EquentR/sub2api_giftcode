@@ -61,6 +61,83 @@ func TestReconcileSubscriptionConcurrencyUsesMaximumGrant(t *testing.T) {
 	require.Equal(t, 12, desired)
 }
 
+func TestSubscriptionConcurrencyMonitorStatusAggregatesGrantsAndLiveDefault(t *testing.T) {
+	store, err := db.Open("sqlite", ":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+	require.NoError(t, store.Migrate(context.Background()))
+
+	now := time.Now().UTC().Truncate(time.Second)
+	for i, status := range []string{"active", "pending", "inactive", "inactive"} {
+		_, err := store.DB.Exec(`INSERT INTO subscription_concurrency_grants (access_request_id, upstream_user_id, tier_id, sub2api_group_id, desired_concurrency, status, created_at, updated_at) VALUES (?, 1, 1, 7, 12, ?, ?, ?)`, i+1, status, formatTime(now), formatTime(now))
+		require.NoError(t, err)
+	}
+	_, err = store.DB.Exec(`UPDATE subscription_concurrency_grants SET last_error = 'retry failed' WHERE access_request_id = 4`)
+	require.NoError(t, err)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "/api/v1/admin/settings", r.URL.Path)
+		writeRedeemTestEnvelope(w, map[string]any{"default_concurrency": 4})
+	}))
+	t.Cleanup(upstream.Close)
+	svc := New(&config.RuntimeConfig{}, store, sub2api.NewClient(upstream.URL, "key"), mail.New(mail.Config{}))
+	require.NoError(t, svc.setSyncState(context.Background(), subscriptionConcurrencyLastReconciliationAtKey, formatTime(now), now))
+	require.NoError(t, svc.setSyncState(context.Background(), subscriptionConcurrencyLatestErrorKey, "user 9: upstream unavailable", now))
+	require.NoError(t, svc.setSyncState(context.Background(), subscriptionConcurrencyLatestErrorAtKey, formatTime(now), now))
+
+	status, err := svc.SubscriptionConcurrencyMonitorStatus(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, 4, status.DefaultConcurrency)
+	require.Empty(t, status.DefaultConcurrencyError)
+	require.Equal(t, &now, status.LastReconciliationAt)
+	require.Equal(t, 1, status.ActiveGrants)
+	require.Equal(t, 1, status.PendingGrants)
+	require.Equal(t, 2, status.InactiveGrants)
+	require.Equal(t, 1, status.ErrorGrants)
+	require.Equal(t, "user 9: upstream unavailable", status.LatestError)
+	require.Equal(t, &now, status.LatestErrorAt)
+}
+
+func TestSubscriptionConcurrencyMonitorStatusReportsDefaultReadFailure(t *testing.T) {
+	store, err := db.Open("sqlite", ":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+	require.NoError(t, store.Migrate(context.Background()))
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeRedeemTestEnvelope(w, map[string]any{"default_concurrency": 0})
+	}))
+	t.Cleanup(upstream.Close)
+	svc := New(&config.RuntimeConfig{}, store, sub2api.NewClient(upstream.URL, "key"), mail.New(mail.Config{}))
+
+	status, err := svc.SubscriptionConcurrencyMonitorStatus(context.Background())
+	require.NoError(t, err)
+	require.Zero(t, status.DefaultConcurrency)
+	require.Contains(t, status.DefaultConcurrencyError, "invalid default concurrency")
+}
+
+func TestReconcileSubscriptionConcurrencyRecordsRunFailureAndReturnsIt(t *testing.T) {
+	store, err := db.Open("sqlite", ":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+	require.NoError(t, store.Migrate(context.Background()))
+
+	now := time.Now().UTC().Truncate(time.Second)
+	require.NoError(t, insertConcurrencyGrantFixture(context.Background(), store, 101, 1, 7, 12, "direct_charge", now))
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "upstream unavailable", http.StatusBadGateway)
+	}))
+	t.Cleanup(upstream.Close)
+	svc := New(&config.RuntimeConfig{}, store, sub2api.NewClient(upstream.URL, "key"), mail.New(mail.Config{}))
+
+	err = svc.ReconcileSubscriptionConcurrency(context.Background())
+	require.Error(t, err)
+	status, statusErr := svc.SubscriptionConcurrencyMonitorStatus(context.Background())
+	require.NoError(t, statusErr)
+	require.NotNil(t, status.LastReconciliationAt)
+	require.Contains(t, status.LatestError, "user 1")
+	require.NotNil(t, status.LatestErrorAt)
+}
+
 func TestReconcileSubscriptionConcurrencyFallsBackToLiveDefault(t *testing.T) {
 	store, err := db.Open("sqlite", ":memory:")
 	require.NoError(t, err)

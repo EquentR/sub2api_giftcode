@@ -64,6 +64,7 @@ func main() {
 	if cfg.Sync.IntervalSeconds > 0 {
 		go runSyncLoop(runCtx, service, time.Duration(cfg.Sync.IntervalSeconds)*time.Second)
 	}
+	go runSubscriptionConcurrencyLoop(runCtx, service.ReconcileSubscriptionConcurrency, 30*time.Minute)
 
 	srv := &http.Server{
 		Addr:              cfg.App.ListenAddr,
@@ -94,6 +95,27 @@ func runSyncLoop(ctx context.Context, service *app.Service, interval time.Durati
 		case <-ticker.C:
 			if _, err := service.SyncRedeemCodes(ctx); err != nil {
 				log.Printf("sync redeem codes failed: %v", err)
+			}
+		}
+	}
+}
+
+func runSubscriptionConcurrencyLoop(ctx context.Context, reconcile func(context.Context) error, interval time.Duration) {
+	if err := reconcile(ctx); err != nil {
+		log.Printf("reconcile subscription concurrency failed: %v", err)
+	}
+	if interval <= 0 {
+		return
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if err := reconcile(ctx); err != nil {
+				log.Printf("reconcile subscription concurrency failed: %v", err)
 			}
 		}
 	}

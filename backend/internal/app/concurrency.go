@@ -20,8 +20,29 @@ type concurrencyGrantRecord struct {
 	CodeUsedBy   sql.NullInt64
 }
 
+const (
+	subscriptionConcurrencyLastReconciliationAtKey = "subscription_concurrency_last_reconciliation_at"
+	subscriptionConcurrencyLatestErrorKey          = "subscription_concurrency_latest_error"
+	subscriptionConcurrencyLatestErrorAtKey        = "subscription_concurrency_latest_error_at"
+)
+
+// SubscriptionConcurrencyMonitorStatus describes the current local grant state
+// and the live default concurrency configured by sub2api.
+type SubscriptionConcurrencyMonitorStatus struct {
+	DefaultConcurrency      int        `json:"default_concurrency"`
+	DefaultConcurrencyError string     `json:"default_concurrency_error"`
+	LastReconciliationAt    *time.Time `json:"last_reconciliation_at,omitempty"`
+	ActiveGrants            int        `json:"active_grants"`
+	PendingGrants           int        `json:"pending_grants"`
+	InactiveGrants          int        `json:"inactive_grants"`
+	ErrorGrants             int        `json:"error_grants"`
+	LatestError             string     `json:"latest_error"`
+	LatestErrorAt           *time.Time `json:"latest_error_at,omitempty"`
+}
+
 // ReconcileSubscriptionConcurrency applies the current upstream entitlement state to every managed user.
-func (s *Service) ReconcileSubscriptionConcurrency(ctx context.Context) error {
+func (s *Service) ReconcileSubscriptionConcurrency(ctx context.Context) (err error) {
+	defer func() { s.recordSubscriptionConcurrencyReconciliation(ctx, err) }()
 	if err := s.requireUpstreamClient(); err != nil {
 		return err
 	}
@@ -30,6 +51,72 @@ func (s *Service) ReconcileSubscriptionConcurrency(ctx context.Context) error {
 	repairErr := s.repairMissingSubscriptionConcurrencyGrants(ctx)
 	reconcileErr := s.reconcileSubscriptionConcurrency(ctx, 0)
 	return errors.Join(repairErr, reconcileErr)
+}
+
+// SubscriptionConcurrencyMonitorStatus returns local grant counts even when
+// fetching the upstream default fails, so operators can distinguish an
+// upstream settings outage from an empty monitor.
+func (s *Service) SubscriptionConcurrencyMonitorStatus(ctx context.Context) (*SubscriptionConcurrencyMonitorStatus, error) {
+	status := &SubscriptionConcurrencyMonitorStatus{}
+	row := s.db().QueryRowContext(ctx, `
+SELECT
+  COALESCE(SUM(CASE WHEN status = 'active' THEN 1 ELSE 0 END), 0),
+  COALESCE(SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END), 0),
+  COALESCE(SUM(CASE WHEN status = 'inactive' THEN 1 ELSE 0 END), 0),
+  COALESCE(SUM(CASE WHEN status = 'error' OR TRIM(last_error) <> '' THEN 1 ELSE 0 END), 0)
+FROM subscription_concurrency_grants`)
+	if err := row.Scan(&status.ActiveGrants, &status.PendingGrants, &status.InactiveGrants, &status.ErrorGrants); err != nil {
+		return nil, err
+	}
+	var err error
+	if status.LastReconciliationAt, err = s.subscriptionConcurrencyStateTime(ctx, subscriptionConcurrencyLastReconciliationAtKey); err != nil {
+		return nil, err
+	}
+	if status.LatestError, err = s.subscriptionConcurrencyState(ctx, subscriptionConcurrencyLatestErrorKey); err != nil {
+		return nil, err
+	}
+	if status.LatestErrorAt, err = s.subscriptionConcurrencyStateTime(ctx, subscriptionConcurrencyLatestErrorAtKey); err != nil {
+		return nil, err
+	}
+	if err := s.requireUpstreamClient(); err != nil {
+		status.DefaultConcurrencyError = err.Error()
+		return status, nil
+	}
+	defaultConcurrency, err := s.upstream.GetDefaultConcurrency(ctx)
+	if err != nil {
+		status.DefaultConcurrencyError = err.Error()
+		return status, nil
+	}
+	status.DefaultConcurrency = defaultConcurrency
+	return status, nil
+}
+
+func (s *Service) recordSubscriptionConcurrencyReconciliation(ctx context.Context, runErr error) {
+	now := s.now()
+	_ = s.setSyncState(ctx, subscriptionConcurrencyLastReconciliationAtKey, formatTime(now), now)
+	if runErr == nil {
+		_ = s.setSyncState(ctx, subscriptionConcurrencyLatestErrorKey, "", now)
+		_ = s.setSyncState(ctx, subscriptionConcurrencyLatestErrorAtKey, "", now)
+		return
+	}
+	_ = s.setSyncState(ctx, subscriptionConcurrencyLatestErrorKey, runErr.Error(), now)
+	_ = s.setSyncState(ctx, subscriptionConcurrencyLatestErrorAtKey, formatTime(now), now)
+}
+
+func (s *Service) subscriptionConcurrencyState(ctx context.Context, key string) (string, error) {
+	value, err := s.getSyncState(ctx, key)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	return value, err
+}
+
+func (s *Service) subscriptionConcurrencyStateTime(ctx context.Context, key string) (*time.Time, error) {
+	value, err := s.subscriptionConcurrencyState(ctx, key)
+	if err != nil || strings.TrimSpace(value) == "" {
+		return nil, err
+	}
+	return parseTime(value)
 }
 
 func (s *Service) repairMissingSubscriptionConcurrencyGrants(ctx context.Context) error {
