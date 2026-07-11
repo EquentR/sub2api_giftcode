@@ -18,8 +18,13 @@
         <el-table-column prop="label" label="标签" min-width="180">
           <template #default="{ row }">{{ row.label || '-' }}</template>
         </el-table-column>
-        <el-table-column label="内容" width="140">
-          <template #default="{ row }">{{ tierContent(row) }}</template>
+        <el-table-column label="内容" width="160">
+          <template #default="{ row }">
+            <div class="content-cell">
+              <span>{{ tierContent(row) }}</span>
+              <small v-if="tierCodeType(row) === 'subscription'">并发数 {{ tierConcurrency(row) }}</small>
+            </div>
+          </template>
         </el-table-column>
         <el-table-column prop="pay_amount_cny" label="实付金额" width="140">
           <template #default="{ row }">{{ Number(row.pay_amount_cny).toFixed(0) }} 人民币</template>
@@ -42,8 +47,13 @@
         <el-table-column label="档位" min-width="160">
           <template #default="{ row }">{{ tierNameById(row.tier_id) }}</template>
         </el-table-column>
-        <el-table-column label="内容" width="130">
-          <template #default="{ row }">{{ requestContent(row) }}</template>
+        <el-table-column label="内容" width="160">
+          <template #default="{ row }">
+            <div class="content-cell">
+              <span>{{ requestContent(row) }}</span>
+              <small v-if="row.code_type === 'subscription'">并发数 {{ tierConcurrency(row) }}</small>
+            </div>
+          </template>
         </el-table-column>
         <el-table-column label="实付金额" width="130">
           <template #default="{ row }">{{ Number(row.pay_amount_cny).toFixed(0) }} 人民币</template>
@@ -92,7 +102,12 @@
               :label="formatTierDisplay(tier)"
               :value="tier.id"
               :disabled="!isSubscriptionTierAvailable(tier)"
-            />
+            >
+              <div class="tier-option">
+                <span>{{ formatTierDisplay(tier) }}</span>
+                <small v-if="tierCodeType(tier) === 'subscription'">并发数 {{ tierConcurrency(tier) }}</small>
+              </div>
+            </el-option>
           </el-select>
         </el-form-item>
         <el-form-item label="备注">
@@ -249,6 +264,10 @@ function requestContent(request: AccessRequest) {
   return `${Number(request.amount).toFixed(0)} 美元`
 }
 
+function tierConcurrency(tier: Pick<RedeemTier, 'concurrency'> | Pick<AccessRequest, 'concurrency'>) {
+  return Math.max(0, Number(tier.concurrency ?? 0))
+}
+
 function refreshWhenVisible() {
   if (document.visibilityState === 'hidden') return
   void loadAll()
@@ -291,3 +310,18 @@ onBeforeUnmount(() => {
   }
 })
 </script>
+
+<style scoped>
+.content-cell,
+.tier-option {
+  display: grid;
+  gap: 2px;
+  line-height: 1.25;
+}
+
+.content-cell small,
+.tier-option small {
+  color: #64748b;
+  font-size: 12px;
+}
+</style>

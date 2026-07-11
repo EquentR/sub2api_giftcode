@@ -9,6 +9,7 @@ import (
 	"errors"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"sub2api-giftcode/backend/internal/config"
@@ -19,10 +20,11 @@ import (
 )
 
 type Service struct {
-	cfg      *config.RuntimeConfig
-	store    *db.Store
-	upstream *sub2api.Client
-	mailer   *mail.Mailer
+	cfg           *config.RuntimeConfig
+	store         *db.Store
+	upstream      *sub2api.Client
+	mailer        *mail.Mailer
+	concurrencyMu sync.Mutex
 }
 
 type SessionUser struct {

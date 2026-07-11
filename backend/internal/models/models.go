@@ -41,6 +41,7 @@ type AccessRequest struct {
 	Sub2APIWeeklyLimitUSD   *float64   `json:"sub2api_weekly_limit_usd,omitempty"`
 	Sub2APIMonthlyLimitUSD  *float64   `json:"sub2api_monthly_limit_usd,omitempty"`
 	ValidityDays            int        `json:"validity_days"`
+	Concurrency             int        `json:"concurrency"`
 	Note                    string     `json:"note"`
 	FulfillmentMode         string     `json:"fulfillment_mode"`
 	FulfillmentResult       string     `json:"fulfillment_result"`
@@ -97,6 +98,22 @@ type RedeemCode struct {
 	UpdatedAt            time.Time  `json:"updated_at"`
 }
 
+type SubscriptionConcurrencyGrant struct {
+	ID                     int64      `json:"id"`
+	AccessRequestID        int64      `json:"access_request_id"`
+	UpstreamUserID         int64      `json:"upstream_user_id"`
+	TierID                 int64      `json:"tier_id"`
+	Sub2APIGroupID         int64      `json:"sub2api_group_id"`
+	DesiredConcurrency     int        `json:"desired_concurrency"`
+	UpstreamSubscriptionID *int64     `json:"upstream_subscription_id,omitempty"`
+	Status                 string     `json:"status"`
+	UpstreamExpiresAt      *time.Time `json:"upstream_expires_at,omitempty"`
+	LastSyncedAt           *time.Time `json:"last_synced_at,omitempty"`
+	LastError              string     `json:"last_error"`
+	CreatedAt              time.Time  `json:"created_at"`
+	UpdatedAt              time.Time  `json:"updated_at"`
+}
+
 type RedeemTier struct {
 	ID                     int64     `json:"id"`
 	CodeType               string    `json:"code_type"`
@@ -113,6 +130,7 @@ type RedeemTier struct {
 	Sub2APIWeeklyLimitUSD  *float64  `json:"sub2api_weekly_limit_usd,omitempty"`
 	Sub2APIMonthlyLimitUSD *float64  `json:"sub2api_monthly_limit_usd,omitempty"`
 	ValidityDays           int       `json:"validity_days"`
+	Concurrency            int       `json:"concurrency"`
 	UpstreamAvailable      bool      `json:"upstream_available"`
 	UpstreamError          string    `json:"upstream_error"`
 	CreatedAt              time.Time `json:"created_at"`

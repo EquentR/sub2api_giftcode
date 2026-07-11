@@ -77,6 +77,7 @@ type RedeemTierRequest struct {
 	SortOrder            int      `json:"sort_order"`
 	Sub2APIGroupID       *int64   `json:"sub2api_group_id,omitempty"`
 	ValidityDays         int      `json:"validity_days"`
+	Concurrency          int      `json:"concurrency"`
 }
 
 type OpenAIAccountUserAgentRequest struct {
@@ -136,6 +137,10 @@ func statusForError(err error) (int, string, string) {
 	case errors.Is(err, app.ErrConflict):
 		return http.StatusConflict, "conflict", ""
 	case errors.Is(err, app.ErrBadRequest):
+		var concurrencyConflict *app.TierConcurrencyConflictError
+		if errors.As(err, &concurrencyConflict) {
+			return http.StatusBadRequest, "bad request", concurrencyConflict.Error()
+		}
 		return http.StatusBadRequest, "bad request", ""
 	}
 	var apiErr *sub2api.APIError

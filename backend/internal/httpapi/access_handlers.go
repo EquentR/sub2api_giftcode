@@ -184,6 +184,7 @@ func (h *Handlers) UpdateRedeemTiers(c *gin.Context) {
 			SortOrder:            tier.SortOrder,
 			Sub2APIGroupID:       tier.Sub2APIGroupID,
 			ValidityDays:         tier.ValidityDays,
+			Concurrency:          tier.Concurrency,
 		})
 	}
 	items, err := h.service.ReplaceRedeemTiers(c.Request.Context(), tiers)

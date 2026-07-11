@@ -107,6 +107,7 @@ func TestReplaceRedeemTiersPersistsSubscriptionTier(t *testing.T) {
 	svc := New(&config.RuntimeConfig{}, store, nil, nil)
 	updated, err := svc.ReplaceRedeemTiers(context.Background(), []models.RedeemTier{{
 		CodeType:       "subscription",
+		Concurrency:    10,
 		PayAmountCny:   88,
 		Label:          "Claude 30 days",
 		Enabled:        true,
@@ -119,12 +120,62 @@ func TestReplaceRedeemTiersPersistsSubscriptionTier(t *testing.T) {
 	require.Equal(t, "subscription", updated[0].CodeType)
 	require.Equal(t, int64(2), *updated[0].Sub2APIGroupID)
 	require.Equal(t, 30, updated[0].ValidityDays)
+	require.Equal(t, 10, updated[0].Concurrency)
 
 	reloaded, err := svc.ListRedeemTiers(context.Background(), true)
 	require.NoError(t, err)
 	require.Len(t, reloaded, 1)
 	require.Equal(t, "Claude 30 days", reloaded[0].Label)
 	require.Equal(t, "subscription", reloaded[0].CodeType)
+	require.Equal(t, 10, reloaded[0].Concurrency)
+}
+
+func TestReplaceRedeemTiersNormalizesBalanceConcurrency(t *testing.T) {
+	store, err := db.Open("sqlite", ":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+	require.NoError(t, store.Migrate(context.Background()))
+
+	svc := New(&config.RuntimeConfig{}, store, nil, nil)
+	tiers, err := svc.ReplaceRedeemTiers(context.Background(), []models.RedeemTier{{
+		CodeType: "balance", Amount: 120, PayAmountCny: 120, Concurrency: 99, Enabled: true,
+	}})
+	require.NoError(t, err)
+	require.Zero(t, tiers[0].Concurrency)
+	reloaded, err := svc.ListRedeemTiers(context.Background(), true)
+	require.NoError(t, err)
+	require.Len(t, reloaded, 1)
+	require.Zero(t, reloaded[0].Concurrency)
+}
+
+func TestReplaceRedeemTiersRequiresPositiveSubscriptionConcurrency(t *testing.T) {
+	store, err := db.Open("sqlite", ":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+	require.NoError(t, store.Migrate(context.Background()))
+
+	svc := New(&config.RuntimeConfig{}, store, nil, nil)
+	_, err = svc.ReplaceRedeemTiers(context.Background(), []models.RedeemTier{{
+		CodeType: "subscription", PayAmountCny: 88, Sub2APIGroupID: int64Ptr(2), ValidityDays: 30,
+	}})
+	require.ErrorIs(t, err, ErrBadRequest)
+}
+
+func TestReplaceRedeemTiersRejectsDifferentConcurrencyForSameGroup(t *testing.T) {
+	store, err := db.Open("sqlite", ":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+	require.NoError(t, store.Migrate(context.Background()))
+
+	svc := New(&config.RuntimeConfig{}, store, nil, nil)
+	_, err = svc.ReplaceRedeemTiers(context.Background(), []models.RedeemTier{
+		{CodeType: "subscription", PayAmountCny: 88, Sub2APIGroupID: int64Ptr(2), ValidityDays: 30, Concurrency: 10},
+		{CodeType: "subscription", PayAmountCny: 168, Sub2APIGroupID: int64Ptr(2), ValidityDays: 60, Concurrency: 20},
+	})
+	require.ErrorIs(t, err, ErrBadRequest)
+	require.ErrorContains(t, err, "group 2")
+	require.ErrorContains(t, err, "10")
+	require.ErrorContains(t, err, "20")
 }
 
 func TestStatsCountsEnabledRedeemTiers(t *testing.T) {
@@ -144,6 +195,7 @@ func TestStatsCountsEnabledRedeemTiers(t *testing.T) {
 		SortOrder:    10,
 	}, {
 		CodeType:       "subscription",
+		Concurrency:    10,
 		PayAmountCny:   88,
 		Label:          "Claude 30 days",
 		Enabled:        true,
@@ -174,6 +226,7 @@ func TestReplaceRedeemTiersDisablesBalanceMirrorWhenTypeChanges(t *testing.T) {
 	_, err = svc.ReplaceRedeemTiers(context.Background(), []models.RedeemTier{{
 		ID:             id,
 		CodeType:       "subscription",
+		Concurrency:    10,
 		PayAmountCny:   88,
 		Label:          "Changed to subscription",
 		Enabled:        true,

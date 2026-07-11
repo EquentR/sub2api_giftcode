@@ -34,6 +34,7 @@ export interface AccessRequest {
   sub2api_weekly_limit_usd?: number | null
   sub2api_monthly_limit_usd?: number | null
   validity_days: number
+  concurrency: number
   note: string
   fulfillment_mode: string
   fulfillment_result: string
@@ -106,6 +107,7 @@ export interface RedeemTier {
   sub2api_weekly_limit_usd?: number | null
   sub2api_monthly_limit_usd?: number | null
   validity_days?: number
+  concurrency: number
   upstream_available?: boolean
   upstream_error?: string
   created_at: string
@@ -165,6 +167,18 @@ export interface DashboardStats {
   redeem_codes_used: number
   active_tiers: number
   last_sync_at?: string | null
+}
+
+export interface SubscriptionConcurrencyMonitorStatus {
+  default_concurrency: number
+  default_concurrency_error: string
+  last_reconciliation_at?: string | null
+  active_grants: number
+  pending_grants: number
+  inactive_grants: number
+  error_grants: number
+  latest_error: string
+  latest_error_at?: string | null
 }
 
 export interface CompensationBatch {

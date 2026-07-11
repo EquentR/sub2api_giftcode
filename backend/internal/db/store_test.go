@@ -149,6 +149,127 @@ func TestOpenAndMigrateAddsRedeemTierSubscriptionColumns(t *testing.T) {
 	require.True(t, foundValidityDays, "expected redeem_tiers to include validity_days")
 }
 
+func TestOpenAndMigrateAddsSubscriptionConcurrencySchema(t *testing.T) {
+	store, err := Open("sqlite", ":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+
+	require.NoError(t, store.Migrate(context.Background()))
+
+	for _, table := range []string{"redeem_tiers", "redeem_access_requests"} {
+		var count int
+		require.NoError(t, store.DB.QueryRowContext(context.Background(), `
+SELECT COUNT(1) FROM pragma_table_info(?)
+WHERE name = 'concurrency' AND type = 'INTEGER' AND [notnull] = 1 AND dflt_value = '0'
+`, table).Scan(&count))
+		require.Equal(t, 1, count, "expected %s.concurrency", table)
+	}
+
+	var grantColumns int
+	require.NoError(t, store.DB.QueryRowContext(context.Background(), `
+SELECT COUNT(1) FROM pragma_table_info('subscription_concurrency_grants')
+WHERE name IN (
+  'id', 'access_request_id', 'upstream_user_id', 'tier_id', 'sub2api_group_id',
+  'desired_concurrency', 'upstream_subscription_id', 'status', 'upstream_expires_at',
+  'last_synced_at', 'last_error', 'created_at', 'updated_at'
+)
+`).Scan(&grantColumns))
+	require.Equal(t, 13, grantColumns)
+
+	var uniqueIndexNames []string
+	rows, err := store.DB.QueryContext(context.Background(), `PRAGMA index_list(subscription_concurrency_grants)`)
+	require.NoError(t, err)
+	for rows.Next() {
+		var seq int
+		var name string
+		var unique int
+		var origin string
+		var partial int
+		require.NoError(t, rows.Scan(&seq, &name, &unique, &origin, &partial))
+		if unique != 1 {
+			continue
+		}
+		uniqueIndexNames = append(uniqueIndexNames, name)
+	}
+	require.NoError(t, rows.Close())
+	require.Len(t, uniqueIndexNames, 1)
+	for _, name := range uniqueIndexNames {
+		indexRows, indexErr := store.DB.QueryContext(context.Background(), `PRAGMA index_info(`+name+`)`)
+		require.NoError(t, indexErr)
+		var columnNames []string
+		for indexRows.Next() {
+			var indexSeq, columnSeq int
+			var columnName string
+			require.NoError(t, indexRows.Scan(&indexSeq, &columnSeq, &columnName))
+			columnNames = append(columnNames, columnName)
+		}
+		require.NoError(t, indexRows.Close())
+		require.Equal(t, []string{"access_request_id"}, columnNames)
+	}
+
+	indexRows, err := store.DB.QueryContext(context.Background(), `PRAGMA index_info(idx_subscription_concurrency_grants_user_status)`)
+	require.NoError(t, err)
+	var userStatusColumns []string
+	for indexRows.Next() {
+		var indexSeq, columnSeq int
+		var columnName string
+		require.NoError(t, indexRows.Scan(&indexSeq, &columnSeq, &columnName))
+		userStatusColumns = append(userStatusColumns, columnName)
+	}
+	require.NoError(t, indexRows.Close())
+	require.Equal(t, []string{"upstream_user_id", "status"}, userStatusColumns)
+}
+
+func TestMigrateUpgradesLegacyConcurrencyColumnsWithoutLosingRows(t *testing.T) {
+	store, err := Open("sqlite", ":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+
+	ctx := context.Background()
+	_, err = store.DB.ExecContext(ctx, `
+CREATE TABLE redeem_tiers (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, code_type TEXT NOT NULL DEFAULT 'balance', amount REAL NOT NULL DEFAULT 0,
+  pay_amount_cny REAL NOT NULL DEFAULT 0, original_pay_amount_cny REAL NULL, label TEXT NOT NULL,
+  enabled INTEGER NOT NULL DEFAULT 1, sort_order INTEGER NOT NULL DEFAULT 0, sub2api_group_id INTEGER NULL,
+  validity_days INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+);
+CREATE TABLE redeem_access_requests (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, requestor_upstream_user_id INTEGER NOT NULL, requestor_email TEXT NOT NULL,
+  requestor_username TEXT NOT NULL, tier_id INTEGER NOT NULL DEFAULT 0, code_type TEXT NOT NULL DEFAULT 'balance',
+  tier_label TEXT NOT NULL DEFAULT '', amount REAL NOT NULL DEFAULT 0, pay_amount_cny REAL NOT NULL DEFAULT 0,
+  sub2api_group_id INTEGER NULL, sub2api_group_name TEXT NOT NULL DEFAULT '', sub2api_group_platform TEXT NOT NULL DEFAULT '',
+  sub2api_daily_limit_usd REAL NULL, sub2api_weekly_limit_usd REAL NULL, sub2api_monthly_limit_usd REAL NULL,
+  validity_days INTEGER NOT NULL DEFAULT 0, note TEXT NOT NULL DEFAULT '', fulfillment_mode TEXT NOT NULL DEFAULT 'direct_charge',
+  fulfillment_result TEXT NOT NULL DEFAULT '', fulfilled_via TEXT NOT NULL DEFAULT '', fulfillment_error TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL, approval_token_hash TEXT NOT NULL, approval_token_expires_at TEXT NOT NULL,
+  approved_at TEXT NULL, rejected_at TEXT NULL, consumed_at TEXT NULL, notification_status TEXT NOT NULL DEFAULT 'pending',
+  notification_error TEXT NOT NULL DEFAULT '', notification_sent_at TEXT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+);
+INSERT INTO redeem_tiers (code_type, amount, pay_amount_cny, label, created_at, updated_at)
+VALUES ('balance', 77, 70, 'Legacy', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z');
+INSERT INTO redeem_access_requests (
+  requestor_upstream_user_id, requestor_email, requestor_username, tier_id, code_type, tier_label, amount,
+  pay_amount_cny, status, approval_token_hash, approval_token_expires_at, created_at, updated_at
+) VALUES (9, 'legacy@example.com', 'legacy', 1, 'balance', 'Legacy', 77, 70, 'pending', 'hash',
+  '2026-01-02T00:00:00Z', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')
+`)
+	require.NoError(t, err)
+
+	require.NoError(t, store.Migrate(ctx))
+
+	var tierConcurrency, requestConcurrency int
+	require.NoError(t, store.DB.QueryRowContext(ctx, `SELECT concurrency FROM redeem_tiers WHERE id = 1`).Scan(&tierConcurrency))
+	require.NoError(t, store.DB.QueryRowContext(ctx, `SELECT concurrency FROM redeem_access_requests WHERE id = 1`).Scan(&requestConcurrency))
+	require.Zero(t, tierConcurrency)
+	require.Zero(t, requestConcurrency)
+	var label string
+	require.NoError(t, store.DB.QueryRowContext(ctx, `SELECT label FROM redeem_tiers WHERE id = 1`).Scan(&label))
+	require.Equal(t, "Legacy", label)
+	var userID int64
+	require.NoError(t, store.DB.QueryRowContext(ctx, `SELECT requestor_upstream_user_id FROM redeem_access_requests WHERE id = 1`).Scan(&userID))
+	require.Equal(t, int64(9), userID)
+}
+
 func TestOpenAndMigrateAddsOptionalOriginalPaidAmountColumns(t *testing.T) {
 	store, err := Open("sqlite", ":memory:")
 	require.NoError(t, err)

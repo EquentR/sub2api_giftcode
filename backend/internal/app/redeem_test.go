@@ -102,6 +102,42 @@ func TestCreateAccessRequestStoresRequestedFulfillmentMode(t *testing.T) {
 	require.Equal(t, "redeem_code", req.FulfillmentMode)
 }
 
+func TestCreateAccessRequestSnapshotsSubscriptionConcurrency(t *testing.T) {
+	store, err := db.Open("sqlite", ":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+	require.NoError(t, store.Migrate(context.Background()))
+
+	now := time.Now().UTC().Truncate(time.Second)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/auth/me":
+			writeRedeemTestEnvelope(w, sub2api.User{ID: 1, Email: "alice@example.com", Username: "alice", Status: "active", CreatedAt: now, UpdatedAt: now})
+		case "/api/v1/admin/groups/all":
+			writeRedeemTestEnvelope(w, []sub2api.Group{{ID: 2, Name: "Claude", Status: "active", SubscriptionType: "subscription"}})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(upstream.Close)
+
+	svc := New(&config.RuntimeConfig{}, store, sub2api.NewClient(upstream.URL, "admin-key"), mail.New(mail.Config{}))
+	tiers, err := svc.ReplaceRedeemTiers(context.Background(), []models.RedeemTier{{
+		CodeType: "subscription", PayAmountCny: 88, Sub2APIGroupID: int64Ptr(2), ValidityDays: 30, Concurrency: 10, Enabled: true,
+	}})
+	require.NoError(t, err)
+	sessionUser, err := svc.LoginWithAccessToken(context.Background(), "access-1", nil)
+	require.NoError(t, err)
+
+	req, err := svc.CreateAccessRequest(context.Background(), sessionUser.Session.ID, tiers[0].ID, "please approve", "direct_charge")
+	require.NoError(t, err)
+	require.Equal(t, 10, req.Concurrency)
+
+	reloaded, err := svc.GetAccessRequestByID(context.Background(), req.ID)
+	require.NoError(t, err)
+	require.Equal(t, 10, reloaded.Concurrency)
+}
+
 func TestApproveAccessRequestUsesStoredRedeemValueForRetry(t *testing.T) {
 	store, err := db.Open("sqlite", ":memory:")
 	require.NoError(t, err)
@@ -604,6 +640,7 @@ func TestApproveAccessRequestDirectChargeSubscriptionUsesPositiveValue(t *testin
 
 	now := time.Now().UTC().Truncate(time.Second)
 	var sawPayload map[string]any
+	var concurrencyUpdates int
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/api/v1/admin/groups/all":
@@ -634,6 +671,18 @@ func TestApproveAccessRequestDirectChargeSubscriptionUsesPositiveValue(t *testin
 					"created_at":    now.Format(time.RFC3339Nano),
 				},
 			})
+		case "/api/v1/admin/users/1":
+			if r.Method == http.MethodGet {
+				writeRedeemTestEnvelope(w, map[string]any{"id": 1, "concurrency": 2})
+				return
+			}
+			concurrencyUpdates++
+			var input map[string]int
+			require.NoError(t, json.NewDecoder(r.Body).Decode(&input))
+			require.Equal(t, 10, input["concurrency"])
+			writeRedeemTestEnvelope(w, map[string]any{"id": 1, "concurrency": 10})
+		case "/api/v1/admin/subscriptions":
+			writeRedeemTestEnvelope(w, map[string]any{"items": []map[string]any{{"id": 77, "user_id": 1, "group_id": 2, "status": "active", "expires_at": now.Add(30 * 24 * time.Hour).Format(time.RFC3339Nano)}}, "total": 1, "pages": 1})
 		default:
 			http.NotFound(w, r)
 		}
@@ -648,6 +697,7 @@ func TestApproveAccessRequestDirectChargeSubscriptionUsesPositiveValue(t *testin
 	)
 	tiers, err := svc.ReplaceRedeemTiers(context.Background(), []models.RedeemTier{{
 		CodeType:       "subscription",
+		Concurrency:    10,
 		PayAmountCny:   88,
 		Label:          "Claude 30 days",
 		Enabled:        true,
@@ -677,6 +727,16 @@ INSERT INTO redeem_access_requests (
 	require.Equal(t, "giftcode-access-1", code.Code)
 	require.Equal(t, "direct_charge_succeeded", req.FulfillmentResult)
 	require.Equal(t, "direct_charge", req.FulfilledVia)
+	require.Equal(t, 1, concurrencyUpdates)
+
+	_, err = store.DB.ExecContext(context.Background(), `DELETE FROM subscription_concurrency_grants WHERE access_request_id = ?`, req.ID)
+	require.NoError(t, err)
+	_, _, err = svc.ApproveAccessRequestByID(context.Background(), req.ID)
+	require.NoError(t, err)
+	var grantCount, desired int
+	require.NoError(t, store.DB.QueryRowContext(context.Background(), `SELECT COUNT(1), MAX(desired_concurrency) FROM subscription_concurrency_grants WHERE access_request_id = ?`, req.ID).Scan(&grantCount, &desired))
+	require.Equal(t, 1, grantCount)
+	require.Equal(t, 10, desired)
 }
 
 func TestApproveAccessRequestIssuesSubscriptionRedeemCode(t *testing.T) {
@@ -731,6 +791,7 @@ func TestApproveAccessRequestIssuesSubscriptionRedeemCode(t *testing.T) {
 	)
 	tiers, err := svc.ReplaceRedeemTiers(context.Background(), []models.RedeemTier{{
 		CodeType:       "subscription",
+		Concurrency:    10,
 		PayAmountCny:   88,
 		Label:          "Claude 30 days",
 		Enabled:        true,
@@ -762,6 +823,9 @@ INSERT INTO redeem_access_requests (
 	require.Equal(t, 30, code.ValidityDays)
 	require.Equal(t, "subscription", req.CodeType)
 	require.Equal(t, "Claude monthly", req.Sub2APIGroupName)
+	var grantStatus string
+	require.NoError(t, store.DB.QueryRowContext(context.Background(), `SELECT status FROM subscription_concurrency_grants WHERE access_request_id = ?`, req.ID).Scan(&grantStatus))
+	require.Equal(t, "pending", grantStatus)
 }
 
 func floatPtr(v float64) *float64 {

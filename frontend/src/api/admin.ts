@@ -11,6 +11,7 @@ import type {
   RedeemCode,
   RedeemTier,
   SubscriptionGroup,
+  SubscriptionConcurrencyMonitorStatus,
   UserSummary,
 } from './types'
 
@@ -18,6 +19,13 @@ export function stats() {
   return request<DashboardStats>({
     method: 'GET',
     url: '/admin/stats',
+  })
+}
+
+export function listSubscriptionConcurrencyStatus() {
+  return request<SubscriptionConcurrencyMonitorStatus>({
+    method: 'GET',
+    url: '/admin/subscription-concurrency/status',
   })
 }
 

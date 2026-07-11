@@ -3,6 +3,7 @@ package sub2api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -347,6 +348,79 @@ func TestClientListsUsersSubscriptionsAndCompensates(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, int64(55), updatedSub.ID)
 	require.Equal(t, map[string]any{"days": float64(30)}, subscriptionExtendBody)
+}
+
+func TestClientGetsDefaultConcurrency(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, http.MethodGet, r.Method)
+		require.Equal(t, "/api/v1/admin/settings", r.URL.Path)
+		require.Equal(t, "admin-key", r.Header.Get("x-api-key"))
+		writeEnvelope(w, map[string]any{"default_concurrency": 7})
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, "admin-key")
+	concurrency, err := client.GetDefaultConcurrency(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, 7, concurrency)
+}
+
+func TestClientRejectsInvalidDefaultConcurrency(t *testing.T) {
+	for _, value := range []int{0, -1} {
+		t.Run(fmt.Sprintf("value_%d", value), func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				writeEnvelope(w, map[string]any{"default_concurrency": value})
+			}))
+			defer server.Close()
+
+			client := NewClient(server.URL, "admin-key")
+			_, err := client.GetDefaultConcurrency(context.Background())
+			require.ErrorContains(t, err, "default concurrency")
+		})
+	}
+}
+
+func TestClientGetsAndUpdatesUserConcurrency(t *testing.T) {
+	var updateBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "/api/v1/admin/users/10", r.URL.Path)
+		require.Equal(t, "admin-key", r.Header.Get("x-api-key"))
+
+		switch r.Method {
+		case http.MethodGet:
+			writeEnvelope(w, User{ID: 10, Email: "alice@example.com", Concurrency: 3})
+		case http.MethodPut:
+			require.Equal(t, "application/json", r.Header.Get("Content-Type"))
+			require.NoError(t, json.NewDecoder(r.Body).Decode(&updateBody))
+			writeEnvelope(w, User{ID: 10, Email: "alice@example.com", Concurrency: 8})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, "admin-key")
+	user, err := client.GetUser(context.Background(), 10)
+	require.NoError(t, err)
+	require.Equal(t, 3, user.Concurrency)
+
+	updated, err := client.UpdateUserConcurrency(context.Background(), 10, 8)
+	require.NoError(t, err)
+	require.Equal(t, 8, updated.Concurrency)
+	require.Equal(t, map[string]any{"concurrency": float64(8)}, updateBody)
+}
+
+func TestClientRejectsInvalidUserConcurrencyArguments(t *testing.T) {
+	client := NewClient("http://127.0.0.1:1", "admin-key")
+
+	_, err := client.GetUser(context.Background(), 0)
+	require.ErrorContains(t, err, "user ID")
+
+	_, err = client.UpdateUserConcurrency(context.Background(), 0, 3)
+	require.ErrorContains(t, err, "user ID")
+
+	_, err = client.UpdateUserConcurrency(context.Background(), 10, 0)
+	require.ErrorContains(t, err, "concurrency")
 }
 
 func floatPtr(v float64) *float64 {
