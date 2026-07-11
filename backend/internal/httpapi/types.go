@@ -137,6 +137,10 @@ func statusForError(err error) (int, string, string) {
 	case errors.Is(err, app.ErrConflict):
 		return http.StatusConflict, "conflict", ""
 	case errors.Is(err, app.ErrBadRequest):
+		var concurrencyConflict *app.TierConcurrencyConflictError
+		if errors.As(err, &concurrencyConflict) {
+			return http.StatusBadRequest, "bad request", concurrencyConflict.Error()
+		}
 		return http.StatusBadRequest, "bad request", ""
 	}
 	var apiErr *sub2api.APIError

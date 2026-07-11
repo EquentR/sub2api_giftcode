@@ -133,6 +133,31 @@ func TestUpdateRedeemTiersMapsConcurrency(t *testing.T) {
 	require.Equal(t, 12, tiers[0].Concurrency)
 }
 
+func TestUpdateRedeemTiersExplainsSameGroupConcurrencyConflict(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	store, err := db.Open("sqlite", ":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+	require.NoError(t, store.Migrate(context.Background()))
+	handlers := &Handlers{cfg: &config.RuntimeConfig{}, service: app.New(&config.RuntimeConfig{}, store, nil, nil)}
+	r := gin.New()
+	r.PUT("/api/admin/redeem-tiers", handlers.UpdateRedeemTiers)
+	req := httptest.NewRequest(http.MethodPut, "/api/admin/redeem-tiers", strings.NewReader(`[
+  {"code_type":"subscription","pay_amount_cny":88,"label":"Monthly","enabled":true,"sub2api_group_id":2,"validity_days":30,"concurrency":10},
+  {"code_type":"subscription","pay_amount_cny":168,"label":"Quarterly","enabled":true,"sub2api_group_id":2,"validity_days":90,"concurrency":20}
+]`))
+	req.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+	r.ServeHTTP(recorder, req)
+	require.Equal(t, http.StatusBadRequest, recorder.Code)
+	var response Response
+	require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &response))
+	require.Equal(t, "bad request", response.Message)
+	require.Contains(t, response.Reason, "group 2")
+	require.Contains(t, response.Reason, "10")
+	require.Contains(t, response.Reason, "20")
+}
+
 func TestApproveAccessRequestReturnsIssuedCode(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

@@ -218,7 +218,9 @@ func (s *Service) reconcileSubscriptionConcurrencyUser(ctx context.Context, user
 		status := "inactive"
 		var subscriptionID *int64
 		var expiresAt *time.Time
-		if grantMayActivate(*grant) && match != nil {
+		if grantAwaitingRedeem(*grant) {
+			status = "pending"
+		} else if grantMayActivate(*grant) && match != nil {
 			status = "active"
 			id := match.ID
 			subscriptionID = &id
@@ -251,14 +253,19 @@ func (s *Service) reconcileSubscriptionConcurrencyUser(ctx context.Context, user
 }
 
 func matchingSubscription(grant concurrencyGrantRecord, subscriptions []sub2api.Subscription, now time.Time) *sub2api.Subscription {
+	if grant.UpstreamSubscriptionID != nil {
+		for _, subscription := range subscriptions {
+			if subscription.ID == *grant.UpstreamSubscriptionID && subscription.UserID == grant.UpstreamUserID && subscription.GroupID == grant.Sub2APIGroupID && strings.EqualFold(subscription.Status, "active") && subscription.ExpiresAt.After(now) {
+				copy := subscription
+				return &copy
+			}
+		}
+		return nil
+	}
 	candidates := make([]sub2api.Subscription, 0)
 	for _, subscription := range subscriptions {
 		if subscription.UserID != grant.UpstreamUserID || subscription.GroupID != grant.Sub2APIGroupID || !strings.EqualFold(subscription.Status, "active") || !subscription.ExpiresAt.After(now) {
 			continue
-		}
-		if grant.UpstreamSubscriptionID != nil && subscription.ID == *grant.UpstreamSubscriptionID {
-			copy := subscription
-			return &copy
 		}
 		candidates = append(candidates, subscription)
 	}
@@ -280,6 +287,15 @@ func grantMayActivate(grant concurrencyGrantRecord) bool {
 		return grant.CodeStatus.Valid && grant.CodeStatus.String == "used" && grant.CodeUsedBy.Valid && grant.CodeUsedBy.Int64 == grant.UpstreamUserID
 	default:
 		return true
+	}
+}
+
+func grantAwaitingRedeem(grant concurrencyGrantRecord) bool {
+	switch grant.FulfilledVia {
+	case fulfilledViaRedeemCode, fulfilledViaRedeemCodeFallback:
+		return !(grant.CodeStatus.Valid && grant.CodeStatus.String == "used" && grant.CodeUsedBy.Valid)
+	default:
+		return false
 	}
 }
 

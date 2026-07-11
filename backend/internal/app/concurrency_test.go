@@ -326,6 +326,9 @@ func TestReconcileSubscriptionConcurrencyRedeemGateAndRetry(t *testing.T) {
 	svc := New(&config.RuntimeConfig{}, store, sub2api.NewClient(upstream.URL, "key"), mail.New(mail.Config{}))
 	require.NoError(t, svc.ReconcileSubscriptionConcurrency(context.Background()))
 	require.Equal(t, 0, updates)
+	var pendingStatus string
+	require.NoError(t, store.DB.QueryRow(`SELECT status FROM subscription_concurrency_grants`).Scan(&pendingStatus))
+	require.Equal(t, "pending", pendingStatus)
 	_, err = store.DB.Exec(`UPDATE redeem_codes SET status = 'used', used_by_upstream_user_id = 1`)
 	require.NoError(t, err)
 	require.Error(t, svc.ReconcileSubscriptionConcurrency(context.Background()))
@@ -369,6 +372,47 @@ func TestReconcileSubscriptionConcurrencySameGroupGrantsBindMergedSubscription(t
 		count++
 	}
 	require.Equal(t, 2, count)
+}
+
+func TestReconcileSubscriptionConcurrencyDoesNotRebindMissingSubscription(t *testing.T) {
+	store, err := db.Open("sqlite", ":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+	require.NoError(t, store.Migrate(context.Background()))
+	now := time.Now().UTC().Truncate(time.Second)
+	require.NoError(t, insertConcurrencyGrantFixture(context.Background(), store, 101, 1, 7, 12, "direct_charge", now))
+	_, err = store.DB.Exec(`INSERT INTO subscription_concurrency_grants (access_request_id, upstream_user_id, tier_id, sub2api_group_id, desired_concurrency, upstream_subscription_id, status, created_at, updated_at) VALUES (101, 1, 1, 7, 12, 41, 'active', ?, ?)`, formatTime(now), formatTime(now))
+	require.NoError(t, err)
+	updated := 0
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/admin/users/1":
+			if r.Method == http.MethodGet {
+				writeRedeemTestEnvelope(w, map[string]any{"id": 1, "concurrency": 12})
+				return
+			}
+			updated++
+			var input map[string]int
+			require.NoError(t, json.NewDecoder(r.Body).Decode(&input))
+			require.Equal(t, 3, input["concurrency"])
+			writeRedeemTestEnvelope(w, map[string]any{"id": 1, "concurrency": 3})
+		case "/api/v1/admin/subscriptions":
+			writeRedeemTestEnvelope(w, map[string]any{"items": []map[string]any{{"id": 99, "user_id": 1, "group_id": 7, "status": "active", "expires_at": formatTime(now.Add(time.Hour))}}, "total": 1, "pages": 1})
+		case "/api/v1/admin/settings":
+			writeRedeemTestEnvelope(w, map[string]any{"default_concurrency": 3})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(upstream.Close)
+	svc := New(&config.RuntimeConfig{}, store, sub2api.NewClient(upstream.URL, "key"), mail.New(mail.Config{}))
+	require.NoError(t, svc.ReconcileSubscriptionConcurrency(context.Background()))
+	require.Equal(t, 1, updated)
+	var status string
+	var subscriptionID *int64
+	require.NoError(t, store.DB.QueryRow(`SELECT status, upstream_subscription_id FROM subscription_concurrency_grants WHERE access_request_id = 101`).Scan(&status, &subscriptionID))
+	require.Equal(t, "inactive", status)
+	require.Nil(t, subscriptionID)
 }
 
 func TestReconcileSubscriptionConcurrencyWrongUserRedeemDoesNotActivateFallbackGrant(t *testing.T) {

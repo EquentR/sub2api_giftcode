@@ -173,6 +173,9 @@ func TestReplaceRedeemTiersRejectsDifferentConcurrencyForSameGroup(t *testing.T)
 		{CodeType: "subscription", PayAmountCny: 168, Sub2APIGroupID: int64Ptr(2), ValidityDays: 60, Concurrency: 20},
 	})
 	require.ErrorIs(t, err, ErrBadRequest)
+	require.ErrorContains(t, err, "group 2")
+	require.ErrorContains(t, err, "10")
+	require.ErrorContains(t, err, "20")
 }
 
 func TestStatsCountsEnabledRedeemTiers(t *testing.T) {

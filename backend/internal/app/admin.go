@@ -320,7 +320,11 @@ func (s *Service) validateRedeemTiers(ctx context.Context, tiers []models.Redeem
 				return ErrBadRequest
 			}
 			if concurrency, ok := groupConcurrency[*tier.Sub2APIGroupID]; ok && concurrency != tier.Concurrency {
-				return ErrBadRequest
+				return &TierConcurrencyConflictError{
+					GroupID:                *tier.Sub2APIGroupID,
+					ExistingConcurrency:    concurrency,
+					ConflictingConcurrency: tier.Concurrency,
+				}
 			}
 			groupConcurrency[*tier.Sub2APIGroupID] = tier.Concurrency
 			if needsGroups && s.upstream != nil {
