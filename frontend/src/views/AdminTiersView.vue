@@ -67,6 +67,7 @@ import { ElMessage } from 'element-plus'
 import AppLayout from '@/components/AppLayout.vue'
 import TierEditor from '@/components/TierEditor.vue'
 import { listRedeemTiers, listSubscriptionConcurrencyStatus, listSubscriptionGroups, syncRedeemCodes, updateRedeemTiers, stats as fetchStats } from '@/api/admin'
+import { ApiError } from '@/api/http'
 import type { DashboardStats, RedeemTier, SubscriptionConcurrencyMonitorStatus, SubscriptionGroup } from '@/api/types'
 import { useBrandingStore } from '@/stores/branding'
 import { tierCodeType } from '@/utils/tiers'
@@ -118,7 +119,7 @@ async function save() {
     tiers.value = await updateRedeemTiers(tiers.value)
     ElMessage.success('已保存')
   } catch (error: any) {
-    ElMessage.error(error?.message ?? '保存失败')
+    ElMessage.error(error instanceof ApiError && error.reason ? error.reason : (error?.message ?? '保存失败'))
   }
 }
 

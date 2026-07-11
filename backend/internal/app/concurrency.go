@@ -216,7 +216,7 @@ func (s *Service) reconcileSubscriptionConcurrencyUser(ctx context.Context, user
 		grant := &grants[i]
 		match := matchingSubscription(*grant, subscriptions, now)
 		status := "inactive"
-		var subscriptionID *int64
+		subscriptionID := grant.UpstreamSubscriptionID
 		var expiresAt *time.Time
 		if grantAwaitingRedeem(*grant) {
 			status = "pending"

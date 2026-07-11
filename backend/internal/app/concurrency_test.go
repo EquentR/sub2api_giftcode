@@ -384,17 +384,19 @@ func TestReconcileSubscriptionConcurrencyDoesNotRebindMissingSubscription(t *tes
 	_, err = store.DB.Exec(`INSERT INTO subscription_concurrency_grants (access_request_id, upstream_user_id, tier_id, sub2api_group_id, desired_concurrency, upstream_subscription_id, status, created_at, updated_at) VALUES (101, 1, 1, 7, 12, 41, 'active', ?, ?)`, formatTime(now), formatTime(now))
 	require.NoError(t, err)
 	updated := 0
+	currentConcurrency := 12
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/api/v1/admin/users/1":
 			if r.Method == http.MethodGet {
-				writeRedeemTestEnvelope(w, map[string]any{"id": 1, "concurrency": 12})
+				writeRedeemTestEnvelope(w, map[string]any{"id": 1, "concurrency": currentConcurrency})
 				return
 			}
 			updated++
 			var input map[string]int
 			require.NoError(t, json.NewDecoder(r.Body).Decode(&input))
 			require.Equal(t, 3, input["concurrency"])
+			currentConcurrency = 3
 			writeRedeemTestEnvelope(w, map[string]any{"id": 1, "concurrency": 3})
 		case "/api/v1/admin/subscriptions":
 			writeRedeemTestEnvelope(w, map[string]any{"items": []map[string]any{{"id": 99, "user_id": 1, "group_id": 7, "status": "active", "expires_at": formatTime(now.Add(time.Hour))}}, "total": 1, "pages": 1})
@@ -409,10 +411,16 @@ func TestReconcileSubscriptionConcurrencyDoesNotRebindMissingSubscription(t *tes
 	require.NoError(t, svc.ReconcileSubscriptionConcurrency(context.Background()))
 	require.Equal(t, 1, updated)
 	var status string
-	var subscriptionID *int64
+	var subscriptionID int64
 	require.NoError(t, store.DB.QueryRow(`SELECT status, upstream_subscription_id FROM subscription_concurrency_grants WHERE access_request_id = 101`).Scan(&status, &subscriptionID))
 	require.Equal(t, "inactive", status)
-	require.Nil(t, subscriptionID)
+	require.Equal(t, int64(41), subscriptionID)
+	currentConcurrency = 12
+	require.NoError(t, svc.ReconcileSubscriptionConcurrency(context.Background()))
+	require.Equal(t, 2, updated)
+	require.NoError(t, store.DB.QueryRow(`SELECT status, upstream_subscription_id FROM subscription_concurrency_grants WHERE access_request_id = 101`).Scan(&status, &subscriptionID))
+	require.Equal(t, "inactive", status)
+	require.Equal(t, int64(41), subscriptionID)
 }
 
 func TestReconcileSubscriptionConcurrencyWrongUserRedeemDoesNotActivateFallbackGrant(t *testing.T) {
