@@ -42,7 +42,7 @@ type SubscriptionConcurrencyMonitorStatus struct {
 
 // ReconcileSubscriptionConcurrency applies the current upstream entitlement state to every managed user.
 func (s *Service) ReconcileSubscriptionConcurrency(ctx context.Context) (err error) {
-	defer func() { s.recordSubscriptionConcurrencyReconciliation(ctx, err) }()
+	defer func() { err = errors.Join(err, s.recordSubscriptionConcurrencyReconciliation(err)) }()
 	if err := s.requireUpstreamClient(); err != nil {
 		return err
 	}
@@ -91,16 +91,30 @@ FROM subscription_concurrency_grants`)
 	return status, nil
 }
 
-func (s *Service) recordSubscriptionConcurrencyReconciliation(ctx context.Context, runErr error) {
+func (s *Service) recordSubscriptionConcurrencyReconciliation(runErr error) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
 	now := s.now()
-	_ = s.setSyncState(ctx, subscriptionConcurrencyLastReconciliationAtKey, formatTime(now), now)
-	if runErr == nil {
-		_ = s.setSyncState(ctx, subscriptionConcurrencyLatestErrorKey, "", now)
-		_ = s.setSyncState(ctx, subscriptionConcurrencyLatestErrorAtKey, "", now)
-		return
+	var errs []error
+	if err := s.setSyncState(ctx, subscriptionConcurrencyLastReconciliationAtKey, formatTime(now), now); err != nil {
+		errs = append(errs, fmt.Errorf("record subscription concurrency reconciliation time: %w", err))
 	}
-	_ = s.setSyncState(ctx, subscriptionConcurrencyLatestErrorKey, runErr.Error(), now)
-	_ = s.setSyncState(ctx, subscriptionConcurrencyLatestErrorAtKey, formatTime(now), now)
+	if runErr == nil {
+		if err := s.setSyncState(ctx, subscriptionConcurrencyLatestErrorKey, "", now); err != nil {
+			errs = append(errs, fmt.Errorf("clear subscription concurrency latest error: %w", err))
+		}
+		if err := s.setSyncState(ctx, subscriptionConcurrencyLatestErrorAtKey, "", now); err != nil {
+			errs = append(errs, fmt.Errorf("clear subscription concurrency latest error time: %w", err))
+		}
+		return errors.Join(errs...)
+	}
+	if err := s.setSyncState(ctx, subscriptionConcurrencyLatestErrorKey, runErr.Error(), now); err != nil {
+		errs = append(errs, fmt.Errorf("record subscription concurrency latest error: %w", err))
+	}
+	if err := s.setSyncState(ctx, subscriptionConcurrencyLatestErrorAtKey, formatTime(now), now); err != nil {
+		errs = append(errs, fmt.Errorf("record subscription concurrency latest error time: %w", err))
+	}
+	return errors.Join(errs...)
 }
 
 func (s *Service) subscriptionConcurrencyState(ctx context.Context, key string) (string, error) {

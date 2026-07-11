@@ -11,19 +11,17 @@ import (
 
 func TestRunSubscriptionConcurrencyLoopReconcilesImmediately(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	called := make(chan struct{}, 1)
 	var calls atomic.Int32
 	go runSubscriptionConcurrencyLoop(ctx, func(context.Context) error {
 		calls.Add(1)
-		called <- struct{}{}
 		return nil
-	}, time.Hour)
+	}, 5*time.Millisecond)
 
-	select {
-	case <-called:
-	case <-time.After(time.Second):
-		t.Fatal("reconciliation was not invoked immediately")
-	}
-	require.Equal(t, int32(1), calls.Load())
+	require.Eventually(t, func() bool { return calls.Load() >= 1 }, time.Second, time.Millisecond, "reconciliation was not invoked immediately")
+	require.Eventually(t, func() bool { return calls.Load() >= 2 }, time.Second, time.Millisecond, "reconciliation did not run on the interval")
+	cancel()
+	time.Sleep(20 * time.Millisecond)
+	callsAfterCancel := calls.Load()
+	time.Sleep(20 * time.Millisecond)
+	require.Equal(t, callsAfterCancel, calls.Load(), "reconciliation continued after cancellation")
 }

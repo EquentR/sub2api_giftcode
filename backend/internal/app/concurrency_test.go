@@ -138,6 +138,21 @@ func TestReconcileSubscriptionConcurrencyRecordsRunFailureAndReturnsIt(t *testin
 	require.NotNil(t, status.LatestErrorAt)
 }
 
+func TestReconcileSubscriptionConcurrencyReturnsMetadataPersistenceFailures(t *testing.T) {
+	store, err := db.Open("sqlite", ":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+	require.NoError(t, store.Migrate(context.Background()))
+	_, err = store.DB.Exec(`DROP TABLE sync_state`)
+	require.NoError(t, err)
+
+	svc := New(&config.RuntimeConfig{}, store, nil, mail.New(mail.Config{}))
+	err = svc.ReconcileSubscriptionConcurrency(context.Background())
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "sub2api client not configured")
+	require.Contains(t, err.Error(), "sync_state")
+}
+
 func TestReconcileSubscriptionConcurrencyFallsBackToLiveDefault(t *testing.T) {
 	store, err := db.Open("sqlite", ":memory:")
 	require.NoError(t, err)
