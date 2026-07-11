@@ -19,15 +19,16 @@ type Client struct {
 }
 
 type User struct {
-	ID        int64      `json:"id"`
-	Email     string     `json:"email"`
-	Username  string     `json:"username"`
-	Role      string     `json:"role"`
-	Status    string     `json:"status"`
-	Balance   float64    `json:"balance"`
-	CreatedAt time.Time  `json:"created_at"`
-	UpdatedAt time.Time  `json:"updated_at"`
-	DeletedAt *time.Time `json:"deleted_at,omitempty"`
+	ID          int64      `json:"id"`
+	Email       string     `json:"email"`
+	Username    string     `json:"username"`
+	Role        string     `json:"role"`
+	Status      string     `json:"status"`
+	Balance     float64    `json:"balance"`
+	Concurrency int        `json:"concurrency"`
+	CreatedAt   time.Time  `json:"created_at"`
+	UpdatedAt   time.Time  `json:"updated_at"`
+	DeletedAt   *time.Time `json:"deleted_at,omitempty"`
 }
 
 type AuthLoginResult struct {
@@ -282,6 +283,46 @@ func (c *Client) ListUsersAll(ctx context.Context) ([]User, error) {
 		page++
 	}
 	return out, nil
+}
+
+func (c *Client) GetDefaultConcurrency(ctx context.Context) (int, error) {
+	var out struct {
+		DefaultConcurrency int `json:"default_concurrency"`
+	}
+	if err := c.getJSONWithHeaders(ctx, "/api/v1/admin/settings", map[string]string{"x-api-key": c.AdminAPIKey}, &out); err != nil {
+		return 0, err
+	}
+	if out.DefaultConcurrency <= 0 {
+		return 0, fmt.Errorf("invalid default concurrency: %d", out.DefaultConcurrency)
+	}
+	return out.DefaultConcurrency, nil
+}
+
+func (c *Client) GetUser(ctx context.Context, userID int64) (*User, error) {
+	if userID <= 0 {
+		return nil, fmt.Errorf("user ID must be positive")
+	}
+	var out User
+	if err := c.getJSONWithHeaders(ctx, fmt.Sprintf("/api/v1/admin/users/%d", userID), map[string]string{"x-api-key": c.AdminAPIKey}, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *Client) UpdateUserConcurrency(ctx context.Context, userID int64, concurrency int) (*User, error) {
+	if userID <= 0 {
+		return nil, fmt.Errorf("user ID must be positive")
+	}
+	if concurrency <= 0 {
+		return nil, fmt.Errorf("concurrency must be positive")
+	}
+	var out User
+	if err := c.putJSON(ctx, fmt.Sprintf("/api/v1/admin/users/%d", userID), map[string]string{"x-api-key": c.AdminAPIKey}, map[string]int{
+		"concurrency": concurrency,
+	}, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
 }
 
 func (c *Client) ListActiveUserSubscriptions(ctx context.Context, userID int64) ([]Subscription, error) {
