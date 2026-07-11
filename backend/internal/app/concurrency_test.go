@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -151,6 +152,42 @@ func TestReconcileSubscriptionConcurrencyReturnsMetadataPersistenceFailures(t *t
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "sub2api client not configured")
 	require.Contains(t, err.Error(), "sync_state")
+}
+
+func TestRecordSubscriptionConcurrencyReconciliationRollsBackMetadataAsATuple(t *testing.T) {
+	store, err := db.Open("sqlite", ":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+	require.NoError(t, store.Migrate(context.Background()))
+
+	oldTime := time.Date(2026, time.July, 1, 12, 0, 0, 0, time.UTC)
+	for _, state := range []struct{ key, value string }{
+		{subscriptionConcurrencyLastReconciliationAtKey, formatTime(oldTime)},
+		{subscriptionConcurrencyLatestErrorKey, "old error"},
+		{subscriptionConcurrencyLatestErrorAtKey, formatTime(oldTime)},
+	} {
+		require.NoError(t, (&Service{store: store}).setSyncState(context.Background(), state.key, state.value, oldTime))
+	}
+	_, err = store.DB.Exec(`CREATE TRIGGER reject_monitor_error_update BEFORE UPDATE ON sync_state
+		WHEN NEW.key = 'subscription_concurrency_latest_error'
+		BEGIN SELECT RAISE(ABORT, 'metadata write failed'); END`)
+	require.NoError(t, err)
+
+	err = (&Service{store: store}).recordSubscriptionConcurrencyReconciliation(errors.New("new error"))
+	require.ErrorContains(t, err, "metadata write failed")
+	rows, err := store.DB.Query(`SELECT key, value FROM sync_state WHERE key LIKE 'subscription_concurrency_%' ORDER BY key`)
+	require.NoError(t, err)
+	defer rows.Close()
+	states := map[string]string{}
+	for rows.Next() {
+		var key, value string
+		require.NoError(t, rows.Scan(&key, &value))
+		states[key] = value
+	}
+	require.NoError(t, rows.Err())
+	require.Equal(t, formatTime(oldTime), states[subscriptionConcurrencyLastReconciliationAtKey])
+	require.Equal(t, "old error", states[subscriptionConcurrencyLatestErrorKey])
+	require.Equal(t, formatTime(oldTime), states[subscriptionConcurrencyLatestErrorAtKey])
 }
 
 func TestReconcileSubscriptionConcurrencyFallsBackToLiveDefault(t *testing.T) {

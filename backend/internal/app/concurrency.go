@@ -68,14 +68,7 @@ FROM subscription_concurrency_grants`)
 	if err := row.Scan(&status.ActiveGrants, &status.PendingGrants, &status.InactiveGrants, &status.ErrorGrants); err != nil {
 		return nil, err
 	}
-	var err error
-	if status.LastReconciliationAt, err = s.subscriptionConcurrencyStateTime(ctx, subscriptionConcurrencyLastReconciliationAtKey); err != nil {
-		return nil, err
-	}
-	if status.LatestError, err = s.subscriptionConcurrencyState(ctx, subscriptionConcurrencyLatestErrorKey); err != nil {
-		return nil, err
-	}
-	if status.LatestErrorAt, err = s.subscriptionConcurrencyStateTime(ctx, subscriptionConcurrencyLatestErrorAtKey); err != nil {
+	if err := s.loadSubscriptionConcurrencyRunMetadata(ctx, status); err != nil {
 		return nil, err
 	}
 	if err := s.requireUpstreamClient(); err != nil {
@@ -95,42 +88,59 @@ func (s *Service) recordSubscriptionConcurrencyReconciliation(runErr error) erro
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	now := s.now()
-	var errs []error
-	if err := s.setSyncState(ctx, subscriptionConcurrencyLastReconciliationAtKey, formatTime(now), now); err != nil {
-		errs = append(errs, fmt.Errorf("record subscription concurrency reconciliation time: %w", err))
+	tx, err := s.db().BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin subscription concurrency run metadata: %w", err)
 	}
-	if runErr == nil {
-		if err := s.setSyncState(ctx, subscriptionConcurrencyLatestErrorKey, "", now); err != nil {
-			errs = append(errs, fmt.Errorf("clear subscription concurrency latest error: %w", err))
+	defer func() { _ = tx.Rollback() }()
+	latestError := ""
+	latestErrorAt := ""
+	if runErr != nil {
+		latestError = runErr.Error()
+		latestErrorAt = formatTime(now)
+	}
+	for _, state := range []struct{ key, value string }{
+		{subscriptionConcurrencyLastReconciliationAtKey, formatTime(now)},
+		{subscriptionConcurrencyLatestErrorKey, latestError},
+		{subscriptionConcurrencyLatestErrorAtKey, latestErrorAt},
+	} {
+		if err := upsertSyncStateTx(ctx, tx, state.key, state.value, now); err != nil {
+			return fmt.Errorf("record subscription concurrency run metadata: %w", err)
 		}
-		if err := s.setSyncState(ctx, subscriptionConcurrencyLatestErrorAtKey, "", now); err != nil {
-			errs = append(errs, fmt.Errorf("clear subscription concurrency latest error time: %w", err))
-		}
-		return errors.Join(errs...)
 	}
-	if err := s.setSyncState(ctx, subscriptionConcurrencyLatestErrorKey, runErr.Error(), now); err != nil {
-		errs = append(errs, fmt.Errorf("record subscription concurrency latest error: %w", err))
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit subscription concurrency run metadata: %w", err)
 	}
-	if err := s.setSyncState(ctx, subscriptionConcurrencyLatestErrorAtKey, formatTime(now), now); err != nil {
-		errs = append(errs, fmt.Errorf("record subscription concurrency latest error time: %w", err))
-	}
-	return errors.Join(errs...)
+	return nil
 }
 
-func (s *Service) subscriptionConcurrencyState(ctx context.Context, key string) (string, error) {
-	value, err := s.getSyncState(ctx, key)
-	if errors.Is(err, sql.ErrNoRows) {
-		return "", nil
+func (s *Service) loadSubscriptionConcurrencyRunMetadata(ctx context.Context, status *SubscriptionConcurrencyMonitorStatus) error {
+	row := s.db().QueryRowContext(ctx, `
+SELECT
+  COALESCE((SELECT value FROM sync_state WHERE key = ?), ''),
+  COALESCE((SELECT value FROM sync_state WHERE key = ?), ''),
+  COALESCE((SELECT value FROM sync_state WHERE key = ?), '')`,
+		subscriptionConcurrencyLastReconciliationAtKey,
+		subscriptionConcurrencyLatestErrorKey,
+		subscriptionConcurrencyLatestErrorAtKey,
+	)
+	var lastReconciliationAt, latestErrorAt string
+	if err := row.Scan(&lastReconciliationAt, &status.LatestError, &latestErrorAt); err != nil {
+		return err
 	}
-	return value, err
+	var err error
+	if status.LastReconciliationAt, err = parseOptionalTime(lastReconciliationAt); err != nil {
+		return err
+	}
+	status.LatestErrorAt, err = parseOptionalTime(latestErrorAt)
+	return err
 }
 
-func (s *Service) subscriptionConcurrencyStateTime(ctx context.Context, key string) (*time.Time, error) {
-	value, err := s.subscriptionConcurrencyState(ctx, key)
-	if err != nil || strings.TrimSpace(value) == "" {
-		return nil, err
+func parseOptionalTime(raw string) (*time.Time, error) {
+	if strings.TrimSpace(raw) == "" {
+		return nil, nil
 	}
-	return parseTime(value)
+	return parseTime(raw)
 }
 
 func (s *Service) repairMissingSubscriptionConcurrencyGrants(ctx context.Context) error {
