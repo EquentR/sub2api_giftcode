@@ -1,345 +1,345 @@
-# Subscription Quota Reset Design
+# 订阅配额重置功能设计
 
-## Goal
+## 目标
 
-Add subscription quota management to the existing redemption application without changing Sub2API itself.
+在不修改 Sub2API 上游的前提下，为现有兑换应用增加订阅配额管理功能。
 
-Users can view their active Sub2API subscriptions, remaining validity, and configured daily, weekly, and monthly quota progress. Subscription tiers can grant a fixed number of manual quota resets for each redeemed validity period. A reset clears every quota window configured for that subscription group and consumes one reset from the currently active local entitlement period.
+用户可以查看自己在 Sub2API 中的有效订阅、剩余有效期，以及已经配置的日、周、月配额使用进度。订阅档位可以为每个兑换所得的有效期授予固定次数的手动配额重置机会。每次重置会清零该订阅分组已配置的全部配额窗口，并消耗当前本地权益周期中的一次重置机会。
 
-The design must prevent future stacked subscription periods from lending their reset allowance to the current period. Different Sub2API groups remain independent. Unused resets expire at the end of their period and never carry forward.
+设计必须避免未来叠加的订阅周期把重置次数提前借给当前周期使用。不同 Sub2API 分组的重置次数彼此独立。周期结束时，尚未使用的次数直接失效，不结转到下一周期。
 
-## Confirmed Product Rules
+## 已确认的产品规则
 
-- The existing redemption application remains the first and default tab on the recharge page.
-- A second `Subscription Management` tab lists all active Sub2API subscriptions for the signed-in user.
-- Each Sub2API group is one displayed subscription because Sub2API merges repeated redemptions for the same user and group.
-- Different groups have separate cards, periods, and reset allowances.
-- Repeated redemptions for one group create ordered, non-overlapping local periods inside the single merged upstream subscription.
-- Each successful redemption contributes one period with the redemption's `validity_days` and snapshotted reset allowance.
-- A future period's allowance is locked until that period begins.
-- An expired period's unused allowance is discarded.
-- A period with zero resets still occupies its complete validity interval so later periods do not unlock early.
-- One user action consumes one reset and clears all configured quota windows. Users cannot choose individual windows.
-- A missing daily, weekly, or monthly limit is omitted from the UI and is not sent as a reset target.
-- A group with no daily, weekly, or monthly limit is an unlimited subscription. It has no reset allowance or reset action.
-- Existing subscriptions receive legacy allowances only when their entitlement can be traced to successful redemption records in this application.
-- Active subscriptions acquired outside this application remain visible but receive no local reset allowance.
-- Tier changes do not alter normal, already snapshotted entitlements.
-- Legacy backfill is the one exception: the first positive reset configuration for a historical tier supplies the captured allowance to eligible current and future legacy periods for that tier.
+- 现有兑换申请界面保留为充值页面的第一个默认选项卡。
+- 新增第二个“订阅管理”选项卡，展示当前登录用户在 Sub2API 中的全部有效订阅。
+- Sub2API 会合并同一用户、同一分组的重复兑换，因此每个 Sub2API 分组只展示为一项订阅。
+- 不同分组分别使用独立卡片、独立周期和独立重置次数。
+- 同一分组的多次兑换会在一条合并后的上游订阅内形成按顺序排列、互不重叠的本地周期。
+- 每次成功兑换产生一个周期，周期长度取该次兑换的 `validity_days`，重置次数取兑换申请中的快照值。
+- 未来周期的重置次数必须等到该周期开始后才能使用。
+- 已结束周期中的未使用次数直接作废。
+- 即使某个周期的重置次数为零，它仍然占据完整有效期，防止后面的周期提前解锁。
+- 用户每执行一次重置，就消耗一次机会，并同时清零该分组所有已配置的配额窗口。用户不能单独选择日、周或月窗口。
+- 日、周、月中的某一项没有配置限额时，该项不在界面展示，也不作为重置目标发送给上游。
+- 如果一个分组的日、周、月限额全部未设置，则它属于无限额订阅，不提供重置次数和重置操作。
+- 旧订阅只有在能够追溯到本应用中的成功兑换记录时，才补发历史重置权益。
+- 通过本应用之外的渠道获得的有效订阅仍然可以在界面查看，但不获得本地重置次数。
+- 正常情况下，后续修改档位不会改变已经做过快照的权益。
+- 旧数据补发是唯一例外：历史档位第一次从零配置为正数时，系统把当次配置值作为固定补发快照，授予该档位符合条件的当前和未来历史周期。
 
-## Current System Context
+## 当前系统基础
 
-The application already has several relevant foundations:
+现有应用已经具备以下可复用能力：
 
-- `redeem_tiers` stores subscription group and validity settings.
-- `redeem_access_requests` stores immutable snapshots of selected tier settings and fulfillment status.
-- access-request and redeem-code records identify the requesting upstream user and actual code user.
-- `subscription_concurrency_grants` binds successful local subscription requests to merged upstream subscriptions and periodically reconciles their status.
-- the tier APIs already enrich subscription tiers with upstream group names and daily, weekly, and monthly limits.
+- `redeem_tiers` 保存订阅分组和有效期配置；
+- `redeem_access_requests` 保存用户所选档位的不可变快照和交付状态；
+- 兑换申请与兑换码记录可以识别申请用户，以及兑换码最终被哪个上游用户使用；
+- `subscription_concurrency_grants` 可以把成功的本地订阅申请绑定到合并后的上游订阅，并定时同步状态；
+- 档位 API 已经能够用上游分组名称以及日、周、月限额补充订阅档位信息。
 
-Quota reset periods have a different lifecycle from concurrency grants. A concurrency grant follows the complete merged subscription lifetime, while reset allowance belongs to one redemption interval. The reset feature therefore uses separate tables and services rather than adding period semantics to `subscription_concurrency_grants`.
+配额重置周期和并发授权的生命周期不同。并发授权跟随合并后的整段上游订阅，而重置次数只属于某一次兑换产生的有效期。因此，本功能使用独立的数据表和服务，不把周期语义混入 `subscription_concurrency_grants`。
 
-## Upstream Contract
+## 上游接口契约
 
-The Sub2API administrator API is the authoritative source for subscription status, expiry, quota windows, and usage.
+Sub2API 管理员 API 是订阅状态、到期时间、配额窗口和使用量的权威数据源。
 
-The client will use:
+本应用客户端将调用：
 
-- `GET /api/v1/admin/subscriptions?user_id=...&status=active` to list active subscriptions;
-- `GET /api/v1/admin/subscriptions/:id/progress` to obtain computed daily, weekly, and monthly progress;
-- `POST /api/v1/admin/subscriptions/:id/reset-quota` to reset quota windows.
+- `GET /api/v1/admin/subscriptions?user_id=...&status=active`：查询用户的有效订阅；
+- `GET /api/v1/admin/subscriptions/:id/progress`：获取上游计算后的日、周、月使用进度；
+- `POST /api/v1/admin/subscriptions/:id/reset-quota`：重置配额窗口。
 
-The reset request body contains boolean `daily`, `weekly`, and `monthly` fields. The application sets a field to `true` only when that limit is configured for the group. At least one field must be true.
+重置请求体包含布尔字段 `daily`、`weekly`、`monthly`。只有分组实际配置了对应限额时，本应用才把该字段设为 `true`。每次请求至少要有一个字段为 `true`。
 
-Sub2API resets both usage and the selected window start. The next automatic reset time therefore follows Sub2API's updated window schedule. The application displays the refreshed upstream result and does not try to preserve the previous window schedule.
+Sub2API 在重置使用量的同时，也会重设所选窗口的起始时间。因此，下一次自动重置时间按照 Sub2API 更新后的窗口计划计算。本应用展示上游刷新后的结果，不尝试保留旧窗口计划。
 
-All calls use the configured administrator API key on the backend. The key is never returned to the browser.
+所有请求都由后端使用配置中的管理员 API Key 发起。管理员 Key 永远不会返回给浏览器。
 
-## Tier And Request Snapshots
+## 档位与申请快照
 
-Add `reset_count INTEGER NOT NULL DEFAULT 0` to `redeem_tiers`.
+在 `redeem_tiers` 中新增 `reset_count INTEGER NOT NULL DEFAULT 0`。
 
-Add the same field to `redeem_access_requests`. Creating an access request copies the tier value into the request alongside the existing group, validity, limits, and concurrency snapshots.
+在 `redeem_access_requests` 中新增同名字段。创建兑换申请时，与现有的分组、有效期、限额和并发数一样，把档位的重置次数复制到申请快照中。
 
-Validation rules are:
+校验规则如下：
 
-- balance tiers must have `reset_count = 0`;
-- subscription tiers may use any non-negative integer reset count;
-- a subscription tier whose group has no daily, weekly, or monthly limit must have `reset_count = 0`;
-- subscription tiers sharing a group may have different reset counts because each redemption period keeps its own snapshot.
+- 余额档位的 `reset_count` 必须为 `0`；
+- 订阅档位可以配置任意非负整数重置次数；
+- 如果订阅档位对应的分组没有配置日、周、月中的任何限额，则 `reset_count` 必须为 `0`；
+- 指向同一个分组的多个订阅档位可以配置不同重置次数，因为每次兑换周期保存自己的快照。
 
-Changing a tier later affects only new access requests. Disabling a tier does not alter existing requests or periods.
+后续修改档位只影响新建的兑换申请。停用档位不会改变已有申请或周期。
 
-## Reset Period Ledger
+## 重置周期账本
 
-Create `subscription_reset_periods` with one row per successfully fulfilled local subscription request.
+新增 `subscription_reset_periods`。每一条成功交付的本地订阅申请对应一条周期记录。
 
-Required fields are:
+必要字段包括：
 
-- primary key `id`;
-- unique `access_request_id` for idempotent creation;
-- immutable `upstream_user_id`, `tier_id`, `sub2api_group_id`, `validity_days`, and `reset_limit` snapshots;
-- nullable `upstream_subscription_id` until binding succeeds;
-- `fulfilled_at` and a stable fulfillment ordering key;
-- nullable `period_start` and `period_end` until scheduling succeeds;
-- `reset_used`, initially zero;
-- status: `pending_binding`, `scheduled`, `active`, `expired`, or `inactive`;
-- `inferred_from_legacy` and a migration version;
-- `last_synced_at`, `last_error`, `created_at`, and `updated_at`.
+- 主键 `id`；
+- 唯一的 `access_request_id`，保证重复执行时不会创建两次；
+- 不可变快照：`upstream_user_id`、`tier_id`、`sub2api_group_id`、`validity_days`、`reset_limit`；
+- 可空的 `upstream_subscription_id`，在成功绑定前保持为空；
+- `fulfilled_at` 和一个稳定的交付排序键；
+- 可空的 `period_start`、`period_end`，在成功排期前保持为空；
+- `reset_used`，初始为零；
+- 状态：`pending_binding`、`scheduled`、`active`、`expired` 或 `inactive`；
+- `inferred_from_legacy` 和迁移版本；
+- `last_synced_at`、`last_error`、`created_at`、`updated_at`。
 
-`reset_used` includes successful resets and currently reserved or uncertain attempts. It never exceeds `reset_limit`.
+`reset_used` 包含已经成功的重置，以及当前处于预占或结果待确认状态的重置。它不得超过 `reset_limit`。
 
-A row is created even when `reset_limit` is zero. Such a row preserves the validity interval but never enables the reset action.
+即使 `reset_limit` 为零，也必须创建周期记录。该记录用于占据有效期，但不会启用重置操作。
 
-Index periods by `(upstream_user_id, sub2api_group_id, period_start)` and by `upstream_subscription_id`. Only one period for a user and group may be active at a time. Service validation rejects overlapping assigned intervals.
+按照 `(upstream_user_id, sub2api_group_id, period_start)` 和 `upstream_subscription_id` 建立索引。同一用户和分组在任何时刻最多只能有一个有效周期。服务层校验不得出现时间重叠的已排期周期。
 
-## Reset Attempt Ledger
+## 重置操作账本
 
-Create `subscription_reset_attempts` with one row per user action.
+新增 `subscription_reset_attempts`。用户每点击一次重置，对应一条操作记录。
 
-Required fields are:
+必要字段包括：
 
-- primary key `id`;
-- globally unique client-generated `request_id` for request idempotency;
-- `period_id`, `upstream_user_id`, and `upstream_subscription_id` snapshots;
-- `reset_daily`, `reset_weekly`, and `reset_monthly` target flags;
-- status: `reserved`, `succeeded`, `failed`, or `uncertain`;
-- structured before and after snapshots containing usage and window-start values for every selected window;
-- upstream status, error text, and diagnostic response details with secrets excluded;
-- `reserved_at`, nullable `completed_at`, nullable `confirmed_at`, `created_at`, and `updated_at`.
+- 主键 `id`；
+- 客户端生成且全局唯一的 `request_id`，用于请求幂等；
+- `period_id`、`upstream_user_id`、`upstream_subscription_id` 快照；
+- `reset_daily`、`reset_weekly`、`reset_monthly` 三个重置目标标记；
+- 状态：`reserved`、`succeeded`、`failed` 或 `uncertain`；
+- 结构化的重置前、重置后快照，记录每个目标窗口的用量和窗口起始时间；
+- 上游状态、错误信息和诊断响应，且必须排除敏感信息；
+- `reserved_at`、可空的 `completed_at`、可空的 `confirmed_at`、`created_at`、`updated_at`。
 
-A partial unique index on `period_id` for `reserved` and `uncertain` rows prevents more than one blocking operation for a period. Repeating the same `request_id` returns the original operation result without consuming another reset.
+对状态为 `reserved` 或 `uncertain` 的记录，按 `period_id` 建立部分唯一索引，保证同一个周期最多存在一条阻塞中的操作。重复提交同一个 `request_id` 时返回原操作结果，不再次消耗次数。
 
-## Period Creation And Scheduling
+## 周期创建与排期
 
-### Direct charge
+### 直接充值
 
-Before direct subscription fulfillment, the service attempts to read the user's active subscription for the target group. After `CreateAndRedeemCode` succeeds, it reads the resulting subscription again.
+执行订阅直充前，服务尝试读取用户在目标分组中的有效订阅。`CreateAndRedeemCode` 成功后，再读取一次充值后的订阅状态。
 
-If an active subscription existed before fulfillment, the new local period starts at the previous upstream expiry and lasts for the snapshotted validity days. This keeps an existing external or earlier local interval ahead of the newly purchased entitlement.
+如果充值前已经存在有效订阅，新本地周期从充值前的上游到期时间开始，持续申请快照中的有效天数。这样可以保证已有外部订阅或更早的本地周期排在本次新购权益之前。
 
-If no active subscription existed, the period uses the returned upstream start and expiry. If either observation fails after successful fulfillment, the local period is still inserted as `pending_binding`; reconciliation later binds and schedules it so a successful purchase cannot lose its entitlement because of a temporary read failure.
+如果充值前没有有效订阅，则使用上游返回的订阅开始时间和到期时间。若成功交付后任一查询暂时失败，仍然以 `pending_binding` 状态写入本地周期；后续对账再完成绑定和排期，避免一次成功购买因为临时读取失败而丢失权益。
 
-### Redeem code
+### 兑换码
 
-Issuing a subscription code does not activate a reset period. The existing sync flow must first confirm that:
+仅仅发放订阅兑换码不会激活重置周期。现有同步流程必须先确认：
 
-- the code is `used`;
-- `used_by_upstream_user_id` equals the requesting user;
-- the user has the matching active upstream group subscription.
+- 兑换码状态为 `used`；
+- `used_by_upstream_user_id` 与申请用户一致；
+- 该用户存在匹配分组的有效上游订阅。
 
-The service then creates or binds the period and orders it by actual `used_at`, with local record ID as a deterministic tie-breaker.
+确认后，服务创建或绑定周期，并按照实际 `used_at` 排序；如果使用时间相同，则使用本地记录 ID 作为稳定的次级排序键。
 
-If several local codes are observed between sync runs, their known validity intervals are assigned as one ordered block ending at the observed upstream expiry. Interleaved external changes cannot always be reconstructed from the upstream current-state API; the service records an inference diagnostic instead of silently claiming exact history.
+如果两次同步之间观察到多个本地兑换码被使用，则按照已知有效天数组成一个有序区间块，并让区间块结束于当前观察到的上游到期时间。如果期间夹杂外部续期，仅凭上游当前状态无法完整还原历史；服务应记录推断诊断信息，不能假装得到了精确历史。
 
-### Stable boundaries
+### 稳定的周期边界
 
-Once a period receives start and end boundaries, normal reconciliation does not shift them merely because an external extension changes the merged upstream expiry. External extensions create no local reset allowance.
+周期一旦获得开始和结束边界，普通对账不得仅仅因为外部续期改变了合并订阅的到期时间，就移动既有本地周期。外部续期不会凭空产生本地重置次数。
 
-If the upstream subscription is revoked, expired early, or disappears, the service marks affected periods inactive and disables reset operations while retaining the ledger for audit. A future confirmed upstream state may reactivate a still-time-valid period, but it does not restore a period whose local end has passed.
+如果上游订阅被撤销、提前失效或消失，服务把受影响周期标记为 `inactive`，禁止重置，但保留完整账本供审计。后续上游状态重新确认有效时，可以恢复仍处于本地时间范围内的周期；已经超过本地结束时间的周期不能恢复。
 
-## Period State Reconciliation
+## 周期状态对账
 
-For each managed user and group, reconciliation:
+对每个受管理的用户和分组，对账流程如下：
 
-1. loads the active upstream subscription and its progress;
-2. binds pending local periods to the matching subscription;
-3. schedules unscheduled periods in stable fulfillment order without overlap;
-4. marks a scheduled period active when `period_start <= now < period_end`;
-5. marks ended periods expired, permanently discarding unused allowance;
-6. marks periods inactive when the required upstream subscription is not effective;
-7. resolves uncertain reset attempts when before and current upstream usage/window snapshots prove the result;
-8. records transient upstream errors without rewriting the last confirmed boundaries.
+1. 读取有效上游订阅及其使用进度；
+2. 把等待绑定的本地周期绑定到匹配订阅；
+3. 按稳定交付顺序为尚未排期的周期分配互不重叠的时间；
+4. 当 `period_start <= now < period_end` 时，把已排期周期标记为有效；
+5. 把已经结束的周期标记为过期，并永久作废未使用次数；
+6. 当所需上游订阅不再有效时，把周期标记为不可用；
+7. 当重置前快照与当前上游用量、窗口信息足以证明结果时，解决 `uncertain` 操作；
+8. 记录临时上游错误，但不改写最后一次已确认的周期边界。
 
-The existing configured sync interval drives this reconciliation. Immediate reconciliation also runs after successful direct charge, confirmed code redemption, a reset action, and a legacy backfill trigger. A failed immediate reconciliation is non-fatal and remains eligible for scheduled retry.
+对账使用现有配置中的同步间隔。成功直充、确认兑换码被使用、执行重置操作以及触发旧数据补发后，也立即尝试对账。立即对账失败不影响主业务结果，后续定时任务继续重试。
 
-## Legacy Data Backfill
+## 旧数据补发
 
-Migration scope is limited to subscription fulfillment history in this application. An active upstream subscription with no matching successful local history is visible but receives no reset allowance.
+迁移范围仅限本应用中的订阅交付历史。没有匹配成功本地记录的有效上游订阅仍然可见，但不获得重置次数。
 
-Schema migration first adds the new columns and tables without granting any resets. Existing tier and request reset counts therefore begin at zero.
+数据库结构迁移首先只添加新字段和新表，不立即授予任何次数。因此，已有档位和申请中的重置次数初始值都是零。
 
-Create `subscription_reset_backfill_runs` to make administrator-triggered legacy grants durable and idempotent. A run stores:
+新增 `subscription_reset_backfill_runs`，用于保证管理员触发的旧数据补发可持久化、可重试且幂等。每条补发任务保存：
 
-- unique `tier_id`;
-- the first positive `reset_limit` snapshot;
-- status and progress counters;
-- trigger, start, completion, retry, and error timestamps.
+- 唯一的 `tier_id`；
+- 档位第一次配置为正数时的 `reset_limit` 快照；
+- 状态和处理数量统计；
+- 触发、开始、完成、重试和错误时间。
 
-The first administrator save that changes a historical subscription tier from zero to a positive reset count inserts the unique run. Later tier edits do not change the captured backfill allowance.
+管理员第一次把一个历史订阅档位从零保存为正数时，系统插入唯一的补发任务。之后再次修改档位不会改变这次补发捕获的次数。
 
-The backfill worker:
+补发任务执行以下流程：
 
-1. finds successful local subscription fulfillments for users affected by the tier's group;
-2. includes zero-allowance local periods from other tiers in the same group so interval placement remains correct;
-3. requires matching upstream subscriptions and confirmed code ownership for redeem-code fulfillment;
-4. groups history by upstream user and group;
-5. orders local periods by fulfillment time;
-6. infers period boundaries backwards from the current upstream `expires_at` using each historical `validity_days`;
-7. treats any upstream interval outside the inferred local block as external and unentitled;
-8. grants the captured allowance only to current and future legacy periods belonging to the triggering tier;
-9. does not grant allowance to already ended periods;
-10. marks every result with `inferred_from_legacy` and the migration version.
+1. 查找该档位分组所涉及用户的成功本地订阅交付记录；
+2. 同时纳入同一分组中其他档位产生的零次数周期，保证时间位置正确；
+3. 对兑换码交付，要求能够匹配上游订阅，并已确认兑换码使用者；
+4. 按上游用户和分组归类历史记录；
+5. 按交付时间排列本地周期；
+6. 从当前上游 `expires_at` 开始，根据每条历史记录的 `validity_days` 向历史方向回推周期边界；
+7. 推算出的本地区间之外的上游有效期一律视为外部订阅，不授予次数；
+8. 只向属于触发档位的当前和未来历史周期授予该补发任务捕获的次数；
+9. 已经结束的周期不补次数；
+10. 所有结果写入 `inferred_from_legacy` 和迁移版本。
 
-This inference is exact when the active merged subscription consists only of the recorded local extensions. Historical external extensions may make exact boundaries unknowable; this limitation is retained in diagnostics. Re-running a failed or interrupted backfill resumes the same run and never grants a period twice.
+如果当前合并订阅完全由本地记录中的续期组成，该推算结果是准确的。如果历史中夹杂外部续期，就可能无法还原精确边界；系统必须保留这一限制的诊断信息。失败或中断的补发任务从同一任务继续执行，不能重复授予周期。
 
-## User API
+## 用户接口
 
-### List subscriptions
+### 查询订阅
 
-Add `GET /api/subscriptions` under normal session authentication.
+在普通会话认证下新增 `GET /api/subscriptions`。
 
-The service derives the upstream user from the session and returns all active upstream subscriptions. Each item contains:
+服务从会话中确定上游用户，并返回该用户全部有效上游订阅。每项数据包含：
 
-- upstream subscription and group identifiers;
-- group name and platform;
-- exact expiry and a non-negative human-readable remaining-day value;
-- only configured quota windows, each with `limit_usd`, `used_usd`, `remaining_usd`, nullable `window_start`, and nullable `resets_at`;
-- current local period start and end when one exists;
-- current reset total, used, and remaining;
-- next local period start and reset total when scheduled;
-- whether the subscription is currently in an external, zero-reset, or unlimited interval;
-- `can_reset`, a stable disable reason, and any blocking attempt status.
+- 上游订阅 ID 和分组 ID；
+- 分组名称和平台；
+- 精确到期时间，以及不小于零、适合界面展示的剩余天数；
+- 仅包含已配置配额窗口的数组，每个窗口包括 `limit_usd`、`used_usd`、`remaining_usd`、可空的 `window_start`、可空的 `resets_at`；
+- 当前本地周期的开始和结束时间；
+- 当前周期重置总次数、已用次数、剩余次数；
+- 下一个本地周期的开始时间和重置总次数；
+- 当前是否处于外部区间、零次数区间或无限额状态；
+- `can_reset`、稳定的禁用原因，以及是否存在阻塞中的操作。
 
-When a configured upstream window has not activated, the API returns zero usage, full remaining quota, and a null reset time. The UI labels it as starting after first use.
+如果上游已经配置某个窗口，但该窗口还没有被首次激活，则 API 返回零用量、完整剩余额度以及空的重置时间。界面提示“首次使用后开始计时”。
 
-### Reset subscription
+### 重置订阅
 
-Add `POST /api/subscriptions/:id/reset-quota` under normal session authentication. The request contains only `request_id`.
+在普通会话认证下新增 `POST /api/subscriptions/:id/reset-quota`。请求体只包含 `request_id`。
 
-The service does not trust a user ID, group ID, period ID, or window selection from the browser. It loads the subscription by ID, verifies ownership against the session, refreshes upstream state, and derives all reset flags from the current group configuration.
+后端不信任浏览器传入的用户 ID、分组 ID、周期 ID 或窗口选择。服务通过订阅 ID 读取上游订阅，使用当前会话再次校验归属，刷新上游状态，并根据当前分组配置决定全部重置标记。
 
-The operation is allowed only when:
+只有同时满足以下条件时才允许操作：
 
-- the upstream subscription is active and belongs to the signed-in user;
-- a local period is currently active;
-- the period has remaining resets;
-- no reserved or uncertain attempt blocks the period;
-- at least one configured window has non-zero usage.
+- 上游订阅有效，且属于当前登录用户；
+- 当前存在有效的本地周期；
+- 当前周期仍有剩余重置次数；
+- 当前周期没有 `reserved` 或 `uncertain` 操作阻塞；
+- 至少一个已配置窗口的已用额度大于零。
 
-The response returns the attempt status and a freshly computed subscription item.
+响应返回操作状态和重新计算后的订阅卡片数据。
 
-## Reset Transaction And Error Semantics
+## 重置事务与错误语义
 
-Reset spans SQLite and Sub2API and cannot be one distributed transaction.
+一次重置横跨 SQLite 和 Sub2API，无法组成同一个分布式事务。
 
-The service uses this sequence:
+服务按照以下顺序处理：
 
-1. refresh and validate upstream subscription ownership, local period, allowance, and usage;
-2. begin a SQLite write transaction;
-3. insert a `reserved` attempt and increment `reset_used` by one;
-4. commit the reservation;
-5. call the upstream reset endpoint with every configured window selected;
-6. on success, save the returned after snapshot and mark the attempt `succeeded`;
-7. on a confirmed upstream rejection, mark the attempt `failed` and decrement `reset_used` in one transaction;
-8. on timeout, connection loss, malformed success response, or any other unknown outcome, mark the attempt `uncertain` and keep the reservation consumed;
-9. prevent another reset until reconciliation or an administrator resolves the uncertain attempt.
+1. 刷新并校验上游订阅归属、本地周期、剩余次数和用量；
+2. 开始 SQLite 写事务；
+3. 插入一条 `reserved` 操作，并把 `reset_used` 加一；
+4. 提交本地预占；
+5. 调用上游重置接口，选择全部已配置窗口；
+6. 上游成功时，保存返回的操作后快照，并把记录标记为 `succeeded`；
+7. 上游明确拒绝时，把记录标记为 `failed`，并在一个事务中把 `reset_used` 减一；
+8. 发生超时、连接中断、成功响应无法解析或其他结果未知的情况时，把记录标记为 `uncertain`，并保留已占用次数；
+9. 在后台对账或管理员处理该未知操作之前，禁止再次重置。
 
-Failures before the upstream call do not consume allowance. Confirmed upstream failures release allowance. Unknown outcomes remain pessimistically consumed to prevent a reset that actually succeeded from being repeated for free.
+请求尚未发送到上游前发生的失败不消耗次数。上游明确失败时释放次数。结果未知时保守地视为已消耗，防止上游实际已经成功、用户却免费重复重置。
 
-Reconciliation confirms success when selected window starts and usage values prove a reset occurred after the reservation. It confirms failure only when upstream state and response evidence make failure unambiguous. Otherwise the attempt remains uncertain.
+如果所选窗口的起始时间和使用量足以证明重置发生在本次预占之后，对账可以确认成功。只有上游状态和响应证据明确证明失败时，才能自动确认失败。否则操作继续保持 `uncertain`。
 
-## Administrator API And Operations
+## 管理员接口与运维
 
-The existing tier request and response objects gain `reset_count`.
+现有档位请求和响应对象新增 `reset_count`。
 
-Add administrator endpoints to:
+新增管理员接口，用于：
 
-- list reserved or uncertain reset attempts with user, subscription, period, before/current snapshots, and error details;
-- resolve an uncertain attempt as consumed, leaving `reset_used` unchanged;
-- resolve an uncertain attempt as released, atomically decrementing `reset_used` once;
-- inspect legacy backfill status and errors.
+- 查询 `reserved` 或 `uncertain` 重置操作，包括用户、订阅、周期、操作前快照、当前快照和错误详情；
+- 把未知操作确认为已消耗，此时 `reset_used` 保持不变；
+- 把未知操作确认为未消耗，并原子地把 `reset_used` 减一；
+- 查看旧数据补发状态和错误。
 
-Resolution endpoints are idempotent and retain the attempt audit record. They never call the upstream reset endpoint again.
+管理员处理接口必须幂等，并保留完整操作审计记录。处理未知状态时不会再次调用上游重置接口。
 
-Tier saving commits the tier configuration first. Legacy backfill then runs asynchronously and retries independently; upstream failure cannot roll back a valid tier edit.
+保存档位时先提交档位配置。旧数据补发随后异步执行并独立重试；上游失败不能回滚已经合法保存的档位配置。
 
-## User Interface
+## 用户界面
 
-Wrap the existing `RechargeRequestView` content in tabs:
+把现有 `RechargeRequestView` 内容放入两个选项卡：
 
-- `Redemption Request` is the first and default tab and retains the current workflow;
-- `Subscription Management` is the second tab.
+- “兑换申请”是第一个默认选项卡，保留当前全部流程；
+- “订阅管理”是第二个选项卡。
 
-The management tab uses responsive repeated subscription cards. Each card shows:
+订阅管理使用响应式的重复订阅卡片。每张卡片展示：
 
-- group name, remaining days, and exact expiry;
-- current reset remaining and total when the current period grants resets;
-- one progress row for each configured quota window;
-- current usage, limit, remaining amount, and next automatic reset time;
-- one compact line for the next scheduled local period and its unlock allowance;
-- an explicit external-period, zero-reset, pending-confirmation, or exhausted state where applicable;
-- the reset button only when the API returns `can_reset = true`.
+- 分组名称、剩余天数和精确到期时间；
+- 当前周期提供重置权益时，展示剩余次数和总次数；
+- 每个已配置配额窗口对应一行进度；
+- 当前用量、限额、剩余额度和下一次自动重置时间；
+- 一行紧凑的下一本地周期提示，包括开始时间和可解锁次数；
+- 需要时明确展示外部区间、零次数、结果确认中或次数耗尽状态；
+- 只有 API 返回 `can_reset = true` 时才启用重置按钮。
 
-An unlimited subscription uses the same responsive width and stable minimum height as a limited card. Its quota area contains a large equal-height `Unlimited subscription` placeholder and no reset count or action. Individual missing limits are simply omitted.
+无限额订阅与有限额卡片使用相同的响应式宽度和稳定最小高度。额度区域使用一个等高的大型“无限额订阅”占位区，不展示重置次数和操作。单独缺失的某个限额直接省略。
 
-Active external subscriptions remain visible with their upstream quota and expiry information. Their reset button stays disabled until a scheduled local period begins.
+有效的外部订阅仍然展示其上游额度和到期信息。在排期中的本地周期真正开始之前，重置按钮保持禁用。
 
-Before resetting, a confirmation dialog lists all windows and current usage that will be cleared and states that one allowance will be consumed. A successful action refreshes the card. An uncertain action shows `Confirming` and remains disabled.
+执行重置前，确认对话框列出所有将被清零的窗口及当前用量，并明确提示会消耗一次机会。操作成功后刷新卡片。结果未知时显示“确认中”并保持禁用。
 
-The layout is one column on narrow screens and a stable responsive grid on desktop. Card quota and footer regions use stable dimensions so limited, partially limited, and unlimited cards align without text or button overlap.
+窄屏使用单列布局，桌面使用稳定的响应式网格。额度区和底部操作区采用稳定尺寸，保证有限额、部分限额和无限额卡片能够对齐，不出现文字或按钮重叠。
 
-## Administrator Interface
+## 管理员界面
 
-Add a `Per-period reset count` numeric input to the subscription tier editor.
+在订阅档位编辑器中新增“每周期重置次数”数字输入框。
 
-- balance rows show a disabled placeholder and submit zero;
-- subscription rows with at least one configured quota limit accept a non-negative integer;
-- selecting an unlimited group immediately clears the value to zero and disables the input;
-- changing a limited row to an unlimited group does the same before save.
+- 余额档位显示禁用占位并提交零；
+- 至少配置了一个配额限额的订阅分组可以输入非负整数；
+- 选择无限额分组时，立即把次数清零并禁用输入框；
+- 把已有限额的档位切换到无限额分组时，保存前执行同样处理。
 
-The tier settings view also includes compact sections for legacy backfill status and uncertain reset attempts. An attempt detail shows before/current quota snapshots and offers explicit `Confirm consumed` and `Release allowance` actions with confirmation dialogs.
+档位设置页面还要提供紧凑的旧数据补发状态区和未知重置操作区。操作详情展示操作前、当前配额快照，并提供“确认已消耗”和“释放次数”两个需要二次确认的管理操作。
 
-## Security And Privacy
+## 安全与隐私
 
-- Every user subscription request derives identity from the authenticated local session.
-- Reset ownership is checked again against the upstream subscription before reservation.
-- The backend chooses reset windows; browser input cannot widen the operation.
-- Administrator API keys and upstream administrator-only fields never reach the browser.
-- Attempt diagnostics exclude authorization headers, credentials, and other secrets.
-- Administrator resolution routes retain the existing admin authorization middleware.
+- 所有用户订阅请求都从已认证本地会话中确定身份；
+- 预占次数前，必须再次使用上游订阅校验归属；
+- 重置窗口由后端选择，浏览器输入不能扩大操作范围；
+- 管理员 API Key 和上游管理员专属字段永远不会发送到浏览器；
+- 操作诊断信息必须排除认证头、凭据和其他敏感内容；
+- 管理员处理接口继续使用现有管理员权限中间件。
 
-## Testing And Verification
+## 测试与验证
 
-Backend migration tests cover old databases, new columns and indexes, repeated migration, and interrupted backfill resumption.
+后端迁移测试覆盖旧数据库、新字段和索引、重复迁移，以及中断后的补发任务恢复。
 
-Backend service and HTTP tests cover:
+后端服务和 HTTP 测试覆盖：
 
-- tier validation and request snapshots;
-- unlimited groups forcing zero resets;
-- direct-charge and redeem-code period creation gates;
-- zero-reset periods occupying time;
-- stacked same-group periods with equal and different allowances;
-- independent groups;
-- external intervals before local periods;
-- expired allowance not carrying forward;
-- legacy backwards inference and one-time grants;
-- non-owner and forged subscription reset attempts;
-- configured-window request flags;
-- all-zero usage disabling reset;
-- reservation, success, confirmed failure, uncertain outcome, reconciliation, and manual resolution;
-- duplicate request IDs and concurrent clicks consuming at most one allowance;
-- upstream read failures preserving last confirmed ledger state.
+- 档位校验和申请快照；
+- 无限额分组强制使用零次数；
+- 直充和兑换码两种周期创建门槛；
+- 零次数周期仍然占据时间；
+- 同组叠加周期使用相同或不同次数；
+- 不同分组独立；
+- 本地周期之前存在外部订阅区间；
+- 过期次数不结转；
+- 旧数据按到期时间向历史方向回推，并执行一次性补发；
+- 非订阅所有者和伪造订阅重置请求；
+- 根据已配置窗口生成准确的上游请求标记；
+- 全部已用额度为零时禁用重置；
+- 预占、成功、明确失败、未知结果、后台确认和人工处理；
+- 重复 `request_id` 和并发点击最多只消耗一次；
+- 上游读取失败时保留最后一次已确认的账本状态。
 
-Sub2API client contract tests cover subscription list/progress decoding and the exact administrator reset method, path, headers, body, and response handling.
+Sub2API 客户端契约测试覆盖订阅列表、使用进度的解析，以及管理员重置接口准确的方法、路径、请求头、请求体和响应处理。
 
-Frontend tests cover:
+前端测试覆盖：
 
-- redemption remaining the default tab;
-- limited, partially limited, unlimited, external, scheduled, exhausted, and uncertain card states;
-- omission of unconfigured windows;
-- disabled reset reasons and confirmation dialog content;
-- admin reset-count enable and disable behavior;
-- legacy backfill and uncertain-attempt administrator states.
+- “兑换申请”仍然是默认选项卡；
+- 有限额、部分限额、无限额、外部区间、排期中、次数耗尽和结果未知等卡片状态；
+- 不展示未配置窗口；
+- 重置禁用原因和确认框内容；
+- 管理端重置次数输入框的启用与禁用；
+- 旧数据补发和未知操作的管理员状态。
 
-Run Go tests, frontend unit tests, TypeScript compilation, and the production build. Use browser screenshots at desktop and mobile widths to verify equal card sizing, responsive grid behavior, dialog content, progress rendering, and absence of overlap or horizontal clipping.
+执行 Go 测试、前端单元测试、TypeScript 编译和生产构建。使用桌面和手机宽度的浏览器截图检查卡片等高、响应式网格、确认框内容、进度展示，以及是否存在重叠或横向裁切。
 
-## Non-Goals
+## 非目标
 
-- Modifying Sub2API upstream behavior or schema.
-- Resetting API-key total quota, rate-limit usage, or provider-account quota.
-- Allowing users to choose individual quota windows.
-- Granting reset allowance for subscriptions without successful local fulfillment history.
-- Carrying unused allowance into another period.
-- Combining allowance across Sub2API groups.
-- Reconstructing unknowable historical external extension ordering with false precision.
+- 修改 Sub2API 上游行为或数据库结构；
+- 重置 API Key 总配额、限速用量或上游账号额度；
+- 允许用户单独选择日、周或月窗口；
+- 为没有成功本地交付记录的订阅授予重置次数；
+- 把未使用次数结转到其他周期；
+- 合并不同 Sub2API 分组的重置次数；
+- 对无法确定的历史外部续期顺序做虚假的精确还原。
