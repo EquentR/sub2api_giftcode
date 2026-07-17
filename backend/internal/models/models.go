@@ -42,6 +42,7 @@ type AccessRequest struct {
 	Sub2APIMonthlyLimitUSD  *float64   `json:"sub2api_monthly_limit_usd,omitempty"`
 	ValidityDays            int        `json:"validity_days"`
 	Concurrency             int        `json:"concurrency"`
+	ResetCount              int        `json:"reset_count"`
 	Note                    string     `json:"note"`
 	FulfillmentMode         string     `json:"fulfillment_mode"`
 	FulfillmentResult       string     `json:"fulfillment_result"`
@@ -115,26 +116,92 @@ type SubscriptionConcurrencyGrant struct {
 }
 
 type RedeemTier struct {
-	ID                     int64     `json:"id"`
-	CodeType               string    `json:"code_type"`
-	Amount                 float64   `json:"amount"`
-	PayAmountCny           float64   `json:"pay_amount_cny"`
-	OriginalPayAmountCny   *float64  `json:"original_pay_amount_cny,omitempty"`
-	Label                  string    `json:"label"`
-	Enabled                bool      `json:"enabled"`
-	SortOrder              int       `json:"sort_order"`
-	Sub2APIGroupID         *int64    `json:"sub2api_group_id,omitempty"`
-	Sub2APIGroupName       string    `json:"sub2api_group_name"`
-	Sub2APIGroupPlatform   string    `json:"sub2api_group_platform"`
-	Sub2APIDailyLimitUSD   *float64  `json:"sub2api_daily_limit_usd,omitempty"`
-	Sub2APIWeeklyLimitUSD  *float64  `json:"sub2api_weekly_limit_usd,omitempty"`
-	Sub2APIMonthlyLimitUSD *float64  `json:"sub2api_monthly_limit_usd,omitempty"`
-	ValidityDays           int       `json:"validity_days"`
-	Concurrency            int       `json:"concurrency"`
-	UpstreamAvailable      bool      `json:"upstream_available"`
-	UpstreamError          string    `json:"upstream_error"`
-	CreatedAt              time.Time `json:"created_at"`
-	UpdatedAt              time.Time `json:"updated_at"`
+	ID                          int64     `json:"id"`
+	CodeType                    string    `json:"code_type"`
+	Amount                      float64   `json:"amount"`
+	PayAmountCny                float64   `json:"pay_amount_cny"`
+	OriginalPayAmountCny        *float64  `json:"original_pay_amount_cny,omitempty"`
+	Label                       string    `json:"label"`
+	Enabled                     bool      `json:"enabled"`
+	SortOrder                   int       `json:"sort_order"`
+	Sub2APIGroupID              *int64    `json:"sub2api_group_id,omitempty"`
+	Sub2APIGroupName            string    `json:"sub2api_group_name"`
+	Sub2APIGroupPlatform        string    `json:"sub2api_group_platform"`
+	Sub2APIDailyLimitUSD        *float64  `json:"sub2api_daily_limit_usd,omitempty"`
+	Sub2APIWeeklyLimitUSD       *float64  `json:"sub2api_weekly_limit_usd,omitempty"`
+	Sub2APIMonthlyLimitUSD      *float64  `json:"sub2api_monthly_limit_usd,omitempty"`
+	ValidityDays                int       `json:"validity_days"`
+	Concurrency                 int       `json:"concurrency"`
+	ResetCount                  int       `json:"reset_count"`
+	LegacyResetBackfillEligible bool      `json:"-"`
+	UpstreamAvailable           bool      `json:"upstream_available"`
+	UpstreamError               string    `json:"upstream_error"`
+	CreatedAt                   time.Time `json:"created_at"`
+	UpdatedAt                   time.Time `json:"updated_at"`
+}
+
+type SubscriptionResetPeriod struct {
+	ID                     int64      `json:"id"`
+	AccessRequestID        int64      `json:"access_request_id"`
+	UpstreamUserID         int64      `json:"upstream_user_id"`
+	TierID                 int64      `json:"tier_id"`
+	Sub2APIGroupID         int64      `json:"sub2api_group_id"`
+	UpstreamSubscriptionID *int64     `json:"upstream_subscription_id,omitempty"`
+	ValidityDays           int        `json:"validity_days"`
+	ResetLimit             int        `json:"reset_limit"`
+	ResetUsed              int        `json:"reset_used"`
+	FulfilledAt            time.Time  `json:"fulfilled_at"`
+	FulfillmentOrder       int64      `json:"fulfillment_order"`
+	PeriodStart            *time.Time `json:"period_start,omitempty"`
+	PeriodEnd              *time.Time `json:"period_end,omitempty"`
+	Status                 string     `json:"status"`
+	InferredFromLegacy     bool       `json:"inferred_from_legacy"`
+	MigrationVersion       int        `json:"migration_version"`
+	LegacyResetBackfilled  bool       `json:"legacy_reset_backfilled"`
+	LastSyncedAt           *time.Time `json:"last_synced_at,omitempty"`
+	LastError              string     `json:"last_error"`
+	CreatedAt              time.Time  `json:"created_at"`
+	UpdatedAt              time.Time  `json:"updated_at"`
+}
+
+type SubscriptionResetAttempt struct {
+	ID                     int64      `json:"id"`
+	RequestID              string     `json:"request_id"`
+	PeriodID               int64      `json:"period_id"`
+	UpstreamUserID         int64      `json:"upstream_user_id"`
+	UpstreamSubscriptionID int64      `json:"upstream_subscription_id"`
+	ResetDaily             bool       `json:"reset_daily"`
+	ResetWeekly            bool       `json:"reset_weekly"`
+	ResetMonthly           bool       `json:"reset_monthly"`
+	Status                 string     `json:"status"`
+	BeforeSnapshotJSON     string     `json:"before_snapshot_json"`
+	AfterSnapshotJSON      string     `json:"after_snapshot_json"`
+	UpstreamStatus         *int       `json:"upstream_status,omitempty"`
+	ResponseStatus         int        `json:"response_status"`
+	ResponseReason         string     `json:"response_reason"`
+	ErrorMessage           string     `json:"error_message"`
+	Resolution             string     `json:"resolution"`
+	ReservedAt             time.Time  `json:"reserved_at"`
+	CompletedAt            *time.Time `json:"completed_at,omitempty"`
+	ConfirmedAt            *time.Time `json:"confirmed_at,omitempty"`
+	ConfirmedByUserID      *int64     `json:"confirmed_by_user_id,omitempty"`
+	CreatedAt              time.Time  `json:"created_at"`
+	UpdatedAt              time.Time  `json:"updated_at"`
+}
+
+type SubscriptionResetBackfillRun struct {
+	ID               int64      `json:"id"`
+	TierID           int64      `json:"tier_id"`
+	ResetLimit       int        `json:"reset_limit"`
+	Status           string     `json:"status"`
+	TotalRecords     int        `json:"total_records"`
+	ProcessedRecords int        `json:"processed_records"`
+	GrantedRecords   int        `json:"granted_records"`
+	ErrorMessage     string     `json:"error_message"`
+	TriggeredAt      time.Time  `json:"triggered_at"`
+	StartedAt        *time.Time `json:"started_at,omitempty"`
+	CompletedAt      *time.Time `json:"completed_at,omitempty"`
+	UpdatedAt        time.Time  `json:"updated_at"`
 }
 
 type BalanceTier struct {

@@ -46,6 +46,7 @@ CREATE TABLE IF NOT EXISTS redeem_access_requests (
   sub2api_monthly_limit_usd REAL NULL,
   validity_days INTEGER NOT NULL DEFAULT 0,
   concurrency INTEGER NOT NULL DEFAULT 0,
+  reset_count INTEGER NOT NULL DEFAULT 0 CHECK (reset_count >= 0),
   note TEXT NOT NULL DEFAULT '',
   fulfillment_mode TEXT NOT NULL DEFAULT 'direct_charge',
   fulfillment_result TEXT NOT NULL DEFAULT '',
@@ -135,7 +136,90 @@ CREATE TABLE IF NOT EXISTS redeem_tiers (
   sub2api_group_id INTEGER NULL,
   validity_days INTEGER NOT NULL DEFAULT 0,
   concurrency INTEGER NOT NULL DEFAULT 0,
+  reset_count INTEGER NOT NULL DEFAULT 0 CHECK (reset_count >= 0),
+  legacy_reset_backfill_eligible INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS subscription_reset_periods (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  access_request_id INTEGER NOT NULL UNIQUE,
+  upstream_user_id INTEGER NOT NULL,
+  tier_id INTEGER NOT NULL,
+  sub2api_group_id INTEGER NOT NULL,
+  upstream_subscription_id INTEGER NULL,
+  validity_days INTEGER NOT NULL,
+  reset_limit INTEGER NOT NULL DEFAULT 0 CHECK (reset_limit >= 0),
+  reset_used INTEGER NOT NULL DEFAULT 0 CHECK (reset_used >= 0 AND reset_used <= reset_limit),
+  fulfilled_at TEXT NOT NULL,
+  fulfillment_order INTEGER NOT NULL DEFAULT 0,
+  period_start TEXT NULL,
+  period_end TEXT NULL,
+  status TEXT NOT NULL CHECK (status IN ('pending_binding', 'scheduled', 'active', 'expired', 'inactive')),
+  inferred_from_legacy INTEGER NOT NULL DEFAULT 0,
+  migration_version INTEGER NOT NULL DEFAULT 0,
+  legacy_reset_backfilled INTEGER NOT NULL DEFAULT 0,
+  last_synced_at TEXT NULL,
+  last_error TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_subscription_reset_periods_user_group
+  ON subscription_reset_periods(upstream_user_id, sub2api_group_id, period_start, id);
+
+CREATE INDEX IF NOT EXISTS idx_subscription_reset_periods_subscription
+  ON subscription_reset_periods(upstream_subscription_id, status);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_subscription_reset_periods_one_active
+  ON subscription_reset_periods(upstream_user_id, sub2api_group_id)
+  WHERE status = 'active';
+
+CREATE TABLE IF NOT EXISTS subscription_reset_attempts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  request_id TEXT NOT NULL UNIQUE,
+  period_id INTEGER NOT NULL,
+  upstream_user_id INTEGER NOT NULL,
+  upstream_subscription_id INTEGER NOT NULL,
+  reset_daily INTEGER NOT NULL DEFAULT 0,
+  reset_weekly INTEGER NOT NULL DEFAULT 0,
+  reset_monthly INTEGER NOT NULL DEFAULT 0,
+  status TEXT NOT NULL CHECK (status IN ('reserved', 'succeeded', 'failed', 'uncertain')),
+  before_snapshot_json TEXT NOT NULL DEFAULT '',
+  after_snapshot_json TEXT NOT NULL DEFAULT '',
+  upstream_status INTEGER NULL,
+  response_status INTEGER NOT NULL DEFAULT 0,
+  response_reason TEXT NOT NULL DEFAULT '',
+  error_message TEXT NOT NULL DEFAULT '',
+  resolution TEXT NOT NULL DEFAULT '',
+  reserved_at TEXT NOT NULL,
+  completed_at TEXT NULL,
+  confirmed_at TEXT NULL,
+  confirmed_by_user_id INTEGER NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_subscription_reset_attempts_blocking
+  ON subscription_reset_attempts(period_id)
+  WHERE status IN ('reserved', 'uncertain');
+
+CREATE INDEX IF NOT EXISTS idx_subscription_reset_attempts_status
+  ON subscription_reset_attempts(status, reserved_at);
+
+CREATE TABLE IF NOT EXISTS subscription_reset_backfill_runs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  tier_id INTEGER NOT NULL UNIQUE,
+  reset_limit INTEGER NOT NULL CHECK (reset_limit > 0),
+  status TEXT NOT NULL CHECK (status IN ('pending', 'running', 'succeeded', 'failed')),
+  total_records INTEGER NOT NULL DEFAULT 0,
+  processed_records INTEGER NOT NULL DEFAULT 0,
+  granted_records INTEGER NOT NULL DEFAULT 0,
+  error_message TEXT NOT NULL DEFAULT '',
+  triggered_at TEXT NOT NULL,
+  started_at TEXT NULL,
+  completed_at TEXT NULL,
   updated_at TEXT NOT NULL
 );
 
@@ -256,6 +340,12 @@ func (s *Store) Migrate(ctx context.Context) error {
 	if err := s.ensureRedeemTierConcurrencyColumn(ctx); err != nil {
 		return err
 	}
+	if err := s.ensureSubscriptionResetColumns(ctx); err != nil {
+		return err
+	}
+	if err := s.freezeLegacySubscriptionResetEligibility(ctx); err != nil {
+		return err
+	}
 	if err := s.ensureAccessRequestSnapshotColumns(ctx); err != nil {
 		return err
 	}
@@ -272,6 +362,49 @@ func (s *Store) Migrate(ctx context.Context) error {
 		return err
 	}
 	return s.backfillDirectChargeRedeemCodes(ctx)
+}
+
+func (s *Store) ensureSubscriptionResetColumns(ctx context.Context) error {
+	if err := s.ensureColumns(ctx, "redeem_tiers", map[string]string{
+		"reset_count":                    "INTEGER NOT NULL DEFAULT 0 CHECK (reset_count >= 0)",
+		"legacy_reset_backfill_eligible": "INTEGER NOT NULL DEFAULT 0",
+	}); err != nil {
+		return err
+	}
+	return s.ensureColumns(ctx, "redeem_access_requests", map[string]string{
+		"reset_count": "INTEGER NOT NULL DEFAULT 0 CHECK (reset_count >= 0)",
+	})
+}
+
+func (s *Store) freezeLegacySubscriptionResetEligibility(ctx context.Context) error {
+	now := s.NowUTC().Format(timeLayout)
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	result, err := tx.ExecContext(ctx, `
+INSERT INTO sync_state (key, value, updated_at)
+VALUES ('subscription_reset_legacy_eligibility_initialized', '1', ?)
+ON CONFLICT(key) DO NOTHING
+`, now)
+	if err != nil {
+		return err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 1 {
+		if _, err := tx.ExecContext(ctx, `
+UPDATE redeem_tiers
+SET legacy_reset_backfill_eligible = 1
+WHERE code_type = 'subscription'
+`); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 func (s *Store) ensureAccessRequestSnapshotColumns(ctx context.Context) error {

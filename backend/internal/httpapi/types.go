@@ -78,6 +78,7 @@ type RedeemTierRequest struct {
 	Sub2APIGroupID       *int64   `json:"sub2api_group_id,omitempty"`
 	ValidityDays         int      `json:"validity_days"`
 	Concurrency          int      `json:"concurrency"`
+	ResetCount           int      `json:"reset_count"`
 }
 
 type OpenAIAccountUserAgentRequest struct {

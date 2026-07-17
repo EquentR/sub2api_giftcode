@@ -3,6 +3,8 @@ package app
 import (
 	"context"
 	"database/sql"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"testing"
 	"time"
@@ -12,6 +14,7 @@ import (
 	"sub2api-giftcode/backend/internal/config"
 	"sub2api-giftcode/backend/internal/db"
 	"sub2api-giftcode/backend/internal/models"
+	"sub2api-giftcode/backend/internal/sub2api"
 )
 
 func TestListUsersReturnsSummaries(t *testing.T) {
@@ -130,6 +133,55 @@ func TestReplaceRedeemTiersPersistsSubscriptionTier(t *testing.T) {
 	require.Equal(t, 10, reloaded[0].Concurrency)
 }
 
+func TestReplaceRedeemTiersPersistsSubscriptionResetCount(t *testing.T) {
+	store, err := db.Open("sqlite", ":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+	require.NoError(t, store.Migrate(context.Background()))
+
+	limit := 50.0
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "/api/v1/admin/groups/all", r.URL.Path)
+		writeRedeemTestEnvelope(w, []sub2api.Group{{
+			ID: 2, Name: "Claude", Status: "active", SubscriptionType: "subscription", DailyLimitUSD: &limit,
+		}})
+	}))
+	t.Cleanup(upstream.Close)
+
+	svc := New(&config.RuntimeConfig{}, store, sub2api.NewClient(upstream.URL, "admin-key"), nil)
+	updated, err := svc.ReplaceRedeemTiers(context.Background(), []models.RedeemTier{{
+		CodeType: "subscription", PayAmountCny: 88, Sub2APIGroupID: int64Ptr(2), ValidityDays: 30,
+		Concurrency: 10, ResetCount: 2, Enabled: true,
+	}})
+	require.NoError(t, err)
+	require.Equal(t, 2, updated[0].ResetCount)
+
+	reloaded, err := svc.ListRedeemTiers(context.Background(), true)
+	require.NoError(t, err)
+	require.Equal(t, 2, reloaded[0].ResetCount)
+}
+
+func TestReplaceRedeemTiersNormalizesUnlimitedSubscriptionResetCount(t *testing.T) {
+	store, err := db.Open("sqlite", ":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+	require.NoError(t, store.Migrate(context.Background()))
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "/api/v1/admin/groups/all", r.URL.Path)
+		writeRedeemTestEnvelope(w, []sub2api.Group{{ID: 2, Name: "Unlimited", Status: "active", SubscriptionType: "subscription"}})
+	}))
+	t.Cleanup(upstream.Close)
+
+	svc := New(&config.RuntimeConfig{}, store, sub2api.NewClient(upstream.URL, "admin-key"), nil)
+	updated, err := svc.ReplaceRedeemTiers(context.Background(), []models.RedeemTier{{
+		CodeType: "subscription", PayAmountCny: 88, Sub2APIGroupID: int64Ptr(2), ValidityDays: 30,
+		Concurrency: 10, ResetCount: 3, Enabled: true,
+	}})
+	require.NoError(t, err)
+	require.Zero(t, updated[0].ResetCount)
+}
+
 func TestReplaceRedeemTiersNormalizesBalanceConcurrency(t *testing.T) {
 	store, err := db.Open("sqlite", ":memory:")
 	require.NoError(t, err)
@@ -138,14 +190,16 @@ func TestReplaceRedeemTiersNormalizesBalanceConcurrency(t *testing.T) {
 
 	svc := New(&config.RuntimeConfig{}, store, nil, nil)
 	tiers, err := svc.ReplaceRedeemTiers(context.Background(), []models.RedeemTier{{
-		CodeType: "balance", Amount: 120, PayAmountCny: 120, Concurrency: 99, Enabled: true,
+		CodeType: "balance", Amount: 120, PayAmountCny: 120, Concurrency: 99, ResetCount: 7, Enabled: true,
 	}})
 	require.NoError(t, err)
 	require.Zero(t, tiers[0].Concurrency)
+	require.Zero(t, tiers[0].ResetCount)
 	reloaded, err := svc.ListRedeemTiers(context.Background(), true)
 	require.NoError(t, err)
 	require.Len(t, reloaded, 1)
 	require.Zero(t, reloaded[0].Concurrency)
+	require.Zero(t, reloaded[0].ResetCount)
 }
 
 func TestReplaceRedeemTiersRequiresPositiveSubscriptionConcurrency(t *testing.T) {

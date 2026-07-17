@@ -35,6 +35,7 @@ export interface AccessRequest {
   sub2api_monthly_limit_usd?: number | null
   validity_days: number
   concurrency: number
+  reset_count: number
   note: string
   fulfillment_mode: string
   fulfillment_result: string
@@ -108,6 +109,7 @@ export interface RedeemTier {
   sub2api_monthly_limit_usd?: number | null
   validity_days?: number
   concurrency: number
+  reset_count: number
   upstream_available?: boolean
   upstream_error?: string
   created_at: string

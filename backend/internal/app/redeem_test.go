@@ -114,7 +114,7 @@ func TestCreateAccessRequestSnapshotsSubscriptionConcurrency(t *testing.T) {
 		case "/api/v1/auth/me":
 			writeRedeemTestEnvelope(w, sub2api.User{ID: 1, Email: "alice@example.com", Username: "alice", Status: "active", CreatedAt: now, UpdatedAt: now})
 		case "/api/v1/admin/groups/all":
-			writeRedeemTestEnvelope(w, []sub2api.Group{{ID: 2, Name: "Claude", Status: "active", SubscriptionType: "subscription"}})
+			writeRedeemTestEnvelope(w, []sub2api.Group{{ID: 2, Name: "Claude", Status: "active", SubscriptionType: "subscription", DailyLimitUSD: float64Ptr(10)}})
 		default:
 			http.NotFound(w, r)
 		}
@@ -123,7 +123,7 @@ func TestCreateAccessRequestSnapshotsSubscriptionConcurrency(t *testing.T) {
 
 	svc := New(&config.RuntimeConfig{}, store, sub2api.NewClient(upstream.URL, "admin-key"), mail.New(mail.Config{}))
 	tiers, err := svc.ReplaceRedeemTiers(context.Background(), []models.RedeemTier{{
-		CodeType: "subscription", PayAmountCny: 88, Sub2APIGroupID: int64Ptr(2), ValidityDays: 30, Concurrency: 10, Enabled: true,
+		CodeType: "subscription", PayAmountCny: 88, Sub2APIGroupID: int64Ptr(2), ValidityDays: 30, Concurrency: 10, ResetCount: 2, Enabled: true,
 	}})
 	require.NoError(t, err)
 	sessionUser, err := svc.LoginWithAccessToken(context.Background(), "access-1", nil)
@@ -132,10 +132,12 @@ func TestCreateAccessRequestSnapshotsSubscriptionConcurrency(t *testing.T) {
 	req, err := svc.CreateAccessRequest(context.Background(), sessionUser.Session.ID, tiers[0].ID, "please approve", "direct_charge")
 	require.NoError(t, err)
 	require.Equal(t, 10, req.Concurrency)
+	require.Equal(t, 2, req.ResetCount)
 
 	reloaded, err := svc.GetAccessRequestByID(context.Background(), req.ID)
 	require.NoError(t, err)
 	require.Equal(t, 10, reloaded.Concurrency)
+	require.Equal(t, 2, reloaded.ResetCount)
 }
 
 func TestApproveAccessRequestUsesStoredRedeemValueForRetry(t *testing.T) {

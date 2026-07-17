@@ -111,9 +111,9 @@ func (s *Service) replaceRedeemTiers(ctx context.Context, tiers []models.RedeemT
 			if _, err := tx.ExecContext(ctx, `
 INSERT INTO redeem_tiers (
   id, code_type, amount, pay_amount_cny, original_pay_amount_cny, label, enabled, sort_order,
-  sub2api_group_id, validity_days, concurrency, created_at, updated_at
+  sub2api_group_id, validity_days, concurrency, reset_count, created_at, updated_at
 )
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(id) DO UPDATE SET
   code_type = excluded.code_type,
   amount = excluded.amount,
@@ -125,8 +125,9 @@ ON CONFLICT(id) DO UPDATE SET
   sub2api_group_id = excluded.sub2api_group_id,
   validity_days = excluded.validity_days,
   concurrency = excluded.concurrency,
+  reset_count = excluded.reset_count,
   updated_at = excluded.updated_at
-`, tier.ID, tier.CodeType, tier.Amount, tier.PayAmountCny, tier.OriginalPayAmountCny, tier.Label, boolToInt(tier.Enabled), tier.SortOrder, tier.Sub2APIGroupID, tier.ValidityDays, tier.Concurrency, formatTime(tier.CreatedAt), formatTime(tier.UpdatedAt)); err != nil {
+`, tier.ID, tier.CodeType, tier.Amount, tier.PayAmountCny, tier.OriginalPayAmountCny, tier.Label, boolToInt(tier.Enabled), tier.SortOrder, tier.Sub2APIGroupID, tier.ValidityDays, tier.Concurrency, tier.ResetCount, formatTime(tier.CreatedAt), formatTime(tier.UpdatedAt)); err != nil {
 				return nil, rollback(err)
 			}
 			if err := upsertBalanceTierMirror(ctx, tx, tier); err != nil {
@@ -140,10 +141,10 @@ ON CONFLICT(id) DO UPDATE SET
 		res, err := tx.ExecContext(ctx, `
 INSERT INTO redeem_tiers (
   code_type, amount, pay_amount_cny, original_pay_amount_cny, label, enabled, sort_order,
-  sub2api_group_id, validity_days, concurrency, created_at, updated_at
+  sub2api_group_id, validity_days, concurrency, reset_count, created_at, updated_at
 )
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-`, tier.CodeType, tier.Amount, tier.PayAmountCny, tier.OriginalPayAmountCny, tier.Label, boolToInt(tier.Enabled), tier.SortOrder, tier.Sub2APIGroupID, tier.ValidityDays, tier.Concurrency, formatTime(tier.CreatedAt), formatTime(tier.UpdatedAt))
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+`, tier.CodeType, tier.Amount, tier.PayAmountCny, tier.OriginalPayAmountCny, tier.Label, boolToInt(tier.Enabled), tier.SortOrder, tier.Sub2APIGroupID, tier.ValidityDays, tier.Concurrency, tier.ResetCount, formatTime(tier.CreatedAt), formatTime(tier.UpdatedAt))
 		if err != nil {
 			return nil, rollback(err)
 		}
@@ -226,7 +227,8 @@ ON CONFLICT(id) DO UPDATE SET
 func (s *Service) getRedeemTierByID(ctx context.Context, id int64) (*models.RedeemTier, error) {
 	row := s.db().QueryRowContext(ctx, `
 SELECT id, code_type, amount, pay_amount_cny, original_pay_amount_cny, label, enabled, sort_order,
-       sub2api_group_id, validity_days, concurrency, created_at, updated_at
+       sub2api_group_id, validity_days, concurrency, reset_count, legacy_reset_backfill_eligible,
+       created_at, updated_at
 FROM redeem_tiers
 WHERE id = ?
 `, id)
@@ -257,7 +259,8 @@ func (s *Service) getBalanceTierByID(ctx context.Context, id int64) (*models.Bal
 func (s *Service) listRedeemTiersRaw(ctx context.Context, codeType string, enabledOnly bool) ([]models.RedeemTier, error) {
 	query := `
 SELECT id, code_type, amount, pay_amount_cny, original_pay_amount_cny, label, enabled, sort_order,
-       sub2api_group_id, validity_days, concurrency, created_at, updated_at
+       sub2api_group_id, validity_days, concurrency, reset_count, legacy_reset_backfill_eligible,
+       created_at, updated_at
 FROM redeem_tiers
 `
 	args := make([]any, 0, 2)
@@ -308,8 +311,18 @@ func (s *Service) validateRedeemTiers(ctx context.Context, tiers []models.Redeem
 		}
 	}
 	groupConcurrency := make(map[int64]int)
-	for _, tier := range tiers {
-		tier = normalizeRedeemTier(tier)
+	for i := range tiers {
+		if tiers[i].ResetCount < 0 {
+			return ErrBadRequest
+		}
+		tier := normalizeRedeemTier(tiers[i])
+		if tier.CodeType == "subscription" && tier.Sub2APIGroupID != nil {
+			if group, ok := groupMap[*tier.Sub2APIGroupID]; ok &&
+				group.DailyLimitUSD == nil && group.WeeklyLimitUSD == nil && group.MonthlyLimitUSD == nil {
+				tier.ResetCount = 0
+			}
+		}
+		tiers[i] = tier
 		switch tier.CodeType {
 		case "balance":
 			if tier.Amount <= 0 || tier.PayAmountCny <= 0 {
@@ -348,6 +361,7 @@ func normalizeRedeemTier(tier models.RedeemTier) models.RedeemTier {
 		tier.Sub2APIGroupID = nil
 		tier.ValidityDays = 0
 		tier.Concurrency = 0
+		tier.ResetCount = 0
 		if strings.TrimSpace(tier.Label) == "" {
 			tier.Label = fmt.Sprintf("$%.0f", tier.Amount)
 		}
@@ -629,6 +643,8 @@ func scanRedeemTierRow(scanner interface {
 		&groupID,
 		&out.ValidityDays,
 		&out.Concurrency,
+		&out.ResetCount,
+		&out.LegacyResetBackfillEligible,
 		&createdAt,
 		&updatedAt,
 	); err != nil {

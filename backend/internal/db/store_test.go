@@ -230,6 +230,84 @@ WHERE name IN (
 	require.Equal(t, 6, stateColumns)
 }
 
+func TestOpenAndMigrateAddsSubscriptionResetSchema(t *testing.T) {
+	store, err := Open("sqlite", ":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+
+	require.NoError(t, store.Migrate(context.Background()))
+
+	for _, table := range []string{"redeem_tiers", "redeem_access_requests"} {
+		var count int
+		require.NoError(t, store.DB.QueryRowContext(context.Background(), `
+SELECT COUNT(1) FROM pragma_table_info(?)
+WHERE name = 'reset_count' AND type = 'INTEGER' AND [notnull] = 1 AND dflt_value = '0'
+`, table).Scan(&count))
+		require.Equal(t, 1, count, "expected %s.reset_count", table)
+	}
+
+	expectedColumns := map[string]int{
+		"subscription_reset_periods":      21,
+		"subscription_reset_attempts":     22,
+		"subscription_reset_backfill_runs": 12,
+	}
+	for table, expected := range expectedColumns {
+		var count int
+		require.NoError(t, store.DB.QueryRowContext(context.Background(), `SELECT COUNT(1) FROM pragma_table_info(?)`, table).Scan(&count))
+		require.Equal(t, expected, count, "unexpected %s column count", table)
+	}
+
+	var blockingIndexSQL string
+	require.NoError(t, store.DB.QueryRowContext(context.Background(), `
+SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'idx_subscription_reset_attempts_blocking'
+`).Scan(&blockingIndexSQL))
+	require.Contains(t, blockingIndexSQL, "WHERE status IN ('reserved', 'uncertain')")
+
+	var activeIndexSQL string
+	require.NoError(t, store.DB.QueryRowContext(context.Background(), `
+SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'idx_subscription_reset_periods_one_active'
+`).Scan(&activeIndexSQL))
+	require.Contains(t, activeIndexSQL, "WHERE status = 'active'")
+}
+
+func TestMigrateFreezesOnlyPreexistingSubscriptionTiersForLegacyResetBackfill(t *testing.T) {
+	store, err := Open("sqlite", ":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+	ctx := context.Background()
+
+	_, err = store.DB.ExecContext(ctx, `
+CREATE TABLE redeem_tiers (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, code_type TEXT NOT NULL DEFAULT 'balance', amount REAL NOT NULL DEFAULT 0,
+  pay_amount_cny REAL NOT NULL DEFAULT 0, original_pay_amount_cny REAL NULL, label TEXT NOT NULL,
+  enabled INTEGER NOT NULL DEFAULT 1, sort_order INTEGER NOT NULL DEFAULT 0, sub2api_group_id INTEGER NULL,
+  validity_days INTEGER NOT NULL DEFAULT 0, concurrency INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+);
+INSERT INTO redeem_tiers (code_type, amount, pay_amount_cny, label, sub2api_group_id, validity_days, concurrency, created_at, updated_at)
+VALUES ('subscription', 0, 88, 'Legacy subscription', 7, 30, 10, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z');
+`)
+	require.NoError(t, err)
+
+	require.NoError(t, store.Migrate(ctx))
+
+	var legacyEligible int
+	require.NoError(t, store.DB.QueryRowContext(ctx, `SELECT legacy_reset_backfill_eligible FROM redeem_tiers WHERE id = 1`).Scan(&legacyEligible))
+	require.Equal(t, 1, legacyEligible)
+
+	_, err = store.DB.ExecContext(ctx, `
+INSERT INTO redeem_tiers (
+  code_type, amount, pay_amount_cny, label, enabled, sort_order, sub2api_group_id, validity_days, concurrency,
+  reset_count, created_at, updated_at
+) VALUES ('subscription', 0, 99, 'New subscription', 1, 20, 8, 30, 10, 0, '2026-07-17T00:00:00Z', '2026-07-17T00:00:00Z')
+`)
+	require.NoError(t, err)
+	require.NoError(t, store.Migrate(ctx))
+
+	var newEligible int
+	require.NoError(t, store.DB.QueryRowContext(ctx, `SELECT legacy_reset_backfill_eligible FROM redeem_tiers WHERE label = 'New subscription'`).Scan(&newEligible))
+	require.Zero(t, newEligible)
+}
+
 func TestMigrateUpgradesLegacyConcurrencyColumnsWithoutLosingRows(t *testing.T) {
 	store, err := Open("sqlite", ":memory:")
 	require.NoError(t, err)
