@@ -684,7 +684,7 @@ func TestApproveAccessRequestDirectChargeSubscriptionUsesPositiveValue(t *testin
 			require.Equal(t, 10, input["concurrency"])
 			writeRedeemTestEnvelope(w, map[string]any{"id": 1, "concurrency": 10})
 		case "/api/v1/admin/subscriptions":
-			writeRedeemTestEnvelope(w, map[string]any{"items": []map[string]any{{"id": 77, "user_id": 1, "group_id": 2, "status": "active", "expires_at": now.Add(30 * 24 * time.Hour).Format(time.RFC3339Nano)}}, "total": 1, "pages": 1})
+			writeRedeemTestEnvelope(w, map[string]any{"items": []map[string]any{{"id": 77, "user_id": 1, "group_id": 2, "status": "active", "expires_at": now.Add(30 * 24 * time.Hour).Format(time.RFC3339Nano)}}, "total": 1, "page": 1, "page_size": 100, "pages": 1})
 		default:
 			http.NotFound(w, r)
 		}

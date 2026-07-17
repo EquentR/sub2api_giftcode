@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -71,18 +72,52 @@ type Group struct {
 }
 
 type Subscription struct {
-	ID         int64      `json:"id"`
-	UserID     int64      `json:"user_id"`
-	GroupID    int64      `json:"group_id"`
-	StartsAt   time.Time  `json:"starts_at"`
-	ExpiresAt  time.Time  `json:"expires_at"`
-	Status     string     `json:"status"`
-	AssignedBy *int64     `json:"assigned_by,omitempty"`
-	AssignedAt *time.Time `json:"assigned_at,omitempty"`
-	Notes      string     `json:"notes,omitempty"`
-	RevokedAt  *time.Time `json:"revoked_at,omitempty"`
-	User       *User      `json:"user,omitempty"`
-	Group      *Group     `json:"group,omitempty"`
+	ID                 int64      `json:"id"`
+	UserID             int64      `json:"user_id"`
+	GroupID            int64      `json:"group_id"`
+	StartsAt           time.Time  `json:"starts_at"`
+	ExpiresAt          time.Time  `json:"expires_at"`
+	Status             string     `json:"status"`
+	DailyWindowStart   *time.Time `json:"daily_window_start"`
+	WeeklyWindowStart  *time.Time `json:"weekly_window_start"`
+	MonthlyWindowStart *time.Time `json:"monthly_window_start"`
+	DailyUsageUSD      float64    `json:"daily_usage_usd"`
+	WeeklyUsageUSD     float64    `json:"weekly_usage_usd"`
+	MonthlyUsageUSD    float64    `json:"monthly_usage_usd"`
+	AssignedBy         *int64     `json:"assigned_by,omitempty"`
+	AssignedAt         *time.Time `json:"assigned_at,omitempty"`
+	Notes              string     `json:"notes,omitempty"`
+	RevokedAt          *time.Time `json:"revoked_at,omitempty"`
+	User               *User      `json:"user,omitempty"`
+	Group              *Group     `json:"group,omitempty"`
+	CreatedAt          time.Time  `json:"created_at"`
+	UpdatedAt          time.Time  `json:"updated_at"`
+}
+
+type SubscriptionProgress struct {
+	ID            int64                `json:"id"`
+	GroupName     string               `json:"group_name"`
+	ExpiresAt     time.Time            `json:"expires_at"`
+	ExpiresInDays int                  `json:"expires_in_days"`
+	Daily         *UsageWindowProgress `json:"daily,omitempty"`
+	Weekly        *UsageWindowProgress `json:"weekly,omitempty"`
+	Monthly       *UsageWindowProgress `json:"monthly,omitempty"`
+}
+
+type UsageWindowProgress struct {
+	LimitUSD        float64    `json:"limit_usd"`
+	UsedUSD         float64    `json:"used_usd"`
+	RemainingUSD    float64    `json:"remaining_usd"`
+	Percentage      float64    `json:"percentage"`
+	WindowStart     *time.Time `json:"window_start"`
+	ResetsAt        *time.Time `json:"resets_at"`
+	ResetsInSeconds int64      `json:"resets_in_seconds"`
+}
+
+type ResetQuotaInput struct {
+	Daily   bool `json:"daily"`
+	Weekly  bool `json:"weekly"`
+	Monthly bool `json:"monthly"`
 }
 
 type Account struct {
@@ -147,6 +182,61 @@ type APIError struct {
 	Status  int
 	Message string
 	Reason  string
+}
+
+var (
+	ErrAuthoritativeReadFailed = errors.New("authoritative upstream read failed")
+	ErrUpstreamRejected        = errors.New("upstream rejected request")
+	ErrResultUnknown           = errors.New("upstream result unknown")
+)
+
+type OperationErrorKind string
+
+const (
+	OperationErrorAuthoritativeRead OperationErrorKind = "authoritative_read_failed"
+	OperationErrorRejected          OperationErrorKind = "upstream_rejected"
+	OperationErrorResultUnknown     OperationErrorKind = "result_unknown"
+)
+
+type OperationError struct {
+	Kind      OperationErrorKind
+	Operation string
+	Status    int
+	Message   string
+	Reason    string
+}
+
+func (e *OperationError) Error() string {
+	if e == nil {
+		return ""
+	}
+	message := strings.TrimSpace(e.Message)
+	if message == "" {
+		message = string(e.Kind)
+	}
+	if e.Reason != "" {
+		message += " (" + e.Reason + ")"
+	}
+	if e.Operation == "" {
+		return message
+	}
+	return e.Operation + ": " + message
+}
+
+func (e *OperationError) Is(target error) bool {
+	if e == nil {
+		return false
+	}
+	switch target {
+	case ErrAuthoritativeReadFailed:
+		return e.Kind == OperationErrorAuthoritativeRead
+	case ErrUpstreamRejected:
+		return e.Kind == OperationErrorRejected
+	case ErrResultUnknown:
+		return e.Kind == OperationErrorResultUnknown
+	default:
+		return false
+	}
 }
 
 var sensitiveCredentialKeys = map[string]struct{}{
@@ -326,6 +416,9 @@ func (c *Client) UpdateUserConcurrency(ctx context.Context, userID int64, concur
 }
 
 func (c *Client) ListActiveUserSubscriptions(ctx context.Context, userID int64) ([]Subscription, error) {
+	if userID <= 0 {
+		return nil, fmt.Errorf("user ID must be positive")
+	}
 	const pageSize = 100
 	page := 1
 	out := make([]Subscription, 0)
@@ -333,7 +426,10 @@ func (c *Client) ListActiveUserSubscriptions(ctx context.Context, userID int64) 
 		var pageData paginatedEnvelope[Subscription]
 		path := fmt.Sprintf("/api/v1/admin/subscriptions?user_id=%d&status=active&page=%d&page_size=%d", userID, page, pageSize)
 		if err := c.getJSONWithHeaders(ctx, path, map[string]string{"x-api-key": c.AdminAPIKey}, &pageData); err != nil {
-			return nil, err
+			return nil, c.operationError(OperationErrorAuthoritativeRead, "list subscriptions", err)
+		}
+		if pageData.Items == nil || pageData.Page != page || pageData.PageSize <= 0 || pageData.Total < 0 || pageData.Pages < 0 {
+			return nil, c.operationError(OperationErrorAuthoritativeRead, "list subscriptions", fmt.Errorf("unverifiable subscriptions page"))
 		}
 		out = append(out, pageData.Items...)
 		if len(pageData.Items) == 0 || int64(page*pageSize) >= pageData.Total || page >= pageData.Pages {
@@ -342,6 +438,68 @@ func (c *Client) ListActiveUserSubscriptions(ctx context.Context, userID int64) 
 		page++
 	}
 	return out, nil
+}
+
+func (c *Client) GetSubscription(ctx context.Context, subscriptionID int64) (*Subscription, error) {
+	if subscriptionID <= 0 {
+		return nil, fmt.Errorf("subscription ID must be positive")
+	}
+	var out Subscription
+	path := fmt.Sprintf("/api/v1/admin/subscriptions/%d", subscriptionID)
+	if err := c.getJSONWithHeaders(ctx, path, map[string]string{"x-api-key": c.AdminAPIKey}, &out); err != nil {
+		return nil, c.operationError(OperationErrorAuthoritativeRead, "get subscription", err)
+	}
+	if out.ID != subscriptionID {
+		return nil, c.operationError(OperationErrorAuthoritativeRead, "get subscription", fmt.Errorf("unverifiable subscription response"))
+	}
+	return &out, nil
+}
+
+func (c *Client) GetSubscriptionProgress(ctx context.Context, subscriptionID int64) (*SubscriptionProgress, error) {
+	if subscriptionID <= 0 {
+		return nil, fmt.Errorf("subscription ID must be positive")
+	}
+	var out SubscriptionProgress
+	path := fmt.Sprintf("/api/v1/admin/subscriptions/%d/progress", subscriptionID)
+	if err := c.getJSONWithHeaders(ctx, path, map[string]string{"x-api-key": c.AdminAPIKey}, &out); err != nil {
+		return nil, c.operationError(OperationErrorAuthoritativeRead, "get subscription progress", err)
+	}
+	if out.ID != subscriptionID {
+		return nil, c.operationError(OperationErrorAuthoritativeRead, "get subscription progress", fmt.Errorf("unverifiable subscription progress response"))
+	}
+	return &out, nil
+}
+
+func (c *Client) ResetSubscriptionQuota(ctx context.Context, subscriptionID int64, group Group) (*Subscription, error) {
+	if subscriptionID <= 0 {
+		return nil, fmt.Errorf("subscription ID must be positive")
+	}
+	input := ResetQuotaInput{
+		Daily:   positiveLimit(group.DailyLimitUSD),
+		Weekly:  positiveLimit(group.WeeklyLimitUSD),
+		Monthly: positiveLimit(group.MonthlyLimitUSD),
+	}
+	if !input.Daily && !input.Weekly && !input.Monthly {
+		return nil, fmt.Errorf("subscription group has no configured quota window")
+	}
+	var out Subscription
+	path := fmt.Sprintf("/api/v1/admin/subscriptions/%d/reset-quota", subscriptionID)
+	err := c.postJSON(ctx, path, map[string]string{"x-api-key": c.AdminAPIKey}, input, &out)
+	if err == nil {
+		if out.ID != subscriptionID {
+			return nil, c.operationError(OperationErrorResultUnknown, "reset subscription quota", fmt.Errorf("unverifiable reset response"))
+		}
+		return &out, nil
+	}
+	var apiErr *APIError
+	if errors.As(err, &apiErr) {
+		return nil, c.operationError(OperationErrorRejected, "reset subscription quota", err)
+	}
+	return nil, c.operationError(OperationErrorResultUnknown, "reset subscription quota", err)
+}
+
+func positiveLimit(limit *float64) bool {
+	return limit != nil && *limit > 0
 }
 
 func (c *Client) AddUserBalance(ctx context.Context, idempotencyKey string, userID int64, amount float64, notes string) (*User, error) {
@@ -498,6 +656,9 @@ func (c *Client) do(req *http.Request, out any) error {
 	}
 	var env envelope
 	if err := json.Unmarshal(raw, &env); err != nil {
+		if resp.StatusCode >= http.StatusMultipleChoices {
+			return &APIError{Status: resp.StatusCode, Message: resp.Status}
+		}
 		return fmt.Errorf("decode sub2api response: %w", err)
 	}
 	if resp.StatusCode >= 300 || env.Code != 0 {
@@ -517,4 +678,37 @@ func (c *Client) do(req *http.Request, out any) error {
 		return fmt.Errorf("decode sub2api data: %w", err)
 	}
 	return nil
+}
+
+func (c *Client) operationError(kind OperationErrorKind, operation string, err error) error {
+	if err == nil {
+		return nil
+	}
+	status := 0
+	message := err.Error()
+	reason := ""
+	var apiErr *APIError
+	if errors.As(err, &apiErr) {
+		status = apiErr.Status
+		message = apiErr.Message
+		reason = apiErr.Reason
+	}
+	return &OperationError{
+		Kind:      kind,
+		Operation: operation,
+		Status:    status,
+		Message:   redactSecret(message, c.AdminAPIKey),
+		Reason:    redactSecret(reason, c.AdminAPIKey),
+	}
+}
+
+func redactSecret(value string, secrets ...string) string {
+	for _, secret := range secrets {
+		secret = strings.TrimSpace(secret)
+		if secret == "" {
+			continue
+		}
+		value = strings.ReplaceAll(value, secret, "[REDACTED]")
+	}
+	return value
 }

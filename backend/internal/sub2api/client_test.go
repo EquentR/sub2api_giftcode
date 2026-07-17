@@ -3,10 +3,12 @@ package sub2api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -421,6 +423,266 @@ func TestClientRejectsInvalidUserConcurrencyArguments(t *testing.T) {
 
 	_, err = client.UpdateUserConcurrency(context.Background(), 10, 0)
 	require.ErrorContains(t, err, "concurrency")
+}
+
+func TestClientListsSubscriptionPagesAndParsesUsage(t *testing.T) {
+	windowStart := time.Date(2026, 7, 17, 0, 0, 0, 0, time.UTC)
+	expiresAt := windowStart.Add(30 * 24 * time.Hour)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, http.MethodGet, r.Method)
+		require.Equal(t, "/api/v1/admin/subscriptions", r.URL.Path)
+		require.Equal(t, "admin-key", r.Header.Get("x-api-key"))
+		require.Equal(t, "12", r.URL.Query().Get("user_id"))
+		require.Equal(t, "active", r.URL.Query().Get("status"))
+		page := r.URL.Query().Get("page")
+		switch page {
+		case "1":
+			writeEnvelope(w, paginatedEnvelope[Subscription]{
+				Items: []Subscription{{
+					ID: 101, UserID: 12, GroupID: 21, Status: "active", ExpiresAt: expiresAt,
+					DailyUsageUSD: 4.5, DailyWindowStart: &windowStart,
+					Group: &Group{ID: 21, Name: "Daily", DailyLimitUSD: floatPtr(10)},
+				}},
+				Total: 101, Page: 1, PageSize: 100, Pages: 2,
+			})
+		case "2":
+			writeEnvelope(w, paginatedEnvelope[Subscription]{
+				Items: []Subscription{{ID: 102, UserID: 12, GroupID: 22, Status: "active", ExpiresAt: expiresAt}},
+				Total: 101, Page: 2, PageSize: 100, Pages: 2,
+			})
+		default:
+			t.Fatalf("unexpected page %q", page)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	client := NewClient(server.URL, "admin-key")
+	subscriptions, err := client.ListActiveUserSubscriptions(context.Background(), 12)
+	require.NoError(t, err)
+	require.Len(t, subscriptions, 2)
+	require.Equal(t, 4.5, subscriptions[0].DailyUsageUSD)
+	require.Equal(t, windowStart, *subscriptions[0].DailyWindowStart)
+	require.Equal(t, 10.0, *subscriptions[0].Group.DailyLimitUSD)
+}
+
+func TestClientGetsSubscriptionAndProgress(t *testing.T) {
+	windowStart := time.Date(2026, 7, 17, 0, 0, 0, 0, time.UTC)
+	resetsAt := windowStart.Add(24 * time.Hour)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, http.MethodGet, r.Method)
+		require.Equal(t, "admin-key", r.Header.Get("x-api-key"))
+		switch r.URL.Path {
+		case "/api/v1/admin/subscriptions/55":
+			writeEnvelope(w, Subscription{ID: 55, UserID: 12, GroupID: 21, Status: "active", DailyUsageUSD: 3})
+		case "/api/v1/admin/subscriptions/55/progress":
+			writeEnvelope(w, SubscriptionProgress{
+				ID: 55, GroupName: "Daily", ExpiresInDays: 29,
+				Daily: &UsageWindowProgress{
+					LimitUSD: 10, UsedUSD: 3, RemainingUSD: 7, Percentage: 30,
+					WindowStart: &windowStart, ResetsAt: &resetsAt, ResetsInSeconds: 3600,
+				},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	client := NewClient(server.URL, "admin-key")
+	subscription, err := client.GetSubscription(context.Background(), 55)
+	require.NoError(t, err)
+	require.Equal(t, int64(12), subscription.UserID)
+
+	progress, err := client.GetSubscriptionProgress(context.Background(), 55)
+	require.NoError(t, err)
+	require.Equal(t, 3.0, progress.Daily.UsedUSD)
+	require.Equal(t, resetsAt, *progress.Daily.ResetsAt)
+}
+
+func TestClientResetQuotaSendsOnlyConfiguredWindowsWithAdminKey(t *testing.T) {
+	var body map[string]bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, http.MethodPost, r.Method)
+		require.Equal(t, "/api/v1/admin/subscriptions/55/reset-quota", r.URL.Path)
+		require.Equal(t, "admin-key", r.Header.Get("x-api-key"))
+		require.Empty(t, r.Header.Get("Authorization"))
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+		writeEnvelope(w, Subscription{ID: 55, UserID: 12, GroupID: 21, Status: "active"})
+	}))
+	t.Cleanup(server.Close)
+
+	client := NewClient(server.URL, "admin-key")
+	updated, err := client.ResetSubscriptionQuota(context.Background(), 55, Group{
+		DailyLimitUSD: floatPtr(10), MonthlyLimitUSD: floatPtr(100),
+	})
+	require.NoError(t, err)
+	require.Equal(t, int64(55), updated.ID)
+	require.Equal(t, map[string]bool{"daily": true, "weekly": false, "monthly": true}, body)
+}
+
+func TestClientResetQuotaClassifiesExplicitRejectionAndRedactsKey(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusConflict)
+		_ = json.NewEncoder(w).Encode(envelope{Code: http.StatusConflict, Message: "rejected admin-key", Reason: "quota_locked"})
+	}))
+	t.Cleanup(server.Close)
+
+	client := NewClient(server.URL, "admin-key")
+	_, err := client.ResetSubscriptionQuota(context.Background(), 55, Group{DailyLimitUSD: floatPtr(10)})
+	require.Error(t, err)
+	require.ErrorIs(t, err, ErrUpstreamRejected)
+	require.NotContains(t, err.Error(), "admin-key")
+	require.Contains(t, err.Error(), "[REDACTED]")
+}
+
+func TestClientResetQuotaTreatsNonSuccessHTTPWithInvalidBodyAsExplicitRejection(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte("not-json"))
+	}))
+	t.Cleanup(server.Close)
+
+	client := NewClient(server.URL, "admin-key")
+	_, err := client.ResetSubscriptionQuota(context.Background(), 55, Group{DailyLimitUSD: floatPtr(10)})
+	require.Error(t, err)
+	require.ErrorIs(t, err, ErrUpstreamRejected)
+}
+
+func TestClientResetQuotaClassifiesUnknownTransportResult(t *testing.T) {
+	client := NewClient("http://sub2api.invalid", "secret-admin-key")
+	client.HTTPClient = &http.Client{Transport: roundTripperFunc(func(*http.Request) (*http.Response, error) {
+		return nil, errors.New("connection reset after sending secret-admin-key")
+	})}
+
+	_, err := client.ResetSubscriptionQuota(context.Background(), 55, Group{WeeklyLimitUSD: floatPtr(50)})
+	require.Error(t, err)
+	require.ErrorIs(t, err, ErrResultUnknown)
+	require.NotContains(t, err.Error(), "secret-admin-key")
+}
+
+func TestClientResetQuotaRejectsUnlimitedGroupBeforeRequest(t *testing.T) {
+	client := NewClient("http://127.0.0.1:1", "admin-key")
+
+	_, err := client.ResetSubscriptionQuota(context.Background(), 55, Group{})
+	require.ErrorContains(t, err, "configured quota window")
+	require.NotErrorIs(t, err, ErrResultUnknown)
+}
+
+func TestClientResetQuotaTreatsZeroLimitsAsUnconfigured(t *testing.T) {
+	zero := 0.0
+	weekly := 50.0
+	var body map[string]bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+		writeEnvelope(w, Subscription{ID: 55})
+	}))
+	t.Cleanup(server.Close)
+
+	client := NewClient(server.URL, "admin-key")
+	_, err := client.ResetSubscriptionQuota(context.Background(), 55, Group{
+		DailyLimitUSD: &zero, WeeklyLimitUSD: &weekly, MonthlyLimitUSD: &zero,
+	})
+	require.NoError(t, err)
+	require.Equal(t, map[string]bool{"daily": false, "weekly": true, "monthly": false}, body)
+
+	_, err = client.ResetSubscriptionQuota(context.Background(), 55, Group{
+		DailyLimitUSD: &zero, WeeklyLimitUSD: &zero, MonthlyLimitUSD: &zero,
+	})
+	require.ErrorContains(t, err, "configured quota window")
+	require.NotErrorIs(t, err, ErrResultUnknown)
+}
+
+func TestClientResetQuotaRejectsUnverifiableSuccessData(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		data json.RawMessage
+	}{
+		{name: "missing", data: nil},
+		{name: "null", data: json.RawMessage("null")},
+		{name: "empty_object", data: json.RawMessage("{}")},
+		{name: "wrong_subscription", data: mustJSON(Subscription{ID: 99})},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				_ = json.NewEncoder(w).Encode(envelope{Code: 0, Message: "success", Data: test.data})
+			}))
+			t.Cleanup(server.Close)
+
+			client := NewClient(server.URL, "admin-key")
+			_, err := client.ResetSubscriptionQuota(context.Background(), 55, Group{DailyLimitUSD: floatPtr(10)})
+			require.ErrorIs(t, err, ErrResultUnknown)
+		})
+	}
+}
+
+func TestClientSubscriptionReadsRejectUnverifiableSuccessData(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(envelope{Code: 0, Message: "success", Data: json.RawMessage("{}")})
+	}))
+	t.Cleanup(server.Close)
+
+	client := NewClient(server.URL, "admin-key")
+	_, err := client.GetSubscription(context.Background(), 55)
+	require.ErrorIs(t, err, ErrAuthoritativeReadFailed)
+
+	_, err = client.GetSubscriptionProgress(context.Background(), 55)
+	require.ErrorIs(t, err, ErrAuthoritativeReadFailed)
+}
+
+func TestClientListActiveSubscriptionsRejectsUnverifiableSuccessData(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		data json.RawMessage
+	}{
+		{name: "missing", data: nil},
+		{name: "null", data: json.RawMessage("null")},
+		{name: "empty_object", data: json.RawMessage("{}")},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				_ = json.NewEncoder(w).Encode(envelope{Code: 0, Message: "success", Data: test.data})
+			}))
+			t.Cleanup(server.Close)
+
+			client := NewClient(server.URL, "admin-key")
+			_, err := client.ListActiveUserSubscriptions(context.Background(), 12)
+			require.ErrorIs(t, err, ErrAuthoritativeReadFailed)
+		})
+	}
+}
+
+func TestClientListActiveSubscriptionsAcceptsVerifiedEmptyPage(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeEnvelope(w, paginatedEnvelope[Subscription]{
+			Items: []Subscription{}, Total: 0, Page: 1, PageSize: 100, Pages: 0,
+		})
+	}))
+	t.Cleanup(server.Close)
+
+	client := NewClient(server.URL, "admin-key")
+	items, err := client.ListActiveUserSubscriptions(context.Background(), 12)
+	require.NoError(t, err)
+	require.Empty(t, items)
+}
+
+func TestClientSubscriptionProgressClassifiesAuthoritativeReadFailure(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+		_ = json.NewEncoder(w).Encode(envelope{Code: http.StatusBadGateway, Message: "progress unavailable", Reason: "upstream_down"})
+	}))
+	t.Cleanup(server.Close)
+
+	client := NewClient(server.URL, "admin-key")
+	_, err := client.GetSubscriptionProgress(context.Background(), 55)
+	require.Error(t, err)
+	require.ErrorIs(t, err, ErrAuthoritativeReadFailed)
+	require.True(t, strings.Contains(err.Error(), "progress unavailable"))
+}
+
+type roundTripperFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripperFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
 }
 
 func floatPtr(v float64) *float64 {

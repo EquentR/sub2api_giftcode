@@ -36,7 +36,7 @@ func TestReconcileSubscriptionConcurrencyUsesMaximumGrant(t *testing.T) {
 			updated++
 			writeRedeemTestEnvelope(w, map[string]any{"id": 1, "concurrency": 12})
 		case "/api/v1/admin/subscriptions":
-			writeRedeemTestEnvelope(w, map[string]any{"items": []map[string]any{{"id": 41, "user_id": 1, "group_id": 7, "status": "active", "expires_at": now.Add(time.Hour).Format(time.RFC3339Nano)}}, "total": 1, "pages": 1})
+			writeRedeemTestEnvelope(w, map[string]any{"items": []map[string]any{{"id": 41, "user_id": 1, "group_id": 7, "status": "active", "expires_at": now.Add(time.Hour).Format(time.RFC3339Nano)}}, "total": 1, "page": 1, "page_size": 100, "pages": 1})
 		default:
 			http.NotFound(w, r)
 		}
@@ -308,7 +308,7 @@ func TestReconcileSubscriptionConcurrencyFallsBackToLiveDefault(t *testing.T) {
 			target = body["concurrency"]
 			writeRedeemTestEnvelope(w, map[string]any{"id": 1, "concurrency": 3})
 		case "/api/v1/admin/subscriptions":
-			writeRedeemTestEnvelope(w, map[string]any{"items": []any{}, "total": 0, "pages": 1})
+			writeRedeemTestEnvelope(w, map[string]any{"items": []any{}, "total": 0, "page": 1, "page_size": 100, "pages": 1})
 		case "/api/v1/admin/settings":
 			writeRedeemTestEnvelope(w, map[string]any{"default_concurrency": 3})
 		default:
@@ -411,7 +411,7 @@ func TestReconcileSubscriptionConcurrencyRedeemGateAndRetry(t *testing.T) {
 				}
 			}
 		case "/api/v1/admin/subscriptions":
-			writeRedeemTestEnvelope(w, map[string]any{"items": []map[string]any{{"id": 41, "user_id": 1, "group_id": 7, "status": "active", "expires_at": now.Add(time.Hour).Format(time.RFC3339Nano)}}, "total": 1, "pages": 1})
+			writeRedeemTestEnvelope(w, map[string]any{"items": []map[string]any{{"id": 41, "user_id": 1, "group_id": 7, "status": "active", "expires_at": now.Add(time.Hour).Format(time.RFC3339Nano)}}, "total": 1, "page": 1, "page_size": 100, "pages": 1})
 		case "/api/v1/admin/settings":
 			writeRedeemTestEnvelope(w, map[string]any{"default_concurrency": 3})
 		default:
@@ -495,7 +495,7 @@ func TestReconcileSubscriptionConcurrencyDoesNotRebindMissingSubscription(t *tes
 			currentConcurrency = 3
 			writeRedeemTestEnvelope(w, map[string]any{"id": 1, "concurrency": 3})
 		case "/api/v1/admin/subscriptions":
-			writeRedeemTestEnvelope(w, map[string]any{"items": []map[string]any{{"id": 99, "user_id": 1, "group_id": 7, "status": "active", "expires_at": formatTime(now.Add(time.Hour))}}, "total": 1, "pages": 1})
+			writeRedeemTestEnvelope(w, map[string]any{"items": []map[string]any{{"id": 99, "user_id": 1, "group_id": 7, "status": "active", "expires_at": formatTime(now.Add(time.Hour))}}, "total": 1, "page": 1, "page_size": 100, "pages": 1})
 		case "/api/v1/admin/settings":
 			writeRedeemTestEnvelope(w, map[string]any{"default_concurrency": 3})
 		default:
@@ -549,7 +549,7 @@ func newConcurrencyTestService(t *testing.T, store *db.Store, now time.Time, cur
 		case "/api/v1/admin/users/1":
 			writeRedeemTestEnvelope(w, map[string]any{"id": 1, "concurrency": currentConcurrency})
 		case "/api/v1/admin/subscriptions":
-			writeRedeemTestEnvelope(w, map[string]any{"items": subscriptions, "total": len(subscriptions), "pages": 1})
+			writeRedeemTestEnvelope(w, map[string]any{"items": subscriptions, "total": len(subscriptions), "page": 1, "page_size": 100, "pages": 1})
 		case "/api/v1/admin/settings":
 			writeRedeemTestEnvelope(w, map[string]any{"default_concurrency": 3})
 		default:
@@ -637,7 +637,7 @@ func TestReconcileSubscriptionConcurrencyProtectsAndReleasesManualOverride(t *te
 			if active {
 				items = append(items, map[string]any{"id": 77, "user_id": 1, "group_id": 7, "status": "active", "expires_at": formatTime(now.Add(time.Hour))})
 			}
-			writeRedeemTestEnvelope(w, map[string]any{"items": items, "total": len(items), "pages": 1})
+			writeRedeemTestEnvelope(w, map[string]any{"items": items, "total": len(items), "page": 1, "page_size": 100, "pages": 1})
 		case "/api/v1/admin/settings":
 			writeRedeemTestEnvelope(w, map[string]any{"default_concurrency": 3})
 		default:
@@ -690,7 +690,7 @@ func TestReconcileSubscriptionConcurrencyDetectsExternalChangeAfterManagedWrite(
 			}
 			writeRedeemTestEnvelope(w, map[string]any{"id": 1, "concurrency": currentConcurrency})
 		case "/api/v1/admin/subscriptions":
-			writeRedeemTestEnvelope(w, map[string]any{"items": []map[string]any{{"id": 77, "user_id": 1, "group_id": 7, "status": "active", "expires_at": formatTime(now.Add(time.Hour))}}, "total": 1, "pages": 1})
+			writeRedeemTestEnvelope(w, map[string]any{"items": []map[string]any{{"id": 77, "user_id": 1, "group_id": 7, "status": "active", "expires_at": formatTime(now.Add(time.Hour))}}, "total": 1, "page": 1, "page_size": 100, "pages": 1})
 		default:
 			http.NotFound(w, r)
 		}
@@ -731,7 +731,7 @@ func TestReconcileSubscriptionConcurrencyForUserProtectsBeforeGlobalBootstrap(t 
 			}
 			writeRedeemTestEnvelope(w, map[string]any{"id": 1, "concurrency": 20})
 		case "/api/v1/admin/subscriptions":
-			writeRedeemTestEnvelope(w, map[string]any{"items": []map[string]any{{"id": 77, "user_id": 1, "group_id": 7, "status": "active", "expires_at": formatTime(now.Add(time.Hour))}}, "total": 1, "pages": 1})
+			writeRedeemTestEnvelope(w, map[string]any{"items": []map[string]any{{"id": 77, "user_id": 1, "group_id": 7, "status": "active", "expires_at": formatTime(now.Add(time.Hour))}}, "total": 1, "page": 1, "page_size": 100, "pages": 1})
 		default:
 			http.NotFound(w, r)
 		}
