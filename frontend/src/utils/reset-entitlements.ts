@@ -3,11 +3,11 @@ import type { SubscriptionResetEntitlementAdminView } from '@/api/types'
 export function filterSubscriptionResetEntitlements(
   items: SubscriptionResetEntitlementAdminView[],
   keyword: string,
-  groupID: number | null,
+  groupID: number | null | undefined,
 ) {
   const normalizedKeyword = keyword.trim().toLocaleLowerCase()
   return items.filter((item) => {
-    if (groupID !== null && item.sub2api_group_id !== groupID) return false
+    if (groupID != null && item.sub2api_group_id !== groupID) return false
     if (!normalizedKeyword) return true
     return [item.username, item.email, String(item.upstream_user_id)]
       .some((value) => value.trim().toLocaleLowerCase().includes(normalizedKeyword))

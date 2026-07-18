@@ -151,6 +151,7 @@ test('admin reset entitlement filters combine user keyword and group without hid
   assert.deepEqual(filterSubscriptionResetEntitlements(items as any, 'ALICE', null), [items[0]])
   assert.deepEqual(filterSubscriptionResetEntitlements(items as any, '1', 7), [items[0]])
   assert.deepEqual(filterSubscriptionResetEntitlements(items as any, '', null), items)
+  assert.deepEqual(filterSubscriptionResetEntitlements(items as any, '', undefined), items)
 })
 
 test('admin reset entitlement labels fall back to stable ids', () => {
