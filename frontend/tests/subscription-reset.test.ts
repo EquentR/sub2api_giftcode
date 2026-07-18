@@ -10,6 +10,11 @@ import {
   resetTargetSummaries,
 } from '../src/utils/subscriptions.ts'
 import { extensionEventStatusLabel } from '../src/utils/subscription-extension-events.ts'
+import {
+  filterSubscriptionResetEntitlements,
+  resetEntitlementGroupLabel,
+  resetEntitlementUserLabel,
+} from '../src/utils/reset-entitlements.ts'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const readSource = (path: string) => readFileSync(resolve(__dirname, path), 'utf8')
@@ -105,6 +110,44 @@ test('admin bonus user options bind the upstream user id returned by the API', (
   assert.match(viewSource, /:key="user\.upstream_user_id"/)
   assert.match(viewSource, /:value="user\.upstream_user_id"/)
   assert.doesNotMatch(viewSource, /user\.id/)
+})
+
+test('admin reset entitlement filters combine user keyword and group without hiding zero counts', () => {
+  const items = [
+    {
+      upstream_user_id: 1, username: 'Alice', email: 'alice@example.com', upstream_subscription_id: 77,
+      sub2api_group_id: 7, group_name: 'Standard', total_reset_remaining: 0,
+    },
+    {
+      upstream_user_id: 2, username: 'Bob', email: 'bob@example.com', upstream_subscription_id: 88,
+      sub2api_group_id: 8, group_name: 'Premium', total_reset_remaining: 3,
+    },
+  ]
+  assert.deepEqual(filterSubscriptionResetEntitlements(items as any, 'ALICE', null), [items[0]])
+  assert.deepEqual(filterSubscriptionResetEntitlements(items as any, '1', 7), [items[0]])
+  assert.deepEqual(filterSubscriptionResetEntitlements(items as any, '', null), items)
+})
+
+test('admin reset entitlement labels fall back to stable ids', () => {
+  const item = { upstream_user_id: 12, username: '', email: '', sub2api_group_id: 21, group_name: '' } as any
+  assert.equal(resetEntitlementUserLabel(item), '用户 12')
+  assert.equal(resetEntitlementGroupLabel(item), '分组 21')
+})
+
+test('admin bonus page renders reset entitlement overview with isolated refresh state', () => {
+  const viewSource = readSource('../src/views/AdminResetBonusView.vue')
+  const apiSource = readSource('../src/api/admin.ts')
+  const typeSource = readSource('../src/api/types.ts')
+  assert.match(typeSource, /interface SubscriptionResetEntitlementAdminView/)
+  assert.match(apiSource, /url:\s*'\/admin\/subscription-reset-entitlements'/)
+  assert.match(viewSource, /当前订阅权益/)
+  assert.match(viewSource, /entitlementLoading/)
+  assert.match(viewSource, /entitlementError/)
+  assert.match(viewSource, /entitlementStale/)
+  assert.match(viewSource, /entitlementsLoaded/)
+  assert.match(viewSource, /filteredEntitlements/)
+  assert.match(viewSource, /total_reset_remaining/)
+  assert.match(viewSource, /refreshEntitlements\(\{ silent: true \}\)/)
 })
 
 test('extension event labels use backend status and resolution independently', () => {

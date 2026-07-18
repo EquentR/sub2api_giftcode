@@ -106,6 +106,73 @@
       </div>
     </section>
 
+    <section class="surface section entitlement-section">
+      <div class="section-heading entitlement-heading">
+        <div>
+          <h2>当前订阅权益</h2>
+          <p>汇总所有有效订阅当前可用的基础次数与赠送次数，零次订阅仍会保留。</p>
+        </div>
+        <el-button :icon="Refresh" :loading="entitlementLoading" @click="() => refreshEntitlements()">刷新权益</el-button>
+      </div>
+
+      <div class="entitlement-filters">
+        <el-input v-model="entitlementKeyword" :prefix-icon="Search" clearable placeholder="搜索用户名、邮箱或用户 ID" />
+        <el-select v-model="entitlementGroupID" clearable placeholder="全部订阅分组">
+          <el-option
+            v-for="group in entitlementGroups"
+            :key="group.id"
+            :label="group.name"
+            :value="group.id"
+          />
+        </el-select>
+      </div>
+
+      <el-alert
+        v-if="entitlementError"
+        :title="entitlementError"
+        :type="entitlementStale ? 'warning' : 'error'"
+        :closable="false"
+        show-icon
+      />
+      <el-table
+        v-loading="entitlementLoading && !entitlements.length"
+        :data="filteredEntitlements"
+        empty-text="暂无有效订阅"
+        table-layout="fixed"
+      >
+        <el-table-column label="用户" min-width="210">
+          <template #default="{ row }">
+            <div class="cell-stack">
+              <strong>{{ resetEntitlementUserLabel(row) }}</strong>
+              <small>{{ row.email || '未提供邮箱' }} · ID {{ row.upstream_user_id }}</small>
+            </div>
+          </template>
+        </el-table-column>
+        <el-table-column label="订阅" min-width="190">
+          <template #default="{ row }">
+            <div class="cell-stack">
+              <strong>{{ resetEntitlementGroupLabel(row) }}</strong>
+              <small>分组 {{ row.sub2api_group_id }} · 订阅 {{ row.upstream_subscription_id }}</small>
+            </div>
+          </template>
+        </el-table-column>
+        <el-table-column label="到期时间" min-width="170">
+          <template #default="{ row }">
+            <div class="cell-stack"><span>{{ formatTime(row.expires_at) }}</span><small>剩余 {{ row.remaining_days }} 天</small></div>
+          </template>
+        </el-table-column>
+        <el-table-column label="基础剩余" width="110" align="center">
+          <template #default="{ row }"><strong class="count-value" :class="{ zero: row.base_reset_remaining === 0 }">{{ row.base_reset_remaining }} 次</strong></template>
+        </el-table-column>
+        <el-table-column label="赠送剩余" width="110" align="center">
+          <template #default="{ row }"><strong class="count-value" :class="{ zero: row.bonus_reset_remaining === 0 }">{{ row.bonus_reset_remaining }} 次</strong></template>
+        </el-table-column>
+        <el-table-column label="合计可用" width="110" align="center">
+          <template #default="{ row }"><strong class="count-value total" :class="{ zero: row.total_reset_remaining === 0 }">{{ row.total_reset_remaining }} 次</strong></template>
+        </el-table-column>
+      </el-table>
+    </section>
+
     <section class="surface section history-section">
       <div class="section-heading compact">
         <div>
@@ -207,7 +274,7 @@
 
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
-import { Check, Refresh, View } from '@element-plus/icons-vue'
+import { Check, Refresh, Search, View } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import AppLayout from '@/components/AppLayout.vue'
 import {
@@ -216,18 +283,25 @@ import {
   listSubscriptionGroups,
   listSubscriptionResetBonusBatchDetails,
   listSubscriptionResetBonusBatches,
+  listSubscriptionResetEntitlements,
   listUsers,
   previewSubscriptionResetBonus,
   resolveSubscriptionExtensionEvent,
 } from '@/api/admin'
 import { ApiError } from '@/api/http'
 import { extensionEventStatusLabel } from '@/utils/subscription-extension-events'
+import {
+  filterSubscriptionResetEntitlements,
+  resetEntitlementGroupLabel,
+  resetEntitlementUserLabel,
+} from '@/utils/reset-entitlements'
 import type {
   SubscriptionExtensionEvent,
   SubscriptionGroup,
   SubscriptionResetBonusBatch,
   SubscriptionResetBonusBatchDetail,
   SubscriptionResetBonusPreview,
+  SubscriptionResetEntitlementAdminView,
   UserSummary,
 } from '@/api/types'
 
@@ -243,12 +317,19 @@ const groups = ref<SubscriptionGroup[]>([])
 const preview = ref<SubscriptionResetBonusPreview | null>(null)
 const batches = ref<SubscriptionResetBonusBatch[]>([])
 const extensionEvents = ref<SubscriptionExtensionEvent[]>([])
+const entitlements = ref<SubscriptionResetEntitlementAdminView[]>([])
 const batchDetails = ref<SubscriptionResetBonusBatchDetail[]>([])
 const selectedBatch = ref<SubscriptionResetBonusBatch | null>(null)
 const previewLoading = ref(false)
 const createLoading = ref(false)
 const historyLoading = ref(false)
 const historyError = ref('')
+const entitlementLoading = ref(false)
+const entitlementError = ref('')
+const entitlementStale = ref(false)
+const entitlementsLoaded = ref(false)
+const entitlementKeyword = ref('')
+const entitlementGroupID = ref<number | null>(null)
 const detailLoading = ref(false)
 const detailVisible = ref(false)
 let pollTimer: number | undefined
@@ -257,6 +338,18 @@ const finiteGroups = computed(() => groups.value.filter((group) =>
   Number(group.daily_limit_usd || 0) > 0 || Number(group.weekly_limit_usd || 0) > 0 || Number(group.monthly_limit_usd || 0) > 0,
 ))
 const pendingExtensionEvents = computed(() => extensionEvents.value.filter((event) => event.status === 'uncertain'))
+const filteredEntitlements = computed(() => filterSubscriptionResetEntitlements(
+  entitlements.value,
+  entitlementKeyword.value,
+  entitlementGroupID.value,
+))
+const entitlementGroups = computed(() => {
+  const byID = new Map<number, string>()
+  for (const item of entitlements.value) {
+    if (!byID.has(item.sub2api_group_id)) byID.set(item.sub2api_group_id, resetEntitlementGroupLabel(item))
+  }
+  return [...byID].map(([id, name]) => ({ id, name })).sort((a, b) => a.id - b.id)
+})
 
 function clearPreview() {
   preview.value = null
@@ -325,6 +418,22 @@ async function refreshOperationalState(options: { silent?: boolean } = {}) {
     historyError.value = error?.message ?? '运营状态加载失败'
   } finally {
     if (!options.silent) historyLoading.value = false
+  }
+}
+
+async function refreshEntitlements(options: { silent?: boolean } = {}) {
+  if (!options.silent) entitlementLoading.value = true
+  try {
+    entitlements.value = await listSubscriptionResetEntitlements()
+    entitlementsLoaded.value = true
+    entitlementError.value = ''
+    entitlementStale.value = false
+  } catch (error: any) {
+    const message = error?.message ?? '订阅权益加载失败'
+    entitlementStale.value = Boolean(options.silent && entitlementsLoaded.value)
+    entitlementError.value = entitlementStale.value ? `数据可能已过期：${message}` : message
+  } finally {
+    if (!options.silent) entitlementLoading.value = false
   }
 }
 
@@ -416,7 +525,11 @@ async function loadInitialData() {
 
 onMounted(() => {
   void loadInitialData()
-  pollTimer = window.setInterval(() => void refreshOperationalState({ silent: true }), 15000)
+  void refreshEntitlements()
+  pollTimer = window.setInterval(() => {
+    void refreshOperationalState({ silent: true })
+    void refreshEntitlements({ silent: true })
+  }, 15000)
 })
 
 onBeforeUnmount(() => {
@@ -426,10 +539,31 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .grant-section,
+.entitlement-section,
 .history-section {
   display: grid;
   gap: 16px;
   margin-bottom: 16px;
+}
+
+.entitlement-filters {
+  display: grid;
+  grid-template-columns: minmax(240px, 1fr) minmax(180px, 280px);
+  gap: 12px;
+}
+
+.count-value {
+  color: #315f8a;
+  font-size: 14px;
+}
+
+.count-value.total {
+  color: #34785e;
+}
+
+.count-value.zero {
+  color: #94a3b8;
+  font-weight: 500;
 }
 
 .section-heading,
@@ -536,7 +670,8 @@ onBeforeUnmount(() => {
   }
 
   .grant-form,
-  .preview-summary {
+  .preview-summary,
+  .entitlement-filters {
     grid-template-columns: 1fr;
   }
 

@@ -229,6 +229,25 @@ export interface SubscriptionResetEntitlementSummary {
   expires_at: string
 }
 
+export interface SubscriptionResetEntitlementAdminView {
+  upstream_user_id: number
+  username: string
+  email: string
+  upstream_subscription_id: number
+  sub2api_group_id: number
+  group_name: string
+  starts_at: string
+  expires_at: string
+  remaining_days: number
+  base_reset_limit: number
+  base_reset_used: number
+  base_reset_remaining: number
+  bonus_reset_limit: number
+  bonus_reset_used: number
+  bonus_reset_remaining: number
+  total_reset_remaining: number
+}
+
 export interface SubscriptionCard {
   id: number
   group_id: number

@@ -15,6 +15,7 @@ import type {
   SubscriptionConcurrencyMonitorStatus,
   SubscriptionExtensionEvent,
   SubscriptionResetAttempt,
+  SubscriptionResetEntitlementAdminView,
   SubscriptionResetBonusBatch,
   SubscriptionResetBonusBatchDetail,
   SubscriptionResetBonusPreview,
@@ -47,6 +48,13 @@ export function listSubscriptionResetAttempts() {
   return request<SubscriptionResetAttempt[] | null>({
     method: 'GET',
     url: '/admin/subscription-reset-attempts',
+  }).then(asArray)
+}
+
+export function listSubscriptionResetEntitlements() {
+  return request<SubscriptionResetEntitlementAdminView[] | null>({
+    method: 'GET',
+    url: '/admin/subscription-reset-entitlements',
   }).then(asArray)
 }
 
