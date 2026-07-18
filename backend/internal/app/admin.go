@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -106,7 +107,23 @@ func (s *Service) replaceRedeemTiers(ctx context.Context, tiers []models.RedeemT
 		tier = normalizeRedeemTier(tier)
 		tier.Enabled = tier.Enabled
 		tier.UpdatedAt = now
+		oldResetCount := 0
+		legacyBackfillEligible := false
+		existingTier := false
 		if tier.ID > 0 {
+			var eligible int
+			lookupErr := tx.QueryRowContext(ctx, `
+SELECT reset_count, legacy_reset_backfill_eligible
+FROM redeem_tiers
+WHERE id = ?
+`, tier.ID).Scan(&oldResetCount, &eligible)
+			if lookupErr != nil && !errors.Is(lookupErr, sql.ErrNoRows) {
+				return nil, rollback(lookupErr)
+			}
+			if lookupErr == nil {
+				existingTier = true
+				legacyBackfillEligible = eligible != 0
+			}
 			tier.CreatedAt = now
 			if _, err := tx.ExecContext(ctx, `
 INSERT INTO redeem_tiers (
@@ -132,6 +149,16 @@ ON CONFLICT(id) DO UPDATE SET
 			}
 			if err := upsertBalanceTierMirror(ctx, tx, tier); err != nil {
 				return nil, rollback(err)
+			}
+			if existingTier && legacyBackfillEligible && oldResetCount == 0 && tier.ResetCount > 0 && tier.CodeType == "subscription" {
+				if _, err := tx.ExecContext(ctx, `
+INSERT INTO subscription_reset_backfill_runs (
+  tier_id, reset_limit, status, triggered_at, updated_at
+) VALUES (?, ?, 'pending', ?, ?)
+ON CONFLICT(tier_id) DO NOTHING
+`, tier.ID, tier.ResetCount, formatTime(now), formatTime(now)); err != nil {
+					return nil, rollback(err)
+				}
 			}
 			kept[tier.ID] = struct{}{}
 			out = append(out, tier)

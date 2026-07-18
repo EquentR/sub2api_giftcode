@@ -103,6 +103,8 @@ func (s *Service) ReconcileSubscriptionResetPeriods(ctx context.Context) error {
 		byGroup[key] = append(byGroup[key], period)
 	}
 	var reconcileErr error
+	confirmedGroups := make(map[subscriptionResetBoundaryKey]bool)
+	activeGroups := make(map[subscriptionResetBoundaryKey]bool)
 	for key, groupPeriods := range byGroup {
 		groupErr := func() error {
 			unlock := s.lockSubscriptionResetBoundary(key.UserID, key.GroupID)
@@ -112,15 +114,21 @@ func (s *Service) ReconcileSubscriptionResetPeriods(ctx context.Context) error {
 				_ = s.recordSubscriptionResetPeriodGroupError(ctx, key.UserID, key.GroupID, listErr.Error(), now)
 				return listErr
 			}
+			confirmedGroups[key] = true
 			subscription := matchingResetSubscription(subscriptions, key.UserID, key.GroupID)
+			activeGroups[key] = subscription != nil
 			return s.reconcileSubscriptionResetPeriodGroup(ctx, groupPeriods, subscription, now)
 		}()
 		if groupErr != nil {
 			reconcileErr = errors.Join(reconcileErr, fmt.Errorf("user %d group %d: %w", key.UserID, key.GroupID, groupErr))
 		}
 	}
+	var backfillErr error
+	if repairErr == nil {
+		backfillErr = s.processLegacyResetBackfillRuns(ctx, now, confirmedGroups, activeGroups)
+	}
 	metadataErr := s.setSyncState(ctx, subscriptionResetLastReconciliationAtKey, formatTime(now), now)
-	return errors.Join(repairErr, reconcileErr, metadataErr)
+	return errors.Join(repairErr, reconcileErr, backfillErr, metadataErr)
 }
 
 func (s *Service) RunSubscriptionResetLoop(ctx context.Context, interval time.Duration) {
