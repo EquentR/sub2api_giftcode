@@ -21,6 +21,15 @@ func (h *Handlers) ListSubscriptions(c *gin.Context) {
 	writeSuccess(c, items)
 }
 
+func (h *Handlers) ListSubscriptionResetEntitlements(c *gin.Context) {
+	items, err := h.service.ListSubscriptionResetEntitlements(c.Request.Context())
+	if err != nil {
+		writeServiceError(c, err)
+		return
+	}
+	writeSuccess(c, items)
+}
+
 func (h *Handlers) ResetSubscriptionQuota(c *gin.Context) {
 	sessionUser, ok := getSessionUser(c)
 	if !ok {

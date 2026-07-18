@@ -133,6 +133,67 @@ func TestResetQuotaHTTPReturnsAcceptedForUnknownResultAndAdminCanRelease(t *test
 	require.Equal(t, http.StatusOK, response.Code)
 }
 
+func TestSubscriptionResetEntitlementsHTTPResponseContractAndAuthorization(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	now := time.Now().UTC().Truncate(time.Second)
+	store := newSubscriptionHTTPStore(t)
+	upstreamUnavailable := atomic.Bool{}
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/auth/me":
+			writeTestEnvelope(w, sub2api.User{ID: 1, Email: "admin@example.com", Username: "admin", Role: "admin", Status: "active"})
+		case "/api/v1/admin/subscriptions":
+			if upstreamUnavailable.Load() {
+				http.Error(w, "unavailable", http.StatusBadGateway)
+				return
+			}
+			writeTestEnvelope(w, map[string]any{
+				"items": []sub2api.Subscription{{
+					ID: 77, UserID: 1, GroupID: 7, StartsAt: now.Add(-time.Hour), ExpiresAt: now.Add(24 * time.Hour), Status: "active",
+					User: &sub2api.User{ID: 1, Username: "admin", Email: "admin@example.com"}, Group: &sub2api.Group{ID: 7, Name: "Standard"},
+				}},
+				"total": 1, "page": 1, "page_size": 100, "pages": 1,
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(upstream.Close)
+	router, token := newSubscriptionHTTPRouter(t, store, upstream.URL, true)
+
+	response := performSubscriptionRequest(t, router, token, http.MethodGet, "/api/admin/subscription-reset-entitlements", nil)
+	require.Equal(t, http.StatusOK, response.Code)
+	for _, field := range []string{
+		`"upstream_user_id":1`, `"username":"admin"`, `"email":"admin@example.com"`,
+		`"upstream_subscription_id":77`, `"sub2api_group_id":7`, `"group_name":"Standard"`,
+		`"starts_at":`, `"expires_at":`, `"remaining_days":`,
+		`"base_reset_limit":`, `"base_reset_used":`, `"base_reset_remaining":`,
+		`"bonus_reset_limit":`, `"bonus_reset_used":`, `"bonus_reset_remaining":`, `"total_reset_remaining":`,
+	} {
+		require.Contains(t, response.Body.String(), field)
+	}
+
+	upstreamUnavailable.Store(true)
+	response = performSubscriptionRequest(t, router, token, http.MethodGet, "/api/admin/subscription-reset-entitlements", nil)
+	require.Equal(t, http.StatusBadGateway, response.Code)
+	require.Contains(t, response.Body.String(), app.SubscriptionResetReasonUpstreamUnavailable)
+
+	response = performSubscriptionRequest(t, router, "", http.MethodGet, "/api/admin/subscription-reset-entitlements", nil)
+	require.Equal(t, http.StatusUnauthorized, response.Code)
+
+	userUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/auth/me" {
+			writeTestEnvelope(w, sub2api.User{ID: 2, Email: "user@example.com", Username: "user", Role: "user", Status: "active"})
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	t.Cleanup(userUpstream.Close)
+	userRouter, userToken := newSubscriptionHTTPRouter(t, newSubscriptionHTTPStore(t), userUpstream.URL, false)
+	response = performSubscriptionRequest(t, userRouter, userToken, http.MethodGet, "/api/admin/subscription-reset-entitlements", nil)
+	require.Equal(t, http.StatusForbidden, response.Code)
+}
+
 func newSubscriptionHTTPStore(t *testing.T) *db.Store {
 	t.Helper()
 	store, err := db.Open("sqlite", ":memory:")

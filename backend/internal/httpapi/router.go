@@ -52,6 +52,7 @@ func NewRouter(cfg *config.RuntimeConfig, service *app.Service) *gin.Engine {
 			admin.GET("/stats", handlers.Stats)
 			admin.GET("/subscription-concurrency/status", handlers.SubscriptionConcurrencyMonitorStatus)
 			admin.GET("/subscription-concurrency/details", handlers.SubscriptionConcurrencyMonitorDetails)
+			admin.GET("/subscription-reset-entitlements", handlers.ListSubscriptionResetEntitlements)
 			admin.GET("/users", handlers.ListUsers)
 			admin.GET("/users/:id/redeem-codes", handlers.ListUserRedeemCodes)
 			admin.GET("/redeem-access-requests", handlers.ListAllAccessRequests)
