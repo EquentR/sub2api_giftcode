@@ -7,7 +7,7 @@ import { test } from 'node:test'
 import {
   quotaUsagePercentage,
   resetReasonLabel,
-  resetTargetLabels,
+  resetTargetSummaries,
 } from '../src/utils/subscriptions.ts'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -23,7 +23,13 @@ test('subscription reset reason labels cover stable backend reasons', () => {
 test('quota progress and reset targets are stable for partial limits', () => {
   assert.equal(quotaUsagePercentage({ limit_usd: 10, used_usd: 3 }), 30)
   assert.equal(quotaUsagePercentage({ limit_usd: 0, used_usd: 3 }), 0)
-  assert.deepEqual(resetTargetLabels([{ kind: 'daily' }, { kind: 'monthly' }]), ['日限额', '月限额'])
+  assert.deepEqual(
+    resetTargetSummaries([
+      { kind: 'daily', used_usd: 3 },
+      { kind: 'monthly', used_usd: 20.5 },
+    ]),
+    ['日限额（当前已用 $3.00）', '月限额（当前已用 $20.50）'],
+  )
 })
 
 test('recharge view keeps request tab default and lazily activates subscription management', () => {
@@ -41,6 +47,7 @@ test('subscription management uses UUID idempotency and blocks duplicate submiss
   assert.match(source, /watch\(\s*\(\) => props\.active/)
   assert.match(source, /class="unlimited-placeholder"/)
   assert.match(source, /\.subscription-card\s*\{[\s\S]*?min-height:\s*520px/)
+  assert.match(source, /首次使用后开始计时/)
 })
 
 test('tier editor disables reset count for balance and unlimited tiers', () => {
@@ -57,4 +64,14 @@ test('admin tier page exposes backfill state and explicit manual resolutions', (
   assert.match(source, /确认已消耗/)
   assert.match(source, /释放次数/)
   assert.match(source, /resolveSubscriptionResetAttempt/)
+  assert.match(source, /操作前快照/)
+  assert.match(source, /当前快照/)
+  assert.match(source, /before_snapshot/)
+  assert.match(source, /current_snapshot/)
+  assert.match(source, /current_snapshot_error/)
+  assert.match(source, /retry_count/)
+  assert.match(source, /last_error_at/)
+  assert.match(source, /modal-class="reset-resolution-overlay"/)
+  assert.match(source, /reset-resolution-overlay[\s\S]*?max-height:\s*90vh/)
+  assert.match(source, /reset-resolution-overlay[\s\S]*?overflow-y:\s*auto/)
 })

@@ -247,9 +247,9 @@ WHERE name = 'reset_count' AND type = 'INTEGER' AND [notnull] = 1 AND dflt_value
 	}
 
 	expectedColumns := map[string]int{
-		"subscription_reset_periods":      21,
-		"subscription_reset_attempts":     22,
-		"subscription_reset_backfill_runs": 12,
+		"subscription_reset_periods":       21,
+		"subscription_reset_attempts":      22,
+		"subscription_reset_backfill_runs": 14,
 	}
 	for table, expected := range expectedColumns {
 		var count int
@@ -268,6 +268,47 @@ SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'idx_subscription_
 SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'idx_subscription_reset_periods_one_active'
 `).Scan(&activeIndexSQL))
 	require.Contains(t, activeIndexSQL, "WHERE status = 'active'")
+}
+
+func TestMigrateAddsBackfillRetryAuditColumnsWithoutLosingRun(t *testing.T) {
+	store, err := Open("sqlite", ":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+
+	_, err = store.DB.Exec(`
+CREATE TABLE subscription_reset_backfill_runs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  tier_id INTEGER NOT NULL UNIQUE,
+  reset_limit INTEGER NOT NULL CHECK (reset_limit > 0),
+  status TEXT NOT NULL CHECK (status IN ('pending', 'running', 'succeeded', 'failed')),
+  total_records INTEGER NOT NULL DEFAULT 0,
+  processed_records INTEGER NOT NULL DEFAULT 0,
+  granted_records INTEGER NOT NULL DEFAULT 0,
+  error_message TEXT NOT NULL DEFAULT '',
+  triggered_at TEXT NOT NULL,
+  started_at TEXT NULL,
+  completed_at TEXT NULL,
+  updated_at TEXT NOT NULL
+);
+INSERT INTO subscription_reset_backfill_runs (
+  tier_id, reset_limit, status, error_message, triggered_at, updated_at
+) VALUES (50, 2, 'failed', 'temporary failure', '2026-07-17T00:00:00Z', '2026-07-17T00:01:00Z');
+`)
+	require.NoError(t, err)
+
+	require.NoError(t, store.Migrate(context.Background()))
+	require.NoError(t, store.Migrate(context.Background()))
+
+	var tierID, retryCount int
+	var lastErrorAt any
+	require.NoError(t, store.DB.QueryRow(`
+SELECT tier_id, retry_count, last_error_at
+FROM subscription_reset_backfill_runs
+WHERE tier_id = 50
+`).Scan(&tierID, &retryCount, &lastErrorAt))
+	require.Equal(t, 50, tierID)
+	require.Zero(t, retryCount)
+	require.Nil(t, lastErrorAt)
 }
 
 func TestMigrateFreezesOnlyPreexistingSubscriptionTiersForLegacyResetBackfill(t *testing.T) {

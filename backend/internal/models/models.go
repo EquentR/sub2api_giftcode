@@ -198,6 +198,8 @@ type SubscriptionResetBackfillRun struct {
 	ProcessedRecords int        `json:"processed_records"`
 	GrantedRecords   int        `json:"granted_records"`
 	ErrorMessage     string     `json:"error_message"`
+	RetryCount       int        `json:"retry_count"`
+	LastErrorAt      *time.Time `json:"last_error_at,omitempty"`
 	TriggeredAt      time.Time  `json:"triggered_at"`
 	StartedAt        *time.Time `json:"started_at,omitempty"`
 	CompletedAt      *time.Time `json:"completed_at,omitempty"`

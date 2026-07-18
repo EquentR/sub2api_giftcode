@@ -127,10 +127,13 @@ func TestLegacyResetBackfillRetriesWithoutDuplicateGrant(t *testing.T) {
 
 	require.Error(t, svc.ReconcileSubscriptionResetPeriods(context.Background()))
 	var status string
-	var granted int
-	require.NoError(t, store.DB.QueryRow(`SELECT status, granted_records FROM subscription_reset_backfill_runs WHERE tier_id = 50`).Scan(&status, &granted))
+	var granted, retryCount int
+	var lastErrorAt *string
+	require.NoError(t, store.DB.QueryRow(`SELECT status, granted_records, retry_count, last_error_at FROM subscription_reset_backfill_runs WHERE tier_id = 50`).Scan(&status, &granted, &retryCount, &lastErrorAt))
 	require.Equal(t, "failed", status)
 	require.Zero(t, granted)
+	require.Zero(t, retryCount, "the first processing attempt is not a retry")
+	require.NotNil(t, lastErrorAt)
 
 	stateMu.Lock()
 	upstreamAvailable = true
@@ -141,9 +144,11 @@ func TestLegacyResetBackfillRetriesWithoutDuplicateGrant(t *testing.T) {
 	require.NoError(t, store.DB.QueryRow(`SELECT reset_limit, legacy_reset_backfilled FROM subscription_reset_periods WHERE access_request_id = 101`).Scan(&resetLimit, &backfilled))
 	require.Equal(t, 2, resetLimit)
 	require.Equal(t, 1, backfilled)
-	require.NoError(t, store.DB.QueryRow(`SELECT status, granted_records FROM subscription_reset_backfill_runs WHERE tier_id = 50`).Scan(&status, &granted))
+	require.NoError(t, store.DB.QueryRow(`SELECT status, granted_records, retry_count, last_error_at FROM subscription_reset_backfill_runs WHERE tier_id = 50`).Scan(&status, &granted, &retryCount, &lastErrorAt))
 	require.Equal(t, "succeeded", status)
 	require.Equal(t, 1, granted)
+	require.Equal(t, 1, retryCount)
+	require.NotNil(t, lastErrorAt, "the last failure time remains available for audit after success")
 }
 
 func TestLegacyResetBackfillResumesPartiallyProcessedRun(t *testing.T) {

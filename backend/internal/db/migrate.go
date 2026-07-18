@@ -217,6 +217,8 @@ CREATE TABLE IF NOT EXISTS subscription_reset_backfill_runs (
   processed_records INTEGER NOT NULL DEFAULT 0,
   granted_records INTEGER NOT NULL DEFAULT 0,
   error_message TEXT NOT NULL DEFAULT '',
+  retry_count INTEGER NOT NULL DEFAULT 0 CHECK (retry_count >= 0),
+  last_error_at TEXT NULL,
   triggered_at TEXT NOT NULL,
   started_at TEXT NULL,
   completed_at TEXT NULL,
@@ -371,8 +373,14 @@ func (s *Store) ensureSubscriptionResetColumns(ctx context.Context) error {
 	}); err != nil {
 		return err
 	}
-	return s.ensureColumns(ctx, "redeem_access_requests", map[string]string{
+	if err := s.ensureColumns(ctx, "redeem_access_requests", map[string]string{
 		"reset_count": "INTEGER NOT NULL DEFAULT 0 CHECK (reset_count >= 0)",
+	}); err != nil {
+		return err
+	}
+	return s.ensureColumns(ctx, "subscription_reset_backfill_runs", map[string]string{
+		"retry_count":   "INTEGER NOT NULL DEFAULT 0 CHECK (retry_count >= 0)",
+		"last_error_at": "TEXT NULL",
 	})
 }
 

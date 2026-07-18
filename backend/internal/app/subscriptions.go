@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"math"
+	"net/http"
 	"strings"
 	"time"
 
@@ -50,19 +51,22 @@ type SubscriptionResetPeriodSummary struct {
 }
 
 type SubscriptionCard struct {
-	ID             int64                           `json:"id"`
-	GroupID        int64                           `json:"group_id"`
-	GroupName      string                          `json:"group_name"`
-	GroupPlatform  string                          `json:"group_platform"`
-	StartsAt       time.Time                       `json:"starts_at"`
-	ExpiresAt      time.Time                       `json:"expires_at"`
-	RemainingDays  int                             `json:"remaining_days"`
-	QuotaWindows   []SubscriptionQuotaWindow       `json:"quota_windows"`
-	CurrentPeriod  *SubscriptionResetPeriodSummary `json:"current_period,omitempty"`
-	NextPeriod     *SubscriptionResetPeriodSummary `json:"next_period,omitempty"`
-	Unlimited      bool                            `json:"unlimited"`
-	CanReset       bool                            `json:"can_reset"`
-	DisabledReason string                          `json:"disabled_reason,omitempty"`
+	ID               int64                           `json:"id"`
+	GroupID          int64                           `json:"group_id"`
+	GroupName        string                          `json:"group_name"`
+	GroupPlatform    string                          `json:"group_platform"`
+	StartsAt         time.Time                       `json:"starts_at"`
+	ExpiresAt        time.Time                       `json:"expires_at"`
+	RemainingDays    int                             `json:"remaining_days"`
+	QuotaWindows     []SubscriptionQuotaWindow       `json:"quota_windows"`
+	CurrentPeriod    *SubscriptionResetPeriodSummary `json:"current_period,omitempty"`
+	NextPeriod       *SubscriptionResetPeriodSummary `json:"next_period,omitempty"`
+	Unlimited        bool                            `json:"unlimited"`
+	ExternalPeriod   bool                            `json:"external_period"`
+	ZeroResetLimit   bool                            `json:"zero_reset_limit"`
+	OperationPending bool                            `json:"operation_pending"`
+	CanReset         bool                            `json:"can_reset"`
+	DisabledReason   string                          `json:"disabled_reason,omitempty"`
 }
 
 type SubscriptionResetResult struct {
@@ -72,6 +76,18 @@ type SubscriptionResetResult struct {
 
 type subscriptionQuotaSnapshot struct {
 	Windows []SubscriptionQuotaWindow `json:"windows"`
+}
+
+type SubscriptionResetAttemptAdminView struct {
+	models.SubscriptionResetAttempt
+	Username             string                         `json:"username"`
+	Email                string                         `json:"email"`
+	Period               models.SubscriptionResetPeriod `json:"period"`
+	BeforeSnapshot       []SubscriptionQuotaWindow      `json:"before_snapshot"`
+	AfterSnapshot        []SubscriptionQuotaWindow      `json:"after_snapshot"`
+	CurrentSnapshot      []SubscriptionQuotaWindow      `json:"current_snapshot"`
+	SnapshotError        string                         `json:"snapshot_error,omitempty"`
+	CurrentSnapshotError string                         `json:"current_snapshot_error,omitempty"`
 }
 
 func (s *Service) ListSubscriptions(ctx context.Context, userID int64) ([]SubscriptionCard, error) {
@@ -155,6 +171,15 @@ func (s *Service) buildSubscriptionCard(ctx context.Context, subscription sub2ap
 			card.NextPeriod = &summary
 		}
 	}
+	card.ExternalPeriod = card.CurrentPeriod == nil && card.NextPeriod == nil
+	card.ZeroResetLimit = card.CurrentPeriod != nil && card.CurrentPeriod.ResetLimit <= 0
+	if card.CurrentPeriod != nil {
+		var blocking int
+		if err := s.db().QueryRowContext(ctx, `SELECT COUNT(1) FROM subscription_reset_attempts WHERE period_id = ? AND status IN ('reserved', 'uncertain')`, card.CurrentPeriod.ID).Scan(&blocking); err != nil {
+			return card, err
+		}
+		card.OperationPending = blocking > 0
+	}
 	card.DisabledReason, err = s.subscriptionDisabledReason(ctx, subscription, card, progressErr, now)
 	if err != nil {
 		return card, err
@@ -220,11 +245,7 @@ func (s *Service) subscriptionDisabledReason(ctx context.Context, subscription s
 		}
 		return SubscriptionResetReasonExternalPeriod, nil
 	}
-	var blocking int
-	if err := s.db().QueryRowContext(ctx, `SELECT COUNT(1) FROM subscription_reset_attempts WHERE period_id = ? AND status IN ('reserved', 'uncertain')`, card.CurrentPeriod.ID).Scan(&blocking); err != nil {
-		return "", err
-	}
-	if blocking > 0 {
+	if card.OperationPending {
 		return SubscriptionResetReasonOperationPending, nil
 	}
 	if card.CurrentPeriod.Status != "active" {
@@ -251,7 +272,7 @@ func (s *Service) ResetSubscriptionQuota(ctx context.Context, userID, subscripti
 		return nil, ErrBadRequest
 	}
 	if existing, findErr := s.getSubscriptionResetAttemptByRequestID(ctx, requestID); findErr == nil {
-		return resetReplay(existing, userID, subscriptionID)
+		return s.resetReplay(ctx, existing, userID, subscriptionID)
 	} else if !errors.Is(findErr, sql.ErrNoRows) {
 		return nil, findErr
 	}
@@ -271,7 +292,7 @@ func (s *Service) ResetSubscriptionQuota(ctx context.Context, userID, subscripti
 	unlock := s.lockSubscriptionResetBoundary(userID, subscription.GroupID)
 	defer unlock()
 	if existing, findErr := s.getSubscriptionResetAttemptByRequestID(ctx, requestID); findErr == nil {
-		return resetReplay(existing, userID, subscriptionID)
+		return s.resetReplay(ctx, existing, userID, subscriptionID)
 	} else if !errors.Is(findErr, sql.ErrNoRows) {
 		return nil, findErr
 	}
@@ -317,42 +338,160 @@ func (s *Service) ResetSubscriptionQuota(ctx context.Context, userID, subscripti
 	attempt, err := s.reserveSubscriptionResetAttempt(ctx, requestID, userID, subscriptionID, card.CurrentPeriod.ID, group, before, s.now())
 	if err != nil {
 		if existing, findErr := s.getSubscriptionResetAttemptByRequestID(ctx, requestID); findErr == nil {
-			return resetReplay(existing, userID, subscriptionID)
+			return s.resetReplay(ctx, existing, userID, subscriptionID)
 		}
 		return nil, err
 	}
 	updated, resetErr := s.upstream.ResetSubscriptionQuota(ctx, subscriptionID, *group)
 	now := s.now()
 	if resetErr == nil {
-		after := subscriptionQuotaSnapshot{Windows: configuredQuotaWindows(*updated, nil, group)}
-		attempt, err = s.finishSubscriptionResetAttempt(ctx, attempt.ID, "succeeded", 200, "", "", marshalJSON(after), false, now)
+		refreshedSubscription := mergeResetSubscription(*subscription, updated)
+		after := subscriptionQuotaSnapshot{Windows: configuredQuotaWindows(refreshedSubscription, nil, group)}
+		attempt, err = s.finishSubscriptionResetAttempt(ctx, attempt.ID, "succeeded", intPointer(http.StatusOK), 200, "", "", marshalJSON(after), false, now)
+		if err != nil {
+			return nil, err
+		}
+		refreshedCard, err := s.buildSubscriptionCard(ctx, refreshedSubscription, nil, nil, now)
 		if err != nil {
 			return nil, err
 		}
 		s.WakeSubscriptionResetReconcile()
-		return &SubscriptionResetResult{Operation: *attempt}, nil
+		return &SubscriptionResetResult{Operation: *attempt, Subscription: &refreshedCard}, nil
 	}
 	if errors.Is(resetErr, sub2api.ErrUpstreamRejected) {
-		attempt, err = s.finishSubscriptionResetAttempt(ctx, attempt.ID, "failed", 409, SubscriptionResetReasonUpstreamRejected, resetErr.Error(), "", true, now)
+		attempt, err = s.finishSubscriptionResetAttempt(ctx, attempt.ID, "failed", upstreamStatusFromError(resetErr), 409, SubscriptionResetReasonUpstreamRejected, resetErr.Error(), "", true, now)
 		if err != nil {
 			return nil, err
 		}
 		s.WakeSubscriptionResetReconcile()
 		return nil, withStableReason(ErrConflict, SubscriptionResetReasonUpstreamRejected)
 	}
-	attempt, err = s.finishSubscriptionResetAttempt(ctx, attempt.ID, "uncertain", 202, "result_unknown", resetErr.Error(), "", false, now)
+	attempt, err = s.finishSubscriptionResetAttempt(ctx, attempt.ID, "uncertain", nil, 202, "result_unknown", resetErr.Error(), "", false, now)
+	if err != nil {
+		return nil, err
+	}
+	pendingCard, err := s.buildSubscriptionCard(ctx, *subscription, progress, nil, now)
 	if err != nil {
 		return nil, err
 	}
 	s.WakeSubscriptionResetReconcile()
-	return &SubscriptionResetResult{Operation: *attempt}, nil
+	return &SubscriptionResetResult{Operation: *attempt, Subscription: &pendingCard}, nil
 }
 
-func resetReplay(attempt *models.SubscriptionResetAttempt, userID, subscriptionID int64) (*SubscriptionResetResult, error) {
+func (s *Service) resetReplay(ctx context.Context, attempt *models.SubscriptionResetAttempt, userID, subscriptionID int64) (*SubscriptionResetResult, error) {
 	if attempt.UpstreamUserID != userID || attempt.UpstreamSubscriptionID != subscriptionID {
 		return nil, withStableReason(ErrConflict, SubscriptionResetReasonRequestIDConflict)
 	}
-	return &SubscriptionResetResult{Operation: *attempt}, nil
+	return &SubscriptionResetResult{Operation: *attempt, Subscription: s.subscriptionCardForAttempt(ctx, attempt)}, nil
+}
+
+func mergeResetSubscription(before sub2api.Subscription, updated *sub2api.Subscription) sub2api.Subscription {
+	if updated == nil {
+		return before
+	}
+	merged := before
+	merged.DailyUsageUSD = updated.DailyUsageUSD
+	merged.WeeklyUsageUSD = updated.WeeklyUsageUSD
+	merged.MonthlyUsageUSD = updated.MonthlyUsageUSD
+	merged.DailyWindowStart = updated.DailyWindowStart
+	merged.WeeklyWindowStart = updated.WeeklyWindowStart
+	merged.MonthlyWindowStart = updated.MonthlyWindowStart
+	if !updated.StartsAt.IsZero() {
+		merged.StartsAt = updated.StartsAt
+	}
+	if !updated.ExpiresAt.IsZero() {
+		merged.ExpiresAt = updated.ExpiresAt
+	}
+	if updated.Status != "" {
+		merged.Status = updated.Status
+	}
+	return merged
+}
+
+func intPointer(value int) *int { return &value }
+
+func upstreamStatusFromError(err error) *int {
+	var operationErr *sub2api.OperationError
+	if errors.As(err, &operationErr) && operationErr.Status > 0 {
+		return intPointer(operationErr.Status)
+	}
+	return nil
+}
+
+func (s *Service) subscriptionCardForAttempt(ctx context.Context, attempt *models.SubscriptionResetAttempt) *SubscriptionCard {
+	if attempt == nil || s == nil || s.upstream == nil {
+		return s.fallbackSubscriptionCardForAttempt(ctx, attempt)
+	}
+	subscription, err := s.upstream.GetSubscription(ctx, attempt.UpstreamSubscriptionID)
+	if err != nil || subscription.UserID != attempt.UpstreamUserID {
+		return s.fallbackSubscriptionCardForAttempt(ctx, attempt)
+	}
+	if subscription.Group == nil {
+		groups, groupsErr := s.upstream.ListGroupsAll(ctx)
+		if groupsErr != nil {
+			return s.fallbackSubscriptionCardForAttempt(ctx, attempt)
+		}
+		for i := range groups {
+			if groups[i].ID == subscription.GroupID {
+				group := groups[i]
+				subscription.Group = &group
+				break
+			}
+		}
+	}
+	progress, progressErr := s.upstream.GetSubscriptionProgress(ctx, subscription.ID)
+	card, buildErr := s.buildSubscriptionCard(ctx, *subscription, progress, progressErr, s.now())
+	if buildErr != nil {
+		return s.fallbackSubscriptionCardForAttempt(ctx, attempt)
+	}
+	return &card
+}
+
+func (s *Service) fallbackSubscriptionCardForAttempt(ctx context.Context, attempt *models.SubscriptionResetAttempt) *SubscriptionCard {
+	if attempt == nil || s == nil || s.db() == nil {
+		return nil
+	}
+	period, err := s.getSubscriptionResetPeriodByID(ctx, attempt.PeriodID)
+	if err != nil || period.UpstreamUserID != attempt.UpstreamUserID {
+		return nil
+	}
+	now := s.now()
+	card := SubscriptionCard{
+		ID:               attempt.UpstreamSubscriptionID,
+		GroupID:          period.Sub2APIGroupID,
+		OperationPending: attempt.Status == "reserved" || attempt.Status == "uncertain",
+		CanReset:         false,
+		DisabledReason:   SubscriptionResetReasonUpstreamUnavailable,
+	}
+	if period.PeriodStart != nil {
+		card.StartsAt = period.PeriodStart.UTC()
+	}
+	if period.PeriodEnd != nil {
+		card.ExpiresAt = period.PeriodEnd.UTC()
+		if period.PeriodEnd.After(now) {
+			card.RemainingDays = int(math.Ceil(period.PeriodEnd.Sub(now).Hours() / 24))
+		}
+	}
+	summary := summarizeResetPeriod(*period)
+	if period.PeriodStart != nil && period.PeriodEnd != nil && !now.Before(*period.PeriodStart) && now.Before(*period.PeriodEnd) {
+		card.CurrentPeriod = &summary
+	} else if period.PeriodStart != nil && now.Before(*period.PeriodStart) {
+		card.NextPeriod = &summary
+	}
+	card.ExternalPeriod = card.CurrentPeriod == nil && card.NextPeriod == nil
+	card.ZeroResetLimit = card.CurrentPeriod != nil && card.CurrentPeriod.ResetLimit <= 0
+	var snapshot subscriptionQuotaSnapshot
+	snapshotJSON := attempt.AfterSnapshotJSON
+	if strings.TrimSpace(snapshotJSON) == "" {
+		snapshotJSON = attempt.BeforeSnapshotJSON
+	}
+	if json.Unmarshal([]byte(snapshotJSON), &snapshot) == nil {
+		card.QuotaWindows = snapshot.Windows
+	}
+	if card.QuotaWindows == nil {
+		card.QuotaWindows = []SubscriptionQuotaWindow{}
+	}
+	return &card
 }
 
 func subscriptionAuthorityError(err error) error {
@@ -404,7 +543,7 @@ INSERT INTO subscription_reset_attempts (
 	return attempt, nil
 }
 
-func (s *Service) finishSubscriptionResetAttempt(ctx context.Context, attemptID int64, status string, responseStatus int, reason, errorMessage, afterSnapshot string, release bool, now time.Time) (*models.SubscriptionResetAttempt, error) {
+func (s *Service) finishSubscriptionResetAttempt(ctx context.Context, attemptID int64, status string, upstreamStatus *int, responseStatus int, reason, errorMessage, afterSnapshot string, release bool, now time.Time) (*models.SubscriptionResetAttempt, error) {
 	tx, err := s.db().BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
@@ -414,7 +553,7 @@ func (s *Service) finishSubscriptionResetAttempt(ctx context.Context, attemptID 
 	if err != nil {
 		return nil, err
 	}
-	result, err := tx.ExecContext(ctx, `UPDATE subscription_reset_attempts SET status = ?, response_status = ?, response_reason = ?, error_message = ?, after_snapshot_json = ?, completed_at = ?, updated_at = ? WHERE id = ? AND status = 'reserved' AND resolution = ''`, status, responseStatus, reason, errorMessage, afterSnapshot, formatTime(now), formatTime(now), attemptID)
+	result, err := tx.ExecContext(ctx, `UPDATE subscription_reset_attempts SET status = ?, upstream_status = ?, response_status = ?, response_reason = ?, error_message = ?, after_snapshot_json = ?, completed_at = ?, updated_at = ? WHERE id = ? AND status = 'reserved' AND resolution = ''`, status, upstreamStatus, responseStatus, reason, errorMessage, afterSnapshot, formatTime(now), formatTime(now), attemptID)
 	if err != nil {
 		return nil, err
 	}
@@ -520,25 +659,109 @@ WHERE a.id = ?
 	return attempt, nil
 }
 
-func (s *Service) ListPendingSubscriptionResetAttempts(ctx context.Context) ([]models.SubscriptionResetAttempt, error) {
+func (s *Service) ListPendingSubscriptionResetAttempts(ctx context.Context) ([]SubscriptionResetAttemptAdminView, error) {
 	rows, err := s.db().QueryContext(ctx, subscriptionResetAttemptSelectSQL()+` WHERE status IN ('reserved', 'uncertain') ORDER BY reserved_at, id`)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	out := []models.SubscriptionResetAttempt{}
+	var attempts []models.SubscriptionResetAttempt
 	for rows.Next() {
 		attempt, scanErr := scanSubscriptionResetAttempt(rows)
 		if scanErr != nil {
 			return nil, scanErr
 		}
-		out = append(out, *attempt)
+		attempts = append(attempts, *attempt)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return nil, err
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	out := make([]SubscriptionResetAttemptAdminView, 0, len(attempts))
+	for i := range attempts {
+		item, loadErr := s.subscriptionResetAttemptAdminView(ctx, attempts[i])
+		if loadErr != nil {
+			return nil, loadErr
+		}
+		out = append(out, item)
+	}
+	return out, nil
+}
+
+func (s *Service) subscriptionResetAttemptAdminView(ctx context.Context, attempt models.SubscriptionResetAttempt) (SubscriptionResetAttemptAdminView, error) {
+	item := SubscriptionResetAttemptAdminView{SubscriptionResetAttempt: attempt}
+	if err := s.db().QueryRowContext(ctx, `SELECT email, username FROM upstream_users WHERE upstream_user_id = ?`, attempt.UpstreamUserID).Scan(&item.Email, &item.Username); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return item, err
+	}
+	period, err := s.getSubscriptionResetPeriodByID(ctx, attempt.PeriodID)
+	if err != nil {
+		return item, err
+	}
+	item.Period = *period
+	var before subscriptionQuotaSnapshot
+	if err := json.Unmarshal([]byte(attempt.BeforeSnapshotJSON), &before); err != nil {
+		item.SnapshotError = "invalid_before_snapshot"
+	} else {
+		item.BeforeSnapshot = before.Windows
+	}
+	if strings.TrimSpace(attempt.AfterSnapshotJSON) != "" {
+		var after subscriptionQuotaSnapshot
+		if err := json.Unmarshal([]byte(attempt.AfterSnapshotJSON), &after); err != nil {
+			item.SnapshotError = "invalid_after_snapshot"
+		} else {
+			item.AfterSnapshot = after.Windows
+		}
+	}
+	if len(item.BeforeSnapshot) == 0 || s.upstream == nil {
+		item.CurrentSnapshotError = SubscriptionResetReasonUpstreamUnavailable
+		return item, nil
+	}
+	progress, progressErr := s.upstream.GetSubscriptionProgress(ctx, attempt.UpstreamSubscriptionID)
+	if progressErr != nil {
+		item.CurrentSnapshotError = SubscriptionResetReasonUpstreamUnavailable
+		return item, nil
+	}
+	item.CurrentSnapshot = currentSnapshotFromProgress(item.BeforeSnapshot, progress)
+	return item, nil
+}
+
+func currentSnapshotFromProgress(before []SubscriptionQuotaWindow, progress *sub2api.SubscriptionProgress) []SubscriptionQuotaWindow {
+	out := make([]SubscriptionQuotaWindow, 0, len(before))
+	for _, window := range before {
+		var current *sub2api.UsageWindowProgress
+		if progress != nil {
+			switch window.Kind {
+			case "daily":
+				current = progress.Daily
+			case "weekly":
+				current = progress.Weekly
+			case "monthly":
+				current = progress.Monthly
+			}
+		}
+		window.UsedUSD = 0
+		window.RemainingUSD = window.LimitUSD
+		window.WindowStart = nil
+		window.ResetsAt = nil
+		if current != nil {
+			if current.LimitUSD > 0 {
+				window.LimitUSD = current.LimitUSD
+			}
+			window.UsedUSD = current.UsedUSD
+			window.RemainingUSD = current.RemainingUSD
+			window.WindowStart = current.WindowStart
+			window.ResetsAt = current.ResetsAt
+		}
+		out = append(out, window)
+	}
+	return out
 }
 
 func (s *Service) ListSubscriptionResetBackfillRuns(ctx context.Context) ([]models.SubscriptionResetBackfillRun, error) {
-	rows, err := s.db().QueryContext(ctx, `SELECT id, tier_id, reset_limit, status, total_records, processed_records, granted_records, error_message, triggered_at, started_at, completed_at, updated_at FROM subscription_reset_backfill_runs ORDER BY triggered_at DESC, id DESC`)
+	rows, err := s.db().QueryContext(ctx, `SELECT id, tier_id, reset_limit, status, total_records, processed_records, granted_records, error_message, retry_count, last_error_at, triggered_at, started_at, completed_at, updated_at FROM subscription_reset_backfill_runs ORDER BY triggered_at DESC, id DESC`)
 	if err != nil {
 		return nil, err
 	}
@@ -547,8 +770,8 @@ func (s *Service) ListSubscriptionResetBackfillRuns(ctx context.Context) ([]mode
 	for rows.Next() {
 		var item models.SubscriptionResetBackfillRun
 		var triggeredAt, updatedAt string
-		var startedAt, completedAt sql.NullString
-		if err := rows.Scan(&item.ID, &item.TierID, &item.ResetLimit, &item.Status, &item.TotalRecords, &item.ProcessedRecords, &item.GrantedRecords, &item.ErrorMessage, &triggeredAt, &startedAt, &completedAt, &updatedAt); err != nil {
+		var lastErrorAt, startedAt, completedAt sql.NullString
+		if err := rows.Scan(&item.ID, &item.TierID, &item.ResetLimit, &item.Status, &item.TotalRecords, &item.ProcessedRecords, &item.GrantedRecords, &item.ErrorMessage, &item.RetryCount, &lastErrorAt, &triggeredAt, &startedAt, &completedAt, &updatedAt); err != nil {
 			return nil, err
 		}
 		var err error
@@ -559,6 +782,9 @@ func (s *Service) ListSubscriptionResetBackfillRuns(ctx context.Context) ([]mode
 			return nil, err
 		}
 		if item.StartedAt, err = scanMaybeTime(startedAt); err != nil {
+			return nil, err
+		}
+		if item.LastErrorAt, err = scanMaybeTime(lastErrorAt); err != nil {
 			return nil, err
 		}
 		if item.CompletedAt, err = scanMaybeTime(completedAt); err != nil {

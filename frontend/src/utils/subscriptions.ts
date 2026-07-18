@@ -32,6 +32,6 @@ export function quotaUsagePercentage(window: { limit_usd: number; used_usd: numb
   return Math.min(100, Math.round((used / limit) * 1000) / 10)
 }
 
-export function resetTargetLabels(windows: Array<{ kind: string }>) {
-  return windows.map((window) => quotaKindLabel(window.kind))
+export function resetTargetSummaries(windows: Array<{ kind: string; used_usd: number }>) {
+	return windows.map((window) => `${quotaKindLabel(window.kind)}（当前已用 $${Number(window.used_usd || 0).toFixed(2)}）`)
 }

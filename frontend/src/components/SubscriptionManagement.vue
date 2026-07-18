@@ -47,7 +47,8 @@
               />
               <div class="quota-window-meta">
                 <span>剩余 {{ formatUSD(window.remaining_usd) }}</span>
-                <span v-if="window.resets_at">{{ formatDateTime(window.resets_at) }} 刷新</span>
+                <span v-if="!window.window_start && !window.resets_at">首次使用后开始计时</span>
+                <span v-else-if="window.resets_at">{{ formatDateTime(window.resets_at) }} 刷新</span>
               </div>
             </div>
           </div>
@@ -98,7 +99,7 @@ import { MagicStick, Refresh, RefreshRight } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { listSubscriptions, resetSubscriptionQuota } from '@/api/subscriptions'
 import type { SubscriptionCard } from '@/api/types'
-import { quotaKindLabel, quotaUsagePercentage, resetReasonLabel, resetTargetLabels } from '@/utils/subscriptions'
+import { quotaKindLabel, quotaUsagePercentage, resetReasonLabel, resetTargetSummaries } from '@/utils/subscriptions'
 
 const props = defineProps<{
   active: boolean
@@ -127,7 +128,7 @@ async function confirmReset(subscription: SubscriptionCard) {
   if (pendingSubscriptionIds.value.has(subscription.id)) return
   if (!subscription.can_reset) return
   pendingSubscriptionIds.value = new Set(pendingSubscriptionIds.value).add(subscription.id)
-  const targets = resetTargetLabels(subscription.quota_windows)
+  const targets = resetTargetSummaries(subscription.quota_windows)
   try {
     await ElMessageBox.confirm(
       `将重置 ${targets.join('、')}，并消耗 1 次重置机会。`,

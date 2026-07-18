@@ -27,6 +27,7 @@ func TestSubscriptionsHTTPStatusesAndIdempotency(t *testing.T) {
 	dailyLimit := 10.0
 	dailyStart := now.Add(-time.Hour)
 	var listUnavailable atomic.Bool
+	var detailUnavailable atomic.Bool
 	var resetCalls atomic.Int32
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -39,10 +40,18 @@ func TestSubscriptionsHTTPStatusesAndIdempotency(t *testing.T) {
 			}
 			writeTestEnvelope(w, map[string]any{"items": []sub2api.Subscription{{ID: 77, UserID: 1, GroupID: 7, StartsAt: now.Add(-time.Hour), ExpiresAt: now.Add(24 * time.Hour), Status: "active", DailyUsageUSD: 3, DailyWindowStart: &dailyStart, Group: &sub2api.Group{ID: 7, Name: "Daily", DailyLimitUSD: &dailyLimit}}}, "total": 1, "page": 1, "page_size": 100, "pages": 1})
 		case "/api/v1/admin/subscriptions/77":
+			if detailUnavailable.Load() {
+				http.Error(w, "unavailable", http.StatusBadGateway)
+				return
+			}
 			writeTestEnvelope(w, sub2api.Subscription{ID: 77, UserID: 1, GroupID: 7, StartsAt: now.Add(-time.Hour), ExpiresAt: now.Add(24 * time.Hour), Status: "active", DailyUsageUSD: 3, DailyWindowStart: &dailyStart, Group: &sub2api.Group{ID: 7, Name: "Daily", DailyLimitUSD: &dailyLimit}})
 		case "/api/v1/admin/subscriptions/88":
 			writeTestEnvelope(w, sub2api.Subscription{ID: 88, UserID: 2, GroupID: 7, Status: "active", Group: &sub2api.Group{ID: 7, DailyLimitUSD: &dailyLimit}})
 		case "/api/v1/admin/subscriptions/77/progress":
+			if detailUnavailable.Load() {
+				http.Error(w, "unavailable", http.StatusBadGateway)
+				return
+			}
 			writeTestEnvelope(w, sub2api.SubscriptionProgress{ID: 77, Daily: &sub2api.UsageWindowProgress{LimitUSD: 10, UsedUSD: 3, RemainingUSD: 7, WindowStart: &dailyStart}})
 		case "/api/v1/admin/subscriptions/77/reset-quota":
 			resetCalls.Add(1)
@@ -60,8 +69,14 @@ func TestSubscriptionsHTTPStatusesAndIdempotency(t *testing.T) {
 	requestID := "77777777-7777-4777-8777-777777777777"
 	response = performSubscriptionRequest(t, router, token, http.MethodPost, "/api/subscriptions/77/reset-quota", map[string]string{"request_id": requestID})
 	require.Equal(t, http.StatusOK, response.Code)
+	require.Contains(t, response.Body.String(), `"upstream_status":200`)
+	require.Contains(t, response.Body.String(), `"subscription"`)
+	require.Contains(t, response.Body.String(), `"quota_windows"`)
+	detailUnavailable.Store(true)
 	response = performSubscriptionRequest(t, router, token, http.MethodPost, "/api/subscriptions/77/reset-quota", map[string]string{"request_id": requestID})
 	require.Equal(t, http.StatusOK, response.Code)
+	require.Contains(t, response.Body.String(), `"subscription"`)
+	require.Contains(t, response.Body.String(), `"disabled_reason":"upstream_unavailable"`)
 	require.Equal(t, int32(1), resetCalls.Load())
 
 	response = performSubscriptionRequest(t, router, token, http.MethodPost, "/api/subscriptions/88/reset-quota", map[string]string{"request_id": "88888888-8888-4888-8888-888888888888"})
@@ -108,6 +123,10 @@ func TestResetQuotaHTTPReturnsAcceptedForUnknownResultAndAdminCanRelease(t *test
 	response = performSubscriptionRequest(t, router, token, http.MethodGet, "/api/admin/subscription-reset-attempts", nil)
 	require.Equal(t, http.StatusOK, response.Code)
 	require.Contains(t, response.Body.String(), "uncertain")
+	require.Contains(t, response.Body.String(), `"username":"admin"`)
+	require.Contains(t, response.Body.String(), `"before_snapshot"`)
+	require.Contains(t, response.Body.String(), `"current_snapshot"`)
+	require.Contains(t, response.Body.String(), `"period"`)
 	response = performSubscriptionRequest(t, router, token, http.MethodPost, "/api/admin/subscription-reset-attempts/1/resolve", map[string]string{"resolution": "released"})
 	require.Equal(t, http.StatusOK, response.Code)
 	response = performSubscriptionRequest(t, router, token, http.MethodGet, "/api/admin/subscription-reset-backfills", nil)

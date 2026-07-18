@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -110,7 +111,57 @@ func TestSubscriptionsHydratesMissingGroupBeforeClassifyingUnlimited(t *testing.
 	require.Equal(t, "Hydrated", cards[0].GroupName)
 }
 
-func TestResetQuotaSuccessIsIdempotentAndConsumesOnce(t *testing.T) {
+func TestSubscriptionsListExposesExplicitDisabledStates(t *testing.T) {
+	store := newResetPeriodTestStore(t)
+	now := time.Now().UTC().Truncate(time.Second)
+	insertResetPeriodFixture(t, store, 1, 101, 1, 7, 77, 30, 0, now.Add(-time.Hour), now.Add(24*time.Hour), "active")
+	insertResetPeriodFixture(t, store, 2, 102, 1, 8, 88, 30, 1, now.Add(-time.Hour), now.Add(24*time.Hour), "active")
+	_, err := store.DB.Exec(`
+INSERT INTO subscription_reset_attempts (
+  request_id, period_id, upstream_user_id, upstream_subscription_id,
+  reset_daily, status, before_snapshot_json, reserved_at, created_at, updated_at
+) VALUES ('dddddddd-dddd-4ddd-8ddd-dddddddddddd', 2, 1, 88, 1, 'uncertain', '{"windows":[]}', ?, ?, ?)
+`, formatTime(now), formatTime(now), formatTime(now))
+	require.NoError(t, err)
+	dailyLimit := 10.0
+	subscriptions := []sub2api.Subscription{
+		{ID: 77, UserID: 1, GroupID: 7, StartsAt: now.Add(-time.Hour), ExpiresAt: now.Add(24 * time.Hour), Status: "active", DailyUsageUSD: 1, Group: &sub2api.Group{ID: 7, DailyLimitUSD: &dailyLimit}},
+		{ID: 88, UserID: 1, GroupID: 8, StartsAt: now.Add(-time.Hour), ExpiresAt: now.Add(24 * time.Hour), Status: "active", DailyUsageUSD: 1, Group: &sub2api.Group{ID: 8, DailyLimitUSD: &dailyLimit}},
+		{ID: 99, UserID: 1, GroupID: 9, StartsAt: now.Add(-time.Hour), ExpiresAt: now.Add(24 * time.Hour), Status: "active", Group: &sub2api.Group{ID: 9, DailyLimitUSD: &dailyLimit}},
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/admin/subscriptions":
+			writeRedeemTestEnvelope(w, subscriptionPageForTest(subscriptions))
+		case "/api/v1/admin/subscriptions/77/progress":
+			writeRedeemTestEnvelope(w, sub2api.SubscriptionProgress{ID: 77, Daily: &sub2api.UsageWindowProgress{LimitUSD: 10, UsedUSD: 1, RemainingUSD: 9}})
+		case "/api/v1/admin/subscriptions/88/progress":
+			http.Error(w, "progress unavailable", http.StatusBadGateway)
+		case "/api/v1/admin/subscriptions/99/progress":
+			writeRedeemTestEnvelope(w, sub2api.SubscriptionProgress{ID: 99})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(server.Close)
+	svc := New(&config.RuntimeConfig{}, store, sub2api.NewClient(server.URL, "admin-key"), nil)
+
+	cards, err := svc.ListSubscriptions(context.Background(), 1)
+	require.NoError(t, err)
+	require.Len(t, cards, 3)
+	require.True(t, cards[0].ZeroResetLimit)
+	require.False(t, cards[0].ExternalPeriod)
+	require.True(t, cards[1].OperationPending)
+	require.Equal(t, SubscriptionResetReasonUpstreamUnavailable, cards[1].DisabledReason)
+	require.True(t, cards[2].ExternalPeriod)
+	require.Len(t, cards[2].QuotaWindows, 1)
+	require.Zero(t, cards[2].QuotaWindows[0].UsedUSD)
+	require.Equal(t, 10.0, cards[2].QuotaWindows[0].RemainingUSD)
+	require.Nil(t, cards[2].QuotaWindows[0].WindowStart)
+	require.Nil(t, cards[2].QuotaWindows[0].ResetsAt)
+}
+
+func TestResetQuotaIdempotentReplayReturnsCardWhenUpstreamUnavailable(t *testing.T) {
 	store := newResetPeriodTestStore(t)
 	now := time.Now().UTC().Truncate(time.Second)
 	insertResetPeriodFixture(t, store, 1, 101, 1, 7, 77, 30, 2, now.Add(-time.Hour), now.Add(30*24*time.Hour), "active")
@@ -118,15 +169,25 @@ func TestResetQuotaSuccessIsIdempotentAndConsumesOnce(t *testing.T) {
 	dailyStart := now.Add(-2 * time.Hour)
 	newDailyStart := now
 	resetCalls := 0
+	var upstreamAvailable atomic.Bool
+	upstreamAvailable.Store(true)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/api/v1/admin/subscriptions/77":
+			if !upstreamAvailable.Load() {
+				http.Error(w, "temporarily unavailable", http.StatusBadGateway)
+				return
+			}
 			writeRedeemTestEnvelope(w, sub2api.Subscription{
 				ID: 77, UserID: 1, GroupID: 7, StartsAt: now.Add(-time.Hour), ExpiresAt: now.Add(30 * 24 * time.Hour), Status: "active",
 				DailyUsageUSD: 4, DailyWindowStart: &dailyStart,
 				Group: &sub2api.Group{ID: 7, Name: "Daily", DailyLimitUSD: &dailyLimit},
 			})
 		case "/api/v1/admin/subscriptions/77/progress":
+			if !upstreamAvailable.Load() {
+				http.Error(w, "temporarily unavailable", http.StatusBadGateway)
+				return
+			}
 			writeRedeemTestEnvelope(w, sub2api.SubscriptionProgress{ID: 77, Daily: &sub2api.UsageWindowProgress{
 				LimitUSD: 10, UsedUSD: 4, RemainingUSD: 6, WindowStart: &dailyStart,
 			}})
@@ -134,7 +195,7 @@ func TestResetQuotaSuccessIsIdempotentAndConsumesOnce(t *testing.T) {
 			resetCalls++
 			writeRedeemTestEnvelope(w, sub2api.Subscription{
 				ID: 77, UserID: 1, GroupID: 7, Status: "active", DailyUsageUSD: 0, DailyWindowStart: &newDailyStart,
-				Group: &sub2api.Group{ID: 7, DailyLimitUSD: &dailyLimit},
+				Group: &sub2api.Group{ID: 7},
 			})
 		default:
 			http.NotFound(w, r)
@@ -147,9 +208,23 @@ func TestResetQuotaSuccessIsIdempotentAndConsumesOnce(t *testing.T) {
 	result, err := svc.ResetSubscriptionQuota(context.Background(), 1, 77, requestID)
 	require.NoError(t, err)
 	require.Equal(t, "succeeded", result.Operation.Status)
+	require.NotNil(t, result.Operation.UpstreamStatus)
+	require.Equal(t, http.StatusOK, *result.Operation.UpstreamStatus)
+	require.NotNil(t, result.Subscription)
+	require.Equal(t, int64(77), result.Subscription.ID)
+	require.False(t, result.Subscription.Unlimited, "a partial reset response must retain authoritative group limits")
+	require.Equal(t, 1, result.Subscription.CurrentPeriod.ResetRemaining)
+	require.False(t, result.Subscription.CanReset)
+	require.Equal(t, SubscriptionResetReasonNoUsage, result.Subscription.DisabledReason)
+	upstreamAvailable.Store(false)
 	replayed, err := svc.ResetSubscriptionQuota(context.Background(), 1, 77, requestID)
 	require.NoError(t, err)
 	require.Equal(t, result.Operation.ID, replayed.Operation.ID)
+	require.NotNil(t, replayed.Subscription)
+	require.Equal(t, SubscriptionResetReasonUpstreamUnavailable, replayed.Subscription.DisabledReason)
+	require.False(t, replayed.Subscription.CanReset)
+	require.Equal(t, int64(77), replayed.Subscription.ID)
+	require.Len(t, replayed.Subscription.QuotaWindows, 1)
 	require.Equal(t, 1, resetCalls)
 	var resetUsed int
 	require.NoError(t, store.DB.QueryRow(`SELECT reset_used FROM subscription_reset_periods WHERE id = 1`).Scan(&resetUsed))
@@ -170,10 +245,12 @@ func TestResetQuotaExplicitFailureReleasesReservedCount(t *testing.T) {
 	require.Equal(t, SubscriptionResetReasonUpstreamRejected, StableReason(err))
 	var resetUsed int
 	var status string
+	var upstreamStatus int
 	require.NoError(t, store.DB.QueryRow(`SELECT reset_used FROM subscription_reset_periods WHERE id = 1`).Scan(&resetUsed))
-	require.NoError(t, store.DB.QueryRow(`SELECT status FROM subscription_reset_attempts`).Scan(&status))
+	require.NoError(t, store.DB.QueryRow(`SELECT status, upstream_status FROM subscription_reset_attempts`).Scan(&status, &upstreamStatus))
 	require.Zero(t, resetUsed)
 	require.Equal(t, "failed", status)
+	require.Equal(t, http.StatusConflict, upstreamStatus)
 }
 
 func TestResetQuotaUnknownResultKeepsReservationAndCanBeConfirmedByReconcile(t *testing.T) {
@@ -229,6 +306,10 @@ func TestResetQuotaUnknownResultKeepsReservationAndCanBeConfirmedByReconcile(t *
 	result, err := svc.ResetSubscriptionQuota(context.Background(), 1, 77, "33333333-3333-4333-8333-333333333333")
 	require.NoError(t, err)
 	require.Equal(t, "uncertain", result.Operation.Status)
+	require.Nil(t, result.Operation.UpstreamStatus)
+	require.NotNil(t, result.Subscription)
+	require.True(t, result.Subscription.OperationPending)
+	require.Equal(t, SubscriptionResetReasonOperationPending, result.Subscription.DisabledReason)
 	var resetUsed int
 	require.NoError(t, store.DB.QueryRow(`SELECT reset_used FROM subscription_reset_periods WHERE id = 1`).Scan(&resetUsed))
 	require.Equal(t, 1, resetUsed)
@@ -284,6 +365,57 @@ INSERT INTO subscription_reset_attempts (
 	var resetUsed int
 	require.NoError(t, store.DB.QueryRow(`SELECT reset_used FROM subscription_reset_periods WHERE id = 1`).Scan(&resetUsed))
 	require.Zero(t, resetUsed)
+}
+
+func TestListPendingSubscriptionResetAttemptsIncludesUserPeriodAndSnapshots(t *testing.T) {
+	store := newResetPeriodTestStore(t)
+	now := time.Now().UTC().Truncate(time.Second)
+	insertResetPeriodFixture(t, store, 1, 101, 1, 7, 77, 30, 2, now.Add(-time.Hour), now.Add(24*time.Hour), "active")
+	_, err := store.DB.Exec(`
+INSERT INTO upstream_users (
+  upstream_user_id, email, username, role, status, profile_json,
+  last_seen_at, created_at, updated_at
+) VALUES (1, 'user@example.com', 'quota-user', 'user', 'active', '{}', ?, ?, ?)
+`, formatTime(now), formatTime(now), formatTime(now))
+	require.NoError(t, err)
+	dailyStart := now.Add(-2 * time.Hour)
+	before := subscriptionQuotaSnapshot{Windows: []SubscriptionQuotaWindow{{
+		Kind: "daily", LimitUSD: 10, UsedUSD: 4, RemainingUSD: 6, WindowStart: &dailyStart,
+	}}}
+	_, err = store.DB.Exec(`
+INSERT INTO subscription_reset_attempts (
+  request_id, period_id, upstream_user_id, upstream_subscription_id,
+  reset_daily, status, before_snapshot_json, response_status,
+  response_reason, error_message, reserved_at, created_at, updated_at
+) VALUES ('eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee', 1, 1, 77, 1, 'uncertain', ?, 202, 'result_unknown', 'timeout', ?, ?, ?)
+`, marshalJSON(before), formatTime(now), formatTime(now), formatTime(now))
+	require.NoError(t, err)
+	newDailyStart := now
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/admin/subscriptions/77/progress" {
+			writeRedeemTestEnvelope(w, sub2api.SubscriptionProgress{ID: 77, Daily: &sub2api.UsageWindowProgress{
+				LimitUSD: 10, UsedUSD: 0, RemainingUSD: 10, WindowStart: &newDailyStart,
+			}})
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	t.Cleanup(server.Close)
+	svc := New(&config.RuntimeConfig{}, store, sub2api.NewClient(server.URL, "admin-key"), nil)
+
+	items, err := svc.ListPendingSubscriptionResetAttempts(context.Background())
+	require.NoError(t, err)
+	require.Len(t, items, 1)
+	require.Equal(t, "quota-user", items[0].Username)
+	require.Equal(t, "user@example.com", items[0].Email)
+	require.Equal(t, int64(1), items[0].Period.ID)
+	require.Equal(t, 2, items[0].Period.ResetLimit)
+	require.Len(t, items[0].BeforeSnapshot, 1)
+	require.Equal(t, 4.0, items[0].BeforeSnapshot[0].UsedUSD)
+	require.Len(t, items[0].CurrentSnapshot, 1)
+	require.Zero(t, items[0].CurrentSnapshot[0].UsedUSD)
+	require.NotNil(t, items[0].CurrentSnapshot[0].WindowStart)
+	require.Empty(t, items[0].CurrentSnapshotError)
 }
 
 func TestResetQuotaConcurrentSameRequestConsumesOnce(t *testing.T) {

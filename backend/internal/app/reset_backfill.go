@@ -15,6 +15,7 @@ type legacyResetBackfillRun struct {
 	ID          int64
 	TierID      int64
 	ResetLimit  int
+	Status      string
 	TriggeredAt time.Time
 }
 
@@ -40,7 +41,7 @@ func (s *Service) processLegacyResetBackfillRuns(
 
 func (s *Service) listPendingLegacyResetBackfillRuns(ctx context.Context) ([]legacyResetBackfillRun, error) {
 	rows, err := s.db().QueryContext(ctx, `
-SELECT id, tier_id, reset_limit, triggered_at
+SELECT id, tier_id, reset_limit, status, triggered_at
 FROM subscription_reset_backfill_runs
 WHERE status IN ('pending', 'running', 'failed')
 ORDER BY id ASC
@@ -53,7 +54,7 @@ ORDER BY id ASC
 	for rows.Next() {
 		var run legacyResetBackfillRun
 		var triggeredAt string
-		if err := rows.Scan(&run.ID, &run.TierID, &run.ResetLimit, &triggeredAt); err != nil {
+		if err := rows.Scan(&run.ID, &run.TierID, &run.ResetLimit, &run.Status, &triggeredAt); err != nil {
 			return nil, err
 		}
 		run.TriggeredAt, err = parseNonNullTime(triggeredAt)
@@ -75,11 +76,16 @@ func (s *Service) processLegacyResetBackfillRun(
 	if run.ID <= 0 || run.TierID <= 0 || run.ResetLimit <= 0 {
 		return ErrBadRequest
 	}
+	retryIncrement := 0
+	if run.Status == "failed" || run.Status == "running" {
+		retryIncrement = 1
+	}
 	if _, err := s.db().ExecContext(ctx, `
 UPDATE subscription_reset_backfill_runs
-SET status = 'running', started_at = COALESCE(started_at, ?), error_message = '', updated_at = ?
+SET status = 'running', started_at = COALESCE(started_at, ?), error_message = '',
+    retry_count = retry_count + ?, updated_at = ?
 WHERE id = ? AND status IN ('pending', 'running', 'failed')
-`, formatTime(now), formatTime(now), run.ID); err != nil {
+`, formatTime(now), retryIncrement, formatTime(now), run.ID); err != nil {
 		return err
 	}
 
@@ -147,9 +153,9 @@ WHERE sub2api_group_id = ? AND fulfilled_at <= ?
 		_, err = s.db().ExecContext(ctx, `
 UPDATE subscription_reset_backfill_runs
 SET status = 'failed', total_records = ?, processed_records = ?, granted_records = ?,
-    error_message = ?, completed_at = NULL, updated_at = ?
+    error_message = ?, last_error_at = ?, completed_at = NULL, updated_at = ?
 WHERE id = ?
-`, total, processed, granted, message, formatTime(now), run.ID)
+`, total, processed, granted, message, formatTime(now), formatTime(now), run.ID)
 		return err
 	}
 	_, err = s.db().ExecContext(ctx, `
@@ -224,8 +230,8 @@ WHERE tier_id = ?
 func (s *Service) failLegacyResetBackfillRun(ctx context.Context, runID int64, message string, now time.Time) error {
 	_, err := s.db().ExecContext(ctx, `
 UPDATE subscription_reset_backfill_runs
-SET status = 'failed', error_message = ?, completed_at = NULL, updated_at = ?
+SET status = 'failed', error_message = ?, last_error_at = ?, completed_at = NULL, updated_at = ?
 WHERE id = ? AND status <> 'succeeded'
-`, message, formatTime(now), runID)
+`, message, formatTime(now), formatTime(now), runID)
 	return err
 }

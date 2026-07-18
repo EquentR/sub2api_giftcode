@@ -73,7 +73,8 @@
               <el-table-column label="用户 / 订阅" min-width="150">
                 <template #default="{ row }">
                   <div class="reset-operation-target">
-                    <span>用户 {{ row.upstream_user_id }}</span>
+                    <strong>{{ row.username || `用户 ${row.upstream_user_id}` }}</strong>
+                    <small>{{ row.email || `用户 ID ${row.upstream_user_id}` }}</small>
                     <small>订阅 {{ row.upstream_subscription_id }}</small>
                   </div>
                 </template>
@@ -120,8 +121,14 @@
                   <el-tag :type="backfillTagType(row.status)" size="small">{{ backfillStatusLabel(row.status) }}</el-tag>
                 </template>
               </el-table-column>
+              <el-table-column prop="retry_count" label="重试" width="72" />
               <el-table-column prop="error_message" label="最近错误" min-width="150" show-overflow-tooltip>
-                <template #default="{ row }">{{ row.error_message || '-' }}</template>
+                <template #default="{ row }">
+                  <div class="backfill-error">
+                    <span>{{ row.error_message || '-' }}</span>
+                    <small v-if="row.last_error_at">{{ formatTime(row.last_error_at) }}</small>
+                  </div>
+                </template>
               </el-table-column>
             </el-table>
           </div>
@@ -193,7 +200,12 @@
       </el-table>
     </el-dialog>
 
-    <el-dialog v-model="resetResolutionVisible" :title="resetResolution === 'consumed' ? '确认重置已消耗' : '确认释放重置次数'" width="min(500px, 92vw)">
+    <el-dialog
+      v-model="resetResolutionVisible"
+      :title="resetResolution === 'consumed' ? '确认重置已消耗' : '确认释放重置次数'"
+      width="min(500px, 92vw)"
+      modal-class="reset-resolution-overlay"
+    >
       <div v-if="selectedResetAttempt" class="resolution-copy">
         <el-alert
           :title="resetResolution === 'consumed' ? '确认后保留本次次数消耗，并将操作标记为成功。' : '确认后将操作标记为失败，并归还本次预占次数。'"
@@ -208,7 +220,42 @@
             {{ selectedResetAttempt.upstream_user_id }} / {{ selectedResetAttempt.upstream_subscription_id }}
           </el-descriptions-item>
           <el-descriptions-item label="目标窗口">{{ resetAttemptTargets(selectedResetAttempt) }}</el-descriptions-item>
+          <el-descriptions-item label="权益周期">
+            {{ formatTime(selectedResetAttempt.period?.period_start) }} 至 {{ formatTime(selectedResetAttempt.period?.period_end) }}
+          </el-descriptions-item>
         </el-descriptions>
+        <div class="snapshot-grid">
+          <section class="snapshot-section">
+            <h3>操作前快照</h3>
+            <div v-if="selectedResetAttempt.snapshot_error" class="snapshot-error">快照数据不可用</div>
+            <div v-else-if="selectedResetAttempt.before_snapshot?.length" class="snapshot-list">
+              <div v-for="window in selectedResetAttempt.before_snapshot" :key="`before-${window.kind}`" class="snapshot-row">
+                <strong>{{ quotaKindLabel(window.kind) }}</strong>
+                <span>已用 {{ formatUSD(window.used_usd) }} / {{ formatUSD(window.limit_usd) }}</span>
+                <small>窗口开始 {{ formatTime(window.window_start) }}</small>
+              </div>
+            </div>
+            <div v-else class="muted">无操作前快照</div>
+          </section>
+          <section class="snapshot-section">
+            <h3>当前快照</h3>
+            <el-alert
+              v-if="selectedResetAttempt.current_snapshot_error"
+              :title="resetReasonLabel(selectedResetAttempt.current_snapshot_error)"
+              type="warning"
+              :closable="false"
+              show-icon
+            />
+            <div v-else-if="selectedResetAttempt.current_snapshot?.length" class="snapshot-list">
+              <div v-for="window in selectedResetAttempt.current_snapshot" :key="`current-${window.kind}`" class="snapshot-row">
+                <strong>{{ quotaKindLabel(window.kind) }}</strong>
+                <span>已用 {{ formatUSD(window.used_usd) }} / {{ formatUSD(window.limit_usd) }}</span>
+                <small>窗口开始 {{ formatTime(window.window_start) }}</small>
+              </div>
+            </div>
+            <div v-else class="muted">无当前快照</div>
+          </section>
+        </div>
       </div>
       <template #footer>
         <el-button @click="resetResolutionVisible = false">取消</el-button>
@@ -235,6 +282,7 @@ import { ApiError } from '@/api/http'
 import type { DashboardStats, RedeemTier, SubscriptionConcurrencyMonitorDetail, SubscriptionConcurrencyMonitorStatus, SubscriptionGroup, SubscriptionResetAttempt, SubscriptionResetBackfillRun } from '@/api/types'
 import { useBrandingStore } from '@/stores/branding'
 import { tierCodeType } from '@/utils/tiers'
+import { quotaKindLabel, resetReasonLabel } from '@/utils/subscriptions'
 
 const tiers = ref<RedeemTier[]>([])
 const subscriptionGroups = ref<SubscriptionGroup[]>([])
@@ -397,6 +445,10 @@ function resetAttemptTargets(attempt: SubscriptionResetAttempt) {
   return targets.join('、') || '-'
 }
 
+function formatUSD(value?: number | null) {
+  return `$${Number(value || 0).toFixed(2)}`
+}
+
 function backfillPercentage(run: SubscriptionResetBackfillRun) {
   if (run.total_records <= 0) return run.status === 'succeeded' ? 100 : 0
   return Math.min(100, Math.round((run.processed_records / run.total_records) * 100))
@@ -541,13 +593,15 @@ onMounted(loadAll)
 
 .reset-operation-target,
 .backfill-progress,
+.backfill-error,
 .resolution-copy {
   display: grid;
   gap: 4px;
 }
 
 .reset-operation-target small,
-.backfill-progress small {
+.backfill-progress small,
+.backfill-error small {
   color: #64748b;
 }
 
@@ -555,8 +609,81 @@ onMounted(loadAll)
   gap: 14px;
 }
 
+.resolution-copy :deep(.el-descriptions__content) {
+  overflow-wrap: anywhere;
+}
+
+.snapshot-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.snapshot-section {
+  min-width: 0;
+  display: grid;
+  align-content: start;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid #dfe7f1;
+  border-radius: 8px;
+  background: #fbfcfe;
+}
+
+.snapshot-section h3 {
+  margin: 0;
+  font-size: 14px;
+  letter-spacing: 0;
+}
+
+.snapshot-list,
+.snapshot-row {
+  display: grid;
+  gap: 6px;
+}
+
+.snapshot-row {
+  padding-bottom: 8px;
+  border-bottom: 1px solid #e7edf5;
+  font-size: 12px;
+}
+
+.snapshot-row:last-child {
+  padding-bottom: 0;
+  border-bottom: 0;
+}
+
+.snapshot-row span,
+.snapshot-row small {
+  color: #64748b;
+  overflow-wrap: anywhere;
+}
+
+.snapshot-error {
+  color: #b42318;
+  font-size: 13px;
+}
+
+:global(.reset-resolution-overlay .el-dialog) {
+  display: flex;
+  flex-direction: column;
+  max-height: 90vh;
+  margin: 5vh auto !important;
+}
+
+:global(.reset-resolution-overlay .el-dialog__body) {
+  min-height: 0;
+  overflow-y: auto;
+}
+
 @media (max-width: 980px) {
   .reset-admin-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 600px) {
+  .snapshot-grid {
     grid-template-columns: 1fr;
   }
 }

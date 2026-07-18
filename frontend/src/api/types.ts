@@ -217,6 +217,9 @@ export interface SubscriptionCard {
   current_period?: SubscriptionResetPeriodSummary | null
   next_period?: SubscriptionResetPeriodSummary | null
   unlimited: boolean
+  external_period: boolean
+  zero_reset_limit: boolean
+  operation_pending: boolean
   can_reset: boolean
   disabled_reason?: string
 }
@@ -244,6 +247,32 @@ export interface SubscriptionResetAttempt {
   confirmed_by_user_id?: number | null
   created_at: string
   updated_at: string
+  username?: string
+  email?: string
+  period?: SubscriptionResetPeriodDetail
+  before_snapshot?: SubscriptionQuotaWindow[]
+  after_snapshot?: SubscriptionQuotaWindow[]
+  current_snapshot?: SubscriptionQuotaWindow[]
+  snapshot_error?: string
+  current_snapshot_error?: string
+}
+
+export interface SubscriptionResetPeriodDetail extends SubscriptionResetPeriodSummary {
+  access_request_id: number
+  upstream_user_id: number
+  tier_id: number
+  sub2api_group_id: number
+  upstream_subscription_id?: number | null
+  validity_days: number
+  fulfilled_at: string
+  fulfillment_order: number
+  inferred_from_legacy: boolean
+  migration_version: number
+  legacy_reset_backfilled: boolean
+  last_synced_at?: string | null
+  last_error: string
+  created_at: string
+  updated_at: string
 }
 
 export interface SubscriptionResetResult {
@@ -260,6 +289,8 @@ export interface SubscriptionResetBackfillRun {
   processed_records: number
   granted_records: number
   error_message: string
+  retry_count: number
+  last_error_at?: string | null
   triggered_at: string
   started_at?: string | null
   completed_at?: string | null
