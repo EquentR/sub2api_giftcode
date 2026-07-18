@@ -111,6 +111,9 @@ func (s *Service) SyncRedeemCodes(ctx context.Context) (int, error) {
 		updated++
 	}
 	_ = s.setSyncState(ctx, "redeem_codes_last_sync_at", formatTime(now), now)
+	if updated > 0 {
+		s.WakeSubscriptionResetReconcile()
+	}
 	return updated, nil
 }
 
@@ -315,6 +318,16 @@ func (s *Service) issueDirectCharge(ctx context.Context, accessReq *models.Acces
 		input.GroupID = accessReq.Sub2APIGroupID
 		input.ValidityDays = accessReq.ValidityDays
 		input.Value = accessReq.PayAmountCny
+		unlockResetBoundary := s.lockSubscriptionResetBoundary(userID, *accessReq.Sub2APIGroupID)
+		defer unlockResetBoundary()
+	}
+	var beforeSubscription *sub2api.Subscription
+	beforeSubscriptionKnown := false
+	if codeType == "subscription" {
+		if subscriptions, listErr := s.upstream.ListActiveUserSubscriptions(ctx, userID); listErr == nil {
+			beforeSubscriptionKnown = true
+			beforeSubscription = matchingResetSubscription(subscriptions, userID, *accessReq.Sub2APIGroupID)
+		}
 	}
 	created, err := s.upstream.CreateAndRedeemCode(ctx, idempotencyKey, input)
 	if err != nil {
@@ -330,18 +343,31 @@ func (s *Service) issueDirectCharge(ctx context.Context, accessReq *models.Acces
 	if err := validateDirectChargeRedeemed(created, userID); err != nil {
 		return nil, err
 	}
-	now := s.now()
-	code, err := s.persistDirectChargeRedeemCode(ctx, accessReq, tier, created, now)
+	fulfilledAt := s.now()
+	if created.UsedAt != nil {
+		fulfilledAt = created.UsedAt.UTC()
+	}
+	var afterSubscription *sub2api.Subscription
+	if codeType == "subscription" {
+		if subscriptions, listErr := s.upstream.ListActiveUserSubscriptions(ctx, userID); listErr == nil {
+			afterSubscription = matchingResetSubscription(subscriptions, userID, *accessReq.Sub2APIGroupID)
+		}
+	}
+	code, err := s.persistDirectChargeRedeemCode(ctx, accessReq, tier, created, fulfilledAt)
 	if err != nil {
 		return nil, err
 	}
 	accessReq.Status = "consumed"
-	accessReq.ApprovedAt = &now
-	accessReq.ConsumedAt = &now
+	accessReq.ApprovedAt = &fulfilledAt
+	accessReq.ConsumedAt = &fulfilledAt
 	accessReq.FulfillmentResult = fulfillmentResultDirectSucceeded
 	accessReq.FulfilledVia = fulfilledViaDirectCharge
 	accessReq.FulfillmentError = ""
-	accessReq.UpdatedAt = now
+	accessReq.UpdatedAt = fulfilledAt
+	if codeType == "subscription" {
+		_ = s.recordDirectSubscriptionResetPeriodLocked(ctx, accessReq, beforeSubscriptionKnown, beforeSubscription, afterSubscription, fulfilledAt)
+		s.WakeSubscriptionResetReconcile()
+	}
 	return code, nil
 }
 

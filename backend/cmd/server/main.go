@@ -68,6 +68,11 @@ func main() {
 		defer close(concurrencyMonitorDone)
 		runSubscriptionConcurrencyLoop(runCtx, service.ReconcileSubscriptionConcurrency, 30*time.Minute)
 	}()
+	resetPeriodMonitorDone := make(chan struct{})
+	go func() {
+		defer close(resetPeriodMonitorDone)
+		service.RunSubscriptionResetLoop(runCtx, time.Duration(cfg.Sync.IntervalSeconds)*time.Second)
+	}()
 
 	srv := &http.Server{
 		Addr:              cfg.App.ListenAddr,
@@ -86,6 +91,7 @@ func main() {
 	listenErr := srv.ListenAndServe()
 	cancel()
 	<-concurrencyMonitorDone
+	<-resetPeriodMonitorDone
 	if listenErr != nil && listenErr != http.ErrServerClosed {
 		log.Fatalf("server error: %v", listenErr)
 	}

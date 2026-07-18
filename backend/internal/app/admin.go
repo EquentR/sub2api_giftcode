@@ -198,6 +198,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
+	s.WakeSubscriptionResetReconcile()
 	return out, nil
 }
 

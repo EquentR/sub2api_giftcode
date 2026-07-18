@@ -20,11 +20,15 @@ import (
 )
 
 type Service struct {
-	cfg           *config.RuntimeConfig
-	store         *db.Store
-	upstream      *sub2api.Client
-	mailer        *mail.Mailer
-	concurrencyMu sync.Mutex
+	cfg                  *config.RuntimeConfig
+	store                *db.Store
+	upstream             *sub2api.Client
+	mailer               *mail.Mailer
+	concurrencyMu        sync.Mutex
+	resetMu              sync.Mutex
+	resetWake            chan struct{}
+	resetBoundaryLocksMu sync.Mutex
+	resetBoundaryLocks   map[subscriptionResetBoundaryKey]*subscriptionResetBoundaryLock
 }
 
 type SessionUser struct {
@@ -61,10 +65,12 @@ type DashboardStats struct {
 
 func New(cfg *config.RuntimeConfig, store *db.Store, upstream *sub2api.Client, mailer *mail.Mailer) *Service {
 	return &Service{
-		cfg:      cfg,
-		store:    store,
-		upstream: upstream,
-		mailer:   mailer,
+		cfg:                cfg,
+		store:              store,
+		upstream:           upstream,
+		mailer:             mailer,
+		resetWake:          make(chan struct{}, 1),
+		resetBoundaryLocks: make(map[subscriptionResetBoundaryKey]*subscriptionResetBoundaryLock),
 	}
 }
 
