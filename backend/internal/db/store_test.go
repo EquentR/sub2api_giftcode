@@ -2,6 +2,7 @@ package db
 
 import (
 	"context"
+	"database/sql"
 	"path/filepath"
 	"testing"
 
@@ -246,21 +247,46 @@ WHERE name = 'reset_count' AND type = 'INTEGER' AND [notnull] = 1 AND dflt_value
 		require.Equal(t, 1, count, "expected %s.reset_count", table)
 	}
 
-	expectedColumns := map[string]int{
-		"subscription_reset_periods":       21,
-		"subscription_reset_attempts":      22,
-		"subscription_reset_backfill_runs": 14,
+	expectedColumns := map[string][]string{
+		"subscription_reset_periods": {
+			"legacy_ignored", "legacy_ignored_at", "legacy_ignore_reason",
+		},
+		"subscription_reset_attempts": {
+			"period_id", "entitlement_type", "entitlement_id", "upstream_subscription_id",
+		},
+		"subscription_reset_backfill_runs": {
+			"superseded_at", "superseded_reason",
+		},
+		"subscription_reset_bonus_batches": {
+			"batch_key", "target_scope", "selected_user_ids_json", "group_ids_json", "reset_count", "status",
+		},
+		"subscription_reset_bonus_batch_details": {
+			"batch_id", "upstream_subscription_id", "status", "reason", "bonus_grant_id",
+		},
+		"subscription_reset_bonus_grants": {
+			"batch_id", "batch_detail_id", "upstream_subscription_id", "reset_limit", "reset_used", "expires_at", "status",
+		},
+		"subscription_extension_events": {
+			"event_key", "source_type", "upstream_subscription_id", "extension_days", "before_expires_at", "after_expires_at", "status", "resolution",
+		},
 	}
-	for table, expected := range expectedColumns {
-		var count int
-		require.NoError(t, store.DB.QueryRowContext(context.Background(), `SELECT COUNT(1) FROM pragma_table_info(?)`, table).Scan(&count))
-		require.Equal(t, expected, count, "unexpected %s column count", table)
+	for table, columns := range expectedColumns {
+		for _, column := range columns {
+			var count int
+			require.NoError(t, store.DB.QueryRowContext(context.Background(), `SELECT COUNT(1) FROM pragma_table_info(?) WHERE name = ?`, table, column).Scan(&count))
+			require.Equal(t, 1, count, "expected %s.%s", table, column)
+		}
 	}
+
+	var periodNotNull int
+	require.NoError(t, store.DB.QueryRowContext(context.Background(), `SELECT [notnull] FROM pragma_table_info('subscription_reset_attempts') WHERE name = 'period_id'`).Scan(&periodNotNull))
+	require.Zero(t, periodNotNull)
 
 	var blockingIndexSQL string
 	require.NoError(t, store.DB.QueryRowContext(context.Background(), `
 SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'idx_subscription_reset_attempts_blocking'
 `).Scan(&blockingIndexSQL))
+	require.Contains(t, blockingIndexSQL, "upstream_subscription_id")
 	require.Contains(t, blockingIndexSQL, "WHERE status IN ('reserved', 'uncertain')")
 
 	var activeIndexSQL string
@@ -268,6 +294,198 @@ SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'idx_subscription_
 SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'idx_subscription_reset_periods_one_active'
 `).Scan(&activeIndexSQL))
 	require.Contains(t, activeIndexSQL, "WHERE status = 'active'")
+	require.Contains(t, activeIndexSQL, "legacy_ignored = 0")
+}
+
+func TestMigratePreservesAttemptsAndSupersedesLegacyResetBackfill(t *testing.T) {
+	store, err := Open("sqlite", ":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+	ctx := context.Background()
+
+	_, err = store.DB.ExecContext(ctx, `
+CREATE TABLE redeem_tiers (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, code_type TEXT NOT NULL DEFAULT 'balance', amount REAL NOT NULL DEFAULT 0,
+  pay_amount_cny REAL NOT NULL DEFAULT 0, original_pay_amount_cny REAL NULL, label TEXT NOT NULL,
+  enabled INTEGER NOT NULL DEFAULT 1, sort_order INTEGER NOT NULL DEFAULT 0, sub2api_group_id INTEGER NULL,
+  validity_days INTEGER NOT NULL DEFAULT 0, concurrency INTEGER NOT NULL DEFAULT 0,
+  reset_count INTEGER NOT NULL DEFAULT 0, legacy_reset_backfill_eligible INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+);
+CREATE TABLE subscription_reset_periods (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, access_request_id INTEGER NOT NULL UNIQUE, upstream_user_id INTEGER NOT NULL,
+  tier_id INTEGER NOT NULL, sub2api_group_id INTEGER NOT NULL, upstream_subscription_id INTEGER NULL,
+  validity_days INTEGER NOT NULL, reset_limit INTEGER NOT NULL DEFAULT 0, reset_used INTEGER NOT NULL DEFAULT 0,
+  fulfilled_at TEXT NOT NULL, fulfillment_order INTEGER NOT NULL DEFAULT 0, period_start TEXT NULL, period_end TEXT NULL,
+  status TEXT NOT NULL, inferred_from_legacy INTEGER NOT NULL DEFAULT 0, migration_version INTEGER NOT NULL DEFAULT 0,
+  legacy_reset_backfilled INTEGER NOT NULL DEFAULT 0, last_synced_at TEXT NULL, last_error TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+);
+CREATE TABLE subscription_reset_attempts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, request_id TEXT NOT NULL UNIQUE, period_id INTEGER NOT NULL,
+  upstream_user_id INTEGER NOT NULL, upstream_subscription_id INTEGER NOT NULL,
+  reset_daily INTEGER NOT NULL DEFAULT 0, reset_weekly INTEGER NOT NULL DEFAULT 0, reset_monthly INTEGER NOT NULL DEFAULT 0,
+  status TEXT NOT NULL, before_snapshot_json TEXT NOT NULL DEFAULT '', after_snapshot_json TEXT NOT NULL DEFAULT '',
+  upstream_status INTEGER NULL, response_status INTEGER NOT NULL DEFAULT 0, response_reason TEXT NOT NULL DEFAULT '',
+  error_message TEXT NOT NULL DEFAULT '', resolution TEXT NOT NULL DEFAULT '', reserved_at TEXT NOT NULL,
+  completed_at TEXT NULL, confirmed_at TEXT NULL, confirmed_by_user_id INTEGER NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+);
+CREATE TABLE subscription_reset_backfill_runs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, tier_id INTEGER NOT NULL UNIQUE, reset_limit INTEGER NOT NULL,
+  status TEXT NOT NULL, total_records INTEGER NOT NULL DEFAULT 0, processed_records INTEGER NOT NULL DEFAULT 0,
+  granted_records INTEGER NOT NULL DEFAULT 0, error_message TEXT NOT NULL DEFAULT '', retry_count INTEGER NOT NULL DEFAULT 0,
+  last_error_at TEXT NULL, triggered_at TEXT NOT NULL, started_at TEXT NULL, completed_at TEXT NULL, updated_at TEXT NOT NULL
+);
+INSERT INTO redeem_tiers (id, code_type, label, reset_count, legacy_reset_backfill_eligible, created_at, updated_at)
+VALUES (50, 'subscription', 'Legacy Std', 3, 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z');
+INSERT INTO subscription_reset_periods (
+  id, access_request_id, upstream_user_id, tier_id, sub2api_group_id, upstream_subscription_id,
+  validity_days, reset_limit, reset_used, fulfilled_at, fulfillment_order, period_start, period_end,
+  status, inferred_from_legacy, migration_version, legacy_reset_backfilled, created_at, updated_at
+) VALUES
+  (1, 101, 5, 50, 20, 17, 30, 3, 1, '2026-06-24T00:00:00Z', 101, '2026-06-24T00:00:00Z', '2026-07-24T00:00:00Z', 'active', 1, 1, 1, '2026-06-24T00:00:00Z', '2026-06-24T00:00:00Z'),
+  (2, 102, 1, 50, 20, NULL, 30, 0, 0, '2026-06-28T00:00:00Z', 102, NULL, NULL, 'pending_binding', 1, 1, 0, '2026-06-28T00:00:00Z', '2026-06-28T00:00:00Z');
+INSERT INTO subscription_reset_attempts (
+  id, request_id, period_id, upstream_user_id, upstream_subscription_id, reset_daily, status,
+  before_snapshot_json, response_status, reserved_at, created_at, updated_at
+) VALUES (9, '123e4567-e89b-42d3-a456-426614174000', 1, 5, 17, 1, 'succeeded', '{}', 200,
+  '2026-07-01T00:00:00Z', '2026-07-01T00:00:00Z', '2026-07-01T00:00:00Z');
+INSERT INTO subscription_reset_backfill_runs (
+  id, tier_id, reset_limit, status, total_records, processed_records, granted_records, error_message,
+  retry_count, triggered_at, updated_at
+) VALUES (7, 50, 3, 'failed', 4, 2, 2, 'awaiting reconciliation', 72,
+  '2026-07-01T00:00:00Z', '2026-07-17T00:00:00Z');
+`)
+	require.NoError(t, err)
+
+	require.NoError(t, store.Migrate(ctx))
+	require.NoError(t, store.Migrate(ctx))
+
+	var periodID sql.NullInt64
+	var entitlementType string
+	var entitlementID int64
+	require.NoError(t, store.DB.QueryRowContext(ctx, `SELECT period_id, entitlement_type, entitlement_id FROM subscription_reset_attempts WHERE id = 9`).Scan(&periodID, &entitlementType, &entitlementID))
+	require.True(t, periodID.Valid)
+	require.Equal(t, int64(1), periodID.Int64)
+	require.Equal(t, "base_period", entitlementType)
+	require.Equal(t, int64(1), entitlementID)
+
+	var status, supersededReason string
+	var supersededAt sql.NullString
+	require.NoError(t, store.DB.QueryRowContext(ctx, `SELECT status, superseded_at, superseded_reason FROM subscription_reset_backfill_runs WHERE id = 7`).Scan(&status, &supersededAt, &supersededReason))
+	require.Equal(t, "superseded", status)
+	require.True(t, supersededAt.Valid)
+	require.NotEmpty(t, supersededReason)
+
+	var grantedIgnored, missingIgnored int
+	require.NoError(t, store.DB.QueryRowContext(ctx, `SELECT legacy_ignored FROM subscription_reset_periods WHERE id = 1`).Scan(&grantedIgnored))
+	require.NoError(t, store.DB.QueryRowContext(ctx, `SELECT legacy_ignored FROM subscription_reset_periods WHERE id = 2`).Scan(&missingIgnored))
+	require.Zero(t, grantedIgnored, "already granted reset counts must remain usable")
+	require.Equal(t, 1, missingIgnored, "ungranted legacy periods must stop participating in reconciliation")
+}
+
+func TestMigrateLegacyIgnoredActivePeriodDoesNotBlockReplacement(t *testing.T) {
+	store, err := Open("sqlite", ":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+	ctx := context.Background()
+	require.NoError(t, store.Migrate(ctx))
+
+	_, err = store.DB.ExecContext(ctx, `
+INSERT INTO subscription_reset_periods (
+  access_request_id, upstream_user_id, tier_id, sub2api_group_id, upstream_subscription_id,
+  validity_days, reset_limit, fulfilled_at, period_start, period_end, status,
+  legacy_ignored, legacy_ignored_at, legacy_ignore_reason, created_at, updated_at
+) VALUES (101, 1, 50, 20, 17, 30, 0, '2026-06-01T00:00:00Z', '2026-06-01T00:00:00Z',
+  '2026-07-01T00:00:00Z', 'active', 1, '2026-07-18T00:00:00Z', 'disabled',
+  '2026-06-01T00:00:00Z', '2026-07-18T00:00:00Z');
+INSERT INTO subscription_reset_periods (
+  access_request_id, upstream_user_id, tier_id, sub2api_group_id, upstream_subscription_id,
+  validity_days, reset_limit, fulfilled_at, period_start, period_end, status, created_at, updated_at
+) VALUES (102, 1, 51, 20, 21, 30, 3, '2026-07-17T00:00:00Z', '2026-07-17T00:00:00Z',
+  '2026-08-16T00:00:00Z', 'active', '2026-07-17T00:00:00Z', '2026-07-17T00:00:00Z');
+`)
+	require.NoError(t, err)
+}
+
+func TestMigrateDoesNotIgnorePostBackfillPeriod(t *testing.T) {
+	store, err := Open("sqlite", ":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+	ctx := context.Background()
+	require.NoError(t, store.Migrate(ctx))
+	_, err = store.DB.ExecContext(ctx, `
+INSERT INTO redeem_tiers (id, code_type, label, reset_count, legacy_reset_backfill_eligible, created_at, updated_at)
+VALUES (50, 'subscription', 'Legacy Std', 3, 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z');
+INSERT INTO subscription_reset_backfill_runs (
+  tier_id, reset_limit, status, triggered_at, updated_at
+) VALUES (50, 3, 'failed', '2026-07-01T00:00:00Z', '2026-07-01T00:00:00Z');
+INSERT INTO subscription_reset_periods (
+  access_request_id, upstream_user_id, tier_id, sub2api_group_id, validity_days, reset_limit,
+  fulfilled_at, status, inferred_from_legacy, created_at, updated_at
+) VALUES (201, 1, 50, 20, 30, 0, '2026-07-10T00:00:00Z', 'pending_binding', 0,
+  '2026-07-10T00:00:00Z', '2026-07-10T00:00:00Z');
+`)
+	require.NoError(t, err)
+	require.NoError(t, store.Migrate(ctx))
+
+	var ignored int
+	require.NoError(t, store.DB.QueryRowContext(ctx, `SELECT legacy_ignored FROM subscription_reset_periods WHERE access_request_id = 201`).Scan(&ignored))
+	require.Zero(t, ignored)
+}
+
+func TestMigrateDuplicateUncertainAttemptsDoNotReleaseReservedCounts(t *testing.T) {
+	store, err := Open("sqlite", ":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+	ctx := context.Background()
+	_, err = store.DB.ExecContext(ctx, `
+CREATE TABLE subscription_reset_periods (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, access_request_id INTEGER NOT NULL UNIQUE, upstream_user_id INTEGER NOT NULL,
+  tier_id INTEGER NOT NULL, sub2api_group_id INTEGER NOT NULL, upstream_subscription_id INTEGER NULL,
+  validity_days INTEGER NOT NULL, reset_limit INTEGER NOT NULL DEFAULT 0, reset_used INTEGER NOT NULL DEFAULT 0,
+  fulfilled_at TEXT NOT NULL, fulfillment_order INTEGER NOT NULL DEFAULT 0, period_start TEXT NULL, period_end TEXT NULL,
+  status TEXT NOT NULL, inferred_from_legacy INTEGER NOT NULL DEFAULT 0, migration_version INTEGER NOT NULL DEFAULT 0,
+  legacy_reset_backfilled INTEGER NOT NULL DEFAULT 0, last_synced_at TEXT NULL, last_error TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+);
+CREATE TABLE subscription_reset_attempts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, request_id TEXT NOT NULL UNIQUE, period_id INTEGER NOT NULL,
+  upstream_user_id INTEGER NOT NULL, upstream_subscription_id INTEGER NOT NULL,
+  reset_daily INTEGER NOT NULL DEFAULT 0, reset_weekly INTEGER NOT NULL DEFAULT 0, reset_monthly INTEGER NOT NULL DEFAULT 0,
+  status TEXT NOT NULL, before_snapshot_json TEXT NOT NULL DEFAULT '', after_snapshot_json TEXT NOT NULL DEFAULT '',
+  upstream_status INTEGER NULL, response_status INTEGER NOT NULL DEFAULT 0, response_reason TEXT NOT NULL DEFAULT '',
+  error_message TEXT NOT NULL DEFAULT '', resolution TEXT NOT NULL DEFAULT '', reserved_at TEXT NOT NULL,
+  completed_at TEXT NULL, confirmed_at TEXT NULL, confirmed_by_user_id INTEGER NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+);
+CREATE UNIQUE INDEX idx_subscription_reset_attempts_blocking
+  ON subscription_reset_attempts(period_id) WHERE status IN ('reserved', 'uncertain');
+INSERT INTO subscription_reset_periods (
+  id, access_request_id, upstream_user_id, tier_id, sub2api_group_id, upstream_subscription_id,
+  validity_days, reset_limit, reset_used, fulfilled_at, period_start, period_end, status, created_at, updated_at
+) VALUES
+  (1, 101, 1, 50, 20, 17, 30, 3, 1, '2026-06-01T00:00:00Z', '2026-06-01T00:00:00Z', '2026-07-01T00:00:00Z', 'expired', '2026-06-01T00:00:00Z', '2026-07-01T00:00:00Z'),
+  (2, 102, 1, 50, 20, 17, 30, 3, 1, '2026-07-01T00:00:00Z', '2026-07-01T00:00:00Z', '2026-08-01T00:00:00Z', 'active', '2026-07-01T00:00:00Z', '2026-07-01T00:00:00Z');
+INSERT INTO subscription_reset_attempts (
+  id, request_id, period_id, upstream_user_id, upstream_subscription_id, status, reserved_at, created_at, updated_at
+) VALUES
+  (1, '11111111-1111-4111-8111-111111111111', 1, 1, 17, 'uncertain', '2026-07-01T00:00:00Z', '2026-07-01T00:00:00Z', '2026-07-01T00:00:00Z'),
+  (2, '22222222-2222-4222-8222-222222222222', 2, 1, 17, 'uncertain', '2026-07-02T00:00:00Z', '2026-07-02T00:00:00Z', '2026-07-02T00:00:00Z');
+`)
+	require.NoError(t, err)
+	require.NoError(t, store.Migrate(ctx))
+
+	var blocking int
+	require.NoError(t, store.DB.QueryRowContext(ctx, `SELECT COUNT(1) FROM subscription_reset_attempts WHERE status IN ('reserved', 'uncertain')`).Scan(&blocking))
+	require.Equal(t, 1, blocking)
+	var status, resolution, reason string
+	require.NoError(t, store.DB.QueryRowContext(ctx, `SELECT status, resolution, response_reason FROM subscription_reset_attempts WHERE id = 2`).Scan(&status, &resolution, &reason))
+	require.Equal(t, "succeeded", status)
+	require.Equal(t, "consumed", resolution)
+	require.Equal(t, "migration_duplicate_blocking_conservatively_consumed", reason)
+	var resetUsed int
+	require.NoError(t, store.DB.QueryRowContext(ctx, `SELECT reset_used FROM subscription_reset_periods WHERE id = 2`).Scan(&resetUsed))
+	require.Equal(t, 1, resetUsed)
 }
 
 func TestMigrateAddsBackfillRetryAuditColumnsWithoutLosingRun(t *testing.T) {

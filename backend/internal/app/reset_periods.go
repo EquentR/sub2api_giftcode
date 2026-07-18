@@ -103,8 +103,6 @@ func (s *Service) ReconcileSubscriptionResetPeriods(ctx context.Context) error {
 		byGroup[key] = append(byGroup[key], period)
 	}
 	var reconcileErr error
-	confirmedGroups := make(map[subscriptionResetBoundaryKey]bool)
-	activeGroups := make(map[subscriptionResetBoundaryKey]bool)
 	for key, groupPeriods := range byGroup {
 		groupErr := func() error {
 			unlock := s.lockSubscriptionResetBoundary(key.UserID, key.GroupID)
@@ -114,9 +112,7 @@ func (s *Service) ReconcileSubscriptionResetPeriods(ctx context.Context) error {
 				_ = s.recordSubscriptionResetPeriodGroupError(ctx, key.UserID, key.GroupID, listErr.Error(), now)
 				return listErr
 			}
-			confirmedGroups[key] = true
 			subscription := matchingResetSubscription(subscriptions, key.UserID, key.GroupID)
-			activeGroups[key] = subscription != nil
 			if err := s.reconcileSubscriptionResetPeriodGroup(ctx, groupPeriods, subscription, now); err != nil {
 				return err
 			}
@@ -126,12 +122,8 @@ func (s *Service) ReconcileSubscriptionResetPeriods(ctx context.Context) error {
 			reconcileErr = errors.Join(reconcileErr, fmt.Errorf("user %d group %d: %w", key.UserID, key.GroupID, groupErr))
 		}
 	}
-	var backfillErr error
-	if repairErr == nil {
-		backfillErr = s.processLegacyResetBackfillRuns(ctx, now, confirmedGroups, activeGroups)
-	}
 	metadataErr := s.setSyncState(ctx, subscriptionResetLastReconciliationAtKey, formatTime(now), now)
-	return errors.Join(repairErr, reconcileErr, backfillErr, metadataErr)
+	return errors.Join(repairErr, reconcileErr, metadataErr)
 }
 
 func (s *Service) RunSubscriptionResetLoop(ctx context.Context, interval time.Duration) {
@@ -484,6 +476,7 @@ FROM subscription_reset_periods WHERE id = ?
 SELECT COUNT(1)
 FROM subscription_reset_periods
 WHERE id <> ?
+  AND legacy_ignored = 0
   AND upstream_user_id = ?
   AND sub2api_group_id = ?
   AND period_start IS NOT NULL
@@ -570,12 +563,13 @@ func (s *Service) recordSubscriptionResetPeriodGroupError(ctx context.Context, u
 UPDATE subscription_reset_periods
 SET last_error = ?, last_synced_at = ?, updated_at = ?
 WHERE upstream_user_id = ? AND sub2api_group_id = ? AND status <> 'expired'
+  AND legacy_ignored = 0
 `, message, formatTime(now), formatTime(now), userID, groupID)
 	return err
 }
 
 func (s *Service) listSubscriptionResetPeriods(ctx context.Context) ([]models.SubscriptionResetPeriod, error) {
-	rows, err := s.db().QueryContext(ctx, subscriptionResetPeriodSelectSQL()+` ORDER BY upstream_user_id, sub2api_group_id, fulfilled_at, access_request_id`)
+	rows, err := s.db().QueryContext(ctx, subscriptionResetPeriodSelectSQL()+` WHERE legacy_ignored = 0 ORDER BY upstream_user_id, sub2api_group_id, fulfilled_at, access_request_id`)
 	if err != nil {
 		return nil, err
 	}
@@ -593,7 +587,7 @@ func (s *Service) listSubscriptionResetPeriods(ctx context.Context) ([]models.Su
 
 func (s *Service) listSubscriptionResetPeriodsForGroup(ctx context.Context, userID, groupID int64) ([]models.SubscriptionResetPeriod, error) {
 	rows, err := s.db().QueryContext(ctx, subscriptionResetPeriodSelectSQL()+`
-WHERE upstream_user_id = ? AND sub2api_group_id = ?
+WHERE upstream_user_id = ? AND sub2api_group_id = ? AND legacy_ignored = 0
 ORDER BY fulfilled_at, access_request_id
 `, userID, groupID)
 	if err != nil {
@@ -615,7 +609,8 @@ func subscriptionResetPeriodSelectSQL() string {
 	return `
 SELECT id, access_request_id, upstream_user_id, tier_id, sub2api_group_id, upstream_subscription_id,
        validity_days, reset_limit, reset_used, fulfilled_at, fulfillment_order, period_start, period_end,
-       status, inferred_from_legacy, migration_version, legacy_reset_backfilled, last_synced_at,
+       status, inferred_from_legacy, migration_version, legacy_reset_backfilled,
+       legacy_ignored, legacy_ignored_at, legacy_ignore_reason, last_synced_at,
        last_error, created_at, updated_at
 FROM subscription_reset_periods
 `
@@ -625,8 +620,8 @@ func scanSubscriptionResetPeriod(scanner interface{ Scan(...any) error }) (*mode
 	var out models.SubscriptionResetPeriod
 	var subscriptionID sql.NullInt64
 	var fulfilledAt, createdAt, updatedAt string
-	var periodStart, periodEnd, lastSyncedAt sql.NullString
-	var inferredFromLegacy, legacyResetBackfilled int
+	var periodStart, periodEnd, legacyIgnoredAt, lastSyncedAt sql.NullString
+	var inferredFromLegacy, legacyResetBackfilled, legacyIgnored int
 	if err := scanner.Scan(
 		&out.ID,
 		&out.AccessRequestID,
@@ -645,6 +640,9 @@ func scanSubscriptionResetPeriod(scanner interface{ Scan(...any) error }) (*mode
 		&inferredFromLegacy,
 		&out.MigrationVersion,
 		&legacyResetBackfilled,
+		&legacyIgnored,
+		&legacyIgnoredAt,
+		&out.LegacyIgnoreReason,
 		&lastSyncedAt,
 		&out.LastError,
 		&createdAt,
@@ -656,6 +654,7 @@ func scanSubscriptionResetPeriod(scanner interface{ Scan(...any) error }) (*mode
 	out.UpstreamSubscriptionID = parseNullableInt64(subscriptionID)
 	out.InferredFromLegacy = inferredFromLegacy != 0
 	out.LegacyResetBackfilled = legacyResetBackfilled != 0
+	out.LegacyIgnored = legacyIgnored != 0
 	if out.FulfilledAt, err = parseNonNullTime(fulfilledAt); err != nil {
 		return nil, err
 	}
@@ -666,6 +665,9 @@ func scanSubscriptionResetPeriod(scanner interface{ Scan(...any) error }) (*mode
 		return nil, err
 	}
 	if out.LastSyncedAt, err = scanMaybeTime(lastSyncedAt); err != nil {
+		return nil, err
+	}
+	if out.LegacyIgnoredAt, err = scanMaybeTime(legacyIgnoredAt); err != nil {
 		return nil, err
 	}
 	if out.CreatedAt, err = parseNonNullTime(createdAt); err != nil {

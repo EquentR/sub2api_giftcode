@@ -118,9 +118,9 @@ func TestSubscriptionsListExposesExplicitDisabledStates(t *testing.T) {
 	insertResetPeriodFixture(t, store, 2, 102, 1, 8, 88, 30, 1, now.Add(-time.Hour), now.Add(24*time.Hour), "active")
 	_, err := store.DB.Exec(`
 INSERT INTO subscription_reset_attempts (
-  request_id, period_id, upstream_user_id, upstream_subscription_id,
+  request_id, period_id, entitlement_type, entitlement_id, upstream_user_id, upstream_subscription_id,
   reset_daily, status, before_snapshot_json, reserved_at, created_at, updated_at
-) VALUES ('dddddddd-dddd-4ddd-8ddd-dddddddddddd', 2, 1, 88, 1, 'uncertain', '{"windows":[]}', ?, ?, ?)
+) VALUES ('dddddddd-dddd-4ddd-8ddd-dddddddddddd', 2, 'base_period', 2, 1, 88, 1, 'uncertain', '{"windows":[]}', ?, ?, ?)
 `, formatTime(now), formatTime(now), formatTime(now))
 	require.NoError(t, err)
 	dailyLimit := 10.0
@@ -159,6 +159,45 @@ INSERT INTO subscription_reset_attempts (
 	require.Equal(t, 10.0, cards[2].QuotaWindows[0].RemainingUSD)
 	require.Nil(t, cards[2].QuotaWindows[0].WindowStart)
 	require.Nil(t, cards[2].QuotaWindows[0].ResetsAt)
+}
+
+func TestResetQuotaPreviousPeriodUncertainBlocksSubscription(t *testing.T) {
+	store := newResetPeriodTestStore(t)
+	now := time.Now().UTC().Truncate(time.Second)
+	insertResetPeriodFixture(t, store, 1, 101, 1, 7, 77, 30, 1, now.Add(-31*24*time.Hour), now.Add(-24*time.Hour), "expired")
+	insertResetPeriodFixture(t, store, 2, 102, 1, 7, 77, 30, 2, now.Add(-time.Hour), now.Add(30*24*time.Hour), "active")
+	_, err := store.DB.Exec(`
+INSERT INTO subscription_reset_attempts (
+  request_id, period_id, entitlement_type, entitlement_id, upstream_user_id, upstream_subscription_id,
+  status, before_snapshot_json, reserved_at, created_at, updated_at
+) VALUES ('abababab-abab-4bab-8bab-abababababab', 1, 'base_period', 1, 1, 77,
+  'uncertain', '{"windows":[]}', ?, ?, ?)
+`, formatTime(now), formatTime(now), formatTime(now))
+	require.NoError(t, err)
+	dailyLimit := 10.0
+	subscriptions := []sub2api.Subscription{{
+		ID: 77, UserID: 1, GroupID: 7, StartsAt: now.Add(-time.Hour), ExpiresAt: now.Add(30 * 24 * time.Hour),
+		Status: "active", DailyUsageUSD: 1, Group: &sub2api.Group{ID: 7, DailyLimitUSD: &dailyLimit},
+	}}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/admin/subscriptions":
+			writeRedeemTestEnvelope(w, subscriptionPageForTest(subscriptions))
+		case "/api/v1/admin/subscriptions/77/progress":
+			writeRedeemTestEnvelope(w, sub2api.SubscriptionProgress{ID: 77, Daily: &sub2api.UsageWindowProgress{LimitUSD: 10, UsedUSD: 1, RemainingUSD: 9}})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(server.Close)
+	svc := New(&config.RuntimeConfig{}, store, sub2api.NewClient(server.URL, "admin-key"), nil)
+
+	cards, err := svc.ListSubscriptions(context.Background(), 1)
+	require.NoError(t, err)
+	require.Len(t, cards, 1)
+	require.True(t, cards[0].OperationPending)
+	require.False(t, cards[0].CanReset)
+	require.Equal(t, SubscriptionResetReasonOperationPending, cards[0].DisabledReason)
 }
 
 func TestResetQuotaIdempotentReplayReturnsCardWhenUpstreamUnavailable(t *testing.T) {
@@ -328,8 +367,8 @@ func TestResetQuotaOwnershipMismatchIsNotFoundAndRequestIDConflictIsDetectedFirs
 	})
 	_, err := store.DB.Exec(`
 INSERT INTO subscription_reset_attempts (
-  request_id, period_id, upstream_user_id, upstream_subscription_id, status, reserved_at, created_at, updated_at
-) VALUES ('44444444-4444-4444-8444-444444444444', 1, 1, 77, 'succeeded', ?, ?, ?)
+  request_id, period_id, entitlement_type, entitlement_id, upstream_user_id, upstream_subscription_id, status, reserved_at, created_at, updated_at
+) VALUES ('44444444-4444-4444-8444-444444444444', 1, 'base_period', 1, 1, 77, 'succeeded', ?, ?, ?)
 `, formatTime(now), formatTime(now), formatTime(now))
 	require.NoError(t, err)
 
@@ -348,8 +387,8 @@ func TestResolveSubscriptionResetAttemptReleasedIsAtomicAndIdempotent(t *testing
 	require.NoError(t, err)
 	_, err = store.DB.Exec(`
 INSERT INTO subscription_reset_attempts (
-  request_id, period_id, upstream_user_id, upstream_subscription_id, status, reserved_at, created_at, updated_at
-) VALUES ('66666666-6666-4666-8666-666666666666', 1, 1, 77, 'uncertain', ?, ?, ?)
+  request_id, period_id, entitlement_type, entitlement_id, upstream_user_id, upstream_subscription_id, status, reserved_at, created_at, updated_at
+) VALUES ('66666666-6666-4666-8666-666666666666', 1, 'base_period', 1, 1, 77, 'uncertain', ?, ?, ?)
 `, formatTime(now), formatTime(now), formatTime(now))
 	require.NoError(t, err)
 	svc := New(&config.RuntimeConfig{}, store, nil, nil)
@@ -384,10 +423,10 @@ INSERT INTO upstream_users (
 	}}}
 	_, err = store.DB.Exec(`
 INSERT INTO subscription_reset_attempts (
-  request_id, period_id, upstream_user_id, upstream_subscription_id,
+  request_id, period_id, entitlement_type, entitlement_id, upstream_user_id, upstream_subscription_id,
   reset_daily, status, before_snapshot_json, response_status,
   response_reason, error_message, reserved_at, created_at, updated_at
-) VALUES ('eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee', 1, 1, 77, 1, 'uncertain', ?, 202, 'result_unknown', 'timeout', ?, ?, ?)
+) VALUES ('eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee', 1, 'base_period', 1, 1, 77, 1, 'uncertain', ?, 202, 'result_unknown', 'timeout', ?, ?, ?)
 `, marshalJSON(before), formatTime(now), formatTime(now), formatTime(now))
 	require.NoError(t, err)
 	newDailyStart := now

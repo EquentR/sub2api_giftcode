@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"fmt"
+	"strings"
 )
 
 const schema = `
@@ -160,6 +161,9 @@ CREATE TABLE IF NOT EXISTS subscription_reset_periods (
   inferred_from_legacy INTEGER NOT NULL DEFAULT 0,
   migration_version INTEGER NOT NULL DEFAULT 0,
   legacy_reset_backfilled INTEGER NOT NULL DEFAULT 0,
+  legacy_ignored INTEGER NOT NULL DEFAULT 0,
+  legacy_ignored_at TEXT NULL,
+  legacy_ignore_reason TEXT NOT NULL DEFAULT '',
   last_synced_at TEXT NULL,
   last_error TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL,
@@ -179,7 +183,9 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_subscription_reset_periods_one_active
 CREATE TABLE IF NOT EXISTS subscription_reset_attempts (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   request_id TEXT NOT NULL UNIQUE,
-  period_id INTEGER NOT NULL,
+  period_id INTEGER NULL,
+  entitlement_type TEXT NOT NULL CHECK (entitlement_type IN ('base_period', 'bonus_grant')),
+  entitlement_id INTEGER NOT NULL,
   upstream_user_id INTEGER NOT NULL,
   upstream_subscription_id INTEGER NOT NULL,
   reset_daily INTEGER NOT NULL DEFAULT 0,
@@ -202,7 +208,7 @@ CREATE TABLE IF NOT EXISTS subscription_reset_attempts (
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_subscription_reset_attempts_blocking
-  ON subscription_reset_attempts(period_id)
+  ON subscription_reset_attempts(upstream_subscription_id)
   WHERE status IN ('reserved', 'uncertain');
 
 CREATE INDEX IF NOT EXISTS idx_subscription_reset_attempts_status
@@ -212,7 +218,7 @@ CREATE TABLE IF NOT EXISTS subscription_reset_backfill_runs (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   tier_id INTEGER NOT NULL UNIQUE,
   reset_limit INTEGER NOT NULL CHECK (reset_limit > 0),
-  status TEXT NOT NULL CHECK (status IN ('pending', 'running', 'succeeded', 'failed')),
+  status TEXT NOT NULL CHECK (status IN ('pending', 'running', 'succeeded', 'failed', 'superseded')),
   total_records INTEGER NOT NULL DEFAULT 0,
   processed_records INTEGER NOT NULL DEFAULT 0,
   granted_records INTEGER NOT NULL DEFAULT 0,
@@ -222,8 +228,115 @@ CREATE TABLE IF NOT EXISTS subscription_reset_backfill_runs (
   triggered_at TEXT NOT NULL,
   started_at TEXT NULL,
   completed_at TEXT NULL,
+  superseded_at TEXT NULL,
+  superseded_reason TEXT NOT NULL DEFAULT '',
   updated_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS subscription_reset_bonus_batches (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  batch_key TEXT NOT NULL UNIQUE,
+  target_scope TEXT NOT NULL CHECK (target_scope IN ('all', 'selected')),
+  selected_user_ids_json TEXT NOT NULL DEFAULT '[]',
+  group_ids_json TEXT NOT NULL DEFAULT '[]',
+  reset_count INTEGER NOT NULL CHECK (reset_count > 0),
+  note TEXT NOT NULL DEFAULT '',
+  preview_digest TEXT NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('pending', 'running', 'completed', 'completed_with_failures', 'failed')),
+  total_candidates INTEGER NOT NULL DEFAULT 0,
+  processed_candidates INTEGER NOT NULL DEFAULT 0,
+  granted_subscriptions INTEGER NOT NULL DEFAULT 0,
+  skipped_subscriptions INTEGER NOT NULL DEFAULT 0,
+  failed_subscriptions INTEGER NOT NULL DEFAULT 0,
+  operator_upstream_user_id INTEGER NOT NULL,
+  operator_email TEXT NOT NULL DEFAULT '',
+  operator_username TEXT NOT NULL DEFAULT '',
+  error_message TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  started_at TEXT NULL,
+  completed_at TEXT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_subscription_reset_bonus_batches_status
+  ON subscription_reset_bonus_batches(status, created_at, id);
+
+CREATE TABLE IF NOT EXISTS subscription_reset_bonus_batch_details (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  batch_id INTEGER NOT NULL,
+  upstream_user_id INTEGER NOT NULL,
+  sub2api_group_id INTEGER NOT NULL,
+  upstream_subscription_id INTEGER NOT NULL,
+  subscription_starts_at TEXT NOT NULL,
+  subscription_expires_at TEXT NOT NULL,
+  subscription_status TEXT NOT NULL,
+  subscription_snapshot_json TEXT NOT NULL DEFAULT '{}',
+  status TEXT NOT NULL CHECK (status IN ('pending', 'granted', 'skipped', 'failed')),
+  reason TEXT NOT NULL DEFAULT '',
+  error_message TEXT NOT NULL DEFAULT '',
+  bonus_grant_id INTEGER NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE(batch_id, upstream_subscription_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_subscription_reset_bonus_details_batch
+  ON subscription_reset_bonus_batch_details(batch_id, status, id);
+
+CREATE TABLE IF NOT EXISTS subscription_reset_bonus_grants (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  batch_id INTEGER NOT NULL,
+  batch_detail_id INTEGER NOT NULL UNIQUE,
+  upstream_user_id INTEGER NOT NULL,
+  sub2api_group_id INTEGER NOT NULL,
+  upstream_subscription_id INTEGER NOT NULL,
+  reset_limit INTEGER NOT NULL CHECK (reset_limit > 0),
+  reset_used INTEGER NOT NULL DEFAULT 0 CHECK (reset_used >= 0 AND reset_used <= reset_limit),
+  starts_at TEXT NOT NULL,
+  expires_at TEXT NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('active', 'exhausted', 'expired', 'revoked')),
+  subscription_snapshot_json TEXT NOT NULL DEFAULT '{}',
+  last_synced_at TEXT NULL,
+  last_error TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE(batch_id, upstream_subscription_id),
+  CHECK (starts_at < expires_at)
+);
+
+CREATE INDEX IF NOT EXISTS idx_subscription_reset_bonus_grants_subscription
+  ON subscription_reset_bonus_grants(upstream_subscription_id, status, expires_at, id);
+
+CREATE TABLE IF NOT EXISTS subscription_extension_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  event_key TEXT NOT NULL UNIQUE,
+  source_type TEXT NOT NULL CHECK (source_type IN ('compensation', 'legacy_compensation')),
+  compensation_batch_id INTEGER NULL,
+  compensation_detail_id INTEGER NULL,
+  upstream_user_id INTEGER NOT NULL,
+  sub2api_group_id INTEGER NOT NULL,
+  upstream_subscription_id INTEGER NOT NULL,
+  extension_days INTEGER NOT NULL CHECK (extension_days > 0),
+  before_expires_at TEXT NULL,
+  after_expires_at TEXT NULL,
+  status TEXT NOT NULL CHECK (status IN ('reserved', 'succeeded', 'failed', 'uncertain')),
+  resolution TEXT NOT NULL DEFAULT '' CHECK (resolution IN ('', 'applied', 'released')),
+  applied_base_periods INTEGER NOT NULL DEFAULT 0,
+  applied_bonus_grants INTEGER NOT NULL DEFAULT 0,
+  inferred_from_legacy INTEGER NOT NULL DEFAULT 0,
+  migration_version INTEGER NOT NULL DEFAULT 0,
+  error_message TEXT NOT NULL DEFAULT '',
+  reserved_at TEXT NOT NULL,
+  completed_at TEXT NULL,
+  confirmed_at TEXT NULL,
+  confirmed_by_user_id INTEGER NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE(compensation_detail_id, upstream_subscription_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_subscription_extension_events_status
+  ON subscription_extension_events(status, resolution, reserved_at, id);
 
 CREATE TABLE IF NOT EXISTS subscription_concurrency_grants (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -345,7 +458,13 @@ func (s *Store) Migrate(ctx context.Context) error {
 	if err := s.ensureSubscriptionResetColumns(ctx); err != nil {
 		return err
 	}
+	if err := s.migrateSubscriptionResetEntitlements(ctx); err != nil {
+		return err
+	}
 	if err := s.freezeLegacySubscriptionResetEligibility(ctx); err != nil {
+		return err
+	}
+	if err := s.supersedeLegacySubscriptionResetBackfill(ctx); err != nil {
 		return err
 	}
 	if err := s.ensureAccessRequestSnapshotColumns(ctx); err != nil {
@@ -378,10 +497,245 @@ func (s *Store) ensureSubscriptionResetColumns(ctx context.Context) error {
 	}); err != nil {
 		return err
 	}
+	if err := s.ensureColumns(ctx, "subscription_reset_periods", map[string]string{
+		"legacy_ignored":       "INTEGER NOT NULL DEFAULT 0",
+		"legacy_ignored_at":    "TEXT NULL",
+		"legacy_ignore_reason": "TEXT NOT NULL DEFAULT ''",
+	}); err != nil {
+		return err
+	}
 	return s.ensureColumns(ctx, "subscription_reset_backfill_runs", map[string]string{
 		"retry_count":   "INTEGER NOT NULL DEFAULT 0 CHECK (retry_count >= 0)",
 		"last_error_at": "TEXT NULL",
 	})
+}
+
+func (s *Store) migrateSubscriptionResetEntitlements(ctx context.Context) error {
+	attemptColumns, err := s.tableColumns(ctx, "subscription_reset_attempts")
+	if err != nil {
+		return err
+	}
+	period, hasPeriod := attemptColumns["period_id"]
+	_, hasEntitlementType := attemptColumns["entitlement_type"]
+	_, hasEntitlementID := attemptColumns["entitlement_id"]
+	if !hasPeriod || !hasEntitlementType || !hasEntitlementID || period.NotNull {
+		if err := s.rebuildSubscriptionResetAttempts(ctx, hasEntitlementType && hasEntitlementID); err != nil {
+			return err
+		}
+	}
+
+	var backfillSQL string
+	if err := s.DB.QueryRowContext(ctx, `SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'subscription_reset_backfill_runs'`).Scan(&backfillSQL); err != nil {
+		return err
+	}
+	backfillColumns, err := s.tableColumns(ctx, "subscription_reset_backfill_runs")
+	if err != nil {
+		return err
+	}
+	_, hasSupersededAt := backfillColumns["superseded_at"]
+	_, hasSupersededReason := backfillColumns["superseded_reason"]
+	if !hasSupersededAt || !hasSupersededReason || !strings.Contains(backfillSQL, "'superseded'") {
+		if err := s.rebuildSubscriptionResetBackfillRuns(ctx); err != nil {
+			return err
+		}
+	}
+	if _, err := s.DB.ExecContext(ctx, `DROP INDEX IF EXISTS idx_subscription_reset_periods_one_active`); err != nil {
+		return err
+	}
+	if _, err := s.DB.ExecContext(ctx, `CREATE UNIQUE INDEX idx_subscription_reset_periods_one_active
+  ON subscription_reset_periods(upstream_user_id, sub2api_group_id)
+  WHERE status = 'active' AND legacy_ignored = 0`); err != nil {
+		return err
+	}
+	return nil
+}
+
+type sqliteColumnInfo struct {
+	NotNull bool
+}
+
+func (s *Store) tableColumns(ctx context.Context, table string) (map[string]sqliteColumnInfo, error) {
+	rows, err := s.DB.QueryContext(ctx, `PRAGMA table_info(`+table+`)`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]sqliteColumnInfo{}
+	for rows.Next() {
+		var cid, notNull, primaryKey int
+		var name, typeName string
+		var defaultValue any
+		if err := rows.Scan(&cid, &name, &typeName, &notNull, &defaultValue, &primaryKey); err != nil {
+			return nil, err
+		}
+		out[name] = sqliteColumnInfo{NotNull: notNull != 0}
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) rebuildSubscriptionResetAttempts(ctx context.Context, alreadyHasEntitlement bool) error {
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	for _, statement := range []string{
+		`DROP INDEX IF EXISTS idx_subscription_reset_attempts_blocking`,
+		`DROP INDEX IF EXISTS idx_subscription_reset_attempts_status`,
+		`ALTER TABLE subscription_reset_attempts RENAME TO subscription_reset_attempts_legacy`,
+		`CREATE TABLE subscription_reset_attempts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  request_id TEXT NOT NULL UNIQUE,
+  period_id INTEGER NULL,
+  entitlement_type TEXT NOT NULL CHECK (entitlement_type IN ('base_period', 'bonus_grant')),
+  entitlement_id INTEGER NOT NULL,
+  upstream_user_id INTEGER NOT NULL,
+  upstream_subscription_id INTEGER NOT NULL,
+  reset_daily INTEGER NOT NULL DEFAULT 0,
+  reset_weekly INTEGER NOT NULL DEFAULT 0,
+  reset_monthly INTEGER NOT NULL DEFAULT 0,
+  status TEXT NOT NULL CHECK (status IN ('reserved', 'succeeded', 'failed', 'uncertain')),
+  before_snapshot_json TEXT NOT NULL DEFAULT '',
+  after_snapshot_json TEXT NOT NULL DEFAULT '',
+  upstream_status INTEGER NULL,
+  response_status INTEGER NOT NULL DEFAULT 0,
+  response_reason TEXT NOT NULL DEFAULT '',
+  error_message TEXT NOT NULL DEFAULT '',
+  resolution TEXT NOT NULL DEFAULT '',
+  reserved_at TEXT NOT NULL,
+  completed_at TEXT NULL,
+  confirmed_at TEXT NULL,
+  confirmed_by_user_id INTEGER NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+)`,
+	} {
+		if _, err := tx.ExecContext(ctx, statement); err != nil {
+			return err
+		}
+	}
+	entitlementSelect := `'base_period', period_id`
+	if alreadyHasEntitlement {
+		entitlementSelect = `entitlement_type, entitlement_id`
+	}
+	if _, err := tx.ExecContext(ctx, `
+INSERT INTO subscription_reset_attempts (
+  id, request_id, period_id, entitlement_type, entitlement_id, upstream_user_id, upstream_subscription_id,
+  reset_daily, reset_weekly, reset_monthly, status, before_snapshot_json, after_snapshot_json,
+  upstream_status, response_status, response_reason, error_message, resolution, reserved_at,
+  completed_at, confirmed_at, confirmed_by_user_id, created_at, updated_at
+)
+SELECT id, request_id, period_id, `+entitlementSelect+`, upstream_user_id, upstream_subscription_id,
+       reset_daily, reset_weekly, reset_monthly, status, before_snapshot_json, after_snapshot_json,
+       upstream_status, response_status, response_reason, error_message, resolution, reserved_at,
+       completed_at, confirmed_at, confirmed_by_user_id, created_at, updated_at
+FROM subscription_reset_attempts_legacy
+`); err != nil {
+		return err
+	}
+	duplicateBlocking := `status IN ('reserved', 'uncertain') AND EXISTS (
+  SELECT 1 FROM subscription_reset_attempts earlier
+  WHERE earlier.upstream_subscription_id = subscription_reset_attempts.upstream_subscription_id
+    AND earlier.status IN ('reserved', 'uncertain')
+    AND (earlier.reserved_at < subscription_reset_attempts.reserved_at
+      OR (earlier.reserved_at = subscription_reset_attempts.reserved_at AND earlier.id < subscription_reset_attempts.id))
+)`
+	if _, err := tx.ExecContext(ctx, `
+UPDATE subscription_reset_attempts
+SET status = 'succeeded', resolution = 'consumed', response_status = 200,
+    response_reason = 'migration_duplicate_blocking_conservatively_consumed',
+    error_message = 'duplicate blocking operation conservatively consumed during entitlement migration',
+    completed_at = COALESCE(completed_at, updated_at),
+    confirmed_at = COALESCE(confirmed_at, updated_at)
+WHERE `+duplicateBlocking); err != nil {
+		return err
+	}
+	for _, statement := range []string{
+		`DROP TABLE subscription_reset_attempts_legacy`,
+		`CREATE UNIQUE INDEX idx_subscription_reset_attempts_blocking ON subscription_reset_attempts(upstream_subscription_id) WHERE status IN ('reserved', 'uncertain')`,
+		`CREATE INDEX idx_subscription_reset_attempts_status ON subscription_reset_attempts(status, reserved_at)`,
+	} {
+		if _, err := tx.ExecContext(ctx, statement); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+func (s *Store) rebuildSubscriptionResetBackfillRuns(ctx context.Context) error {
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	for _, statement := range []string{
+		`ALTER TABLE subscription_reset_backfill_runs RENAME TO subscription_reset_backfill_runs_legacy`,
+		`CREATE TABLE subscription_reset_backfill_runs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  tier_id INTEGER NOT NULL UNIQUE,
+  reset_limit INTEGER NOT NULL CHECK (reset_limit > 0),
+  status TEXT NOT NULL CHECK (status IN ('pending', 'running', 'succeeded', 'failed', 'superseded')),
+  total_records INTEGER NOT NULL DEFAULT 0,
+  processed_records INTEGER NOT NULL DEFAULT 0,
+  granted_records INTEGER NOT NULL DEFAULT 0,
+  error_message TEXT NOT NULL DEFAULT '',
+  retry_count INTEGER NOT NULL DEFAULT 0 CHECK (retry_count >= 0),
+  last_error_at TEXT NULL,
+  triggered_at TEXT NOT NULL,
+  started_at TEXT NULL,
+  completed_at TEXT NULL,
+  superseded_at TEXT NULL,
+  superseded_reason TEXT NOT NULL DEFAULT '',
+  updated_at TEXT NOT NULL
+)`,
+		`INSERT INTO subscription_reset_backfill_runs (
+  id, tier_id, reset_limit, status, total_records, processed_records, granted_records,
+  error_message, retry_count, last_error_at, triggered_at, started_at, completed_at, updated_at
+)
+SELECT id, tier_id, reset_limit, status, total_records, processed_records, granted_records,
+       error_message, retry_count, last_error_at, triggered_at, started_at, completed_at, updated_at
+FROM subscription_reset_backfill_runs_legacy`,
+		`DROP TABLE subscription_reset_backfill_runs_legacy`,
+	} {
+		if _, err := tx.ExecContext(ctx, statement); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+func (s *Store) supersedeLegacySubscriptionResetBackfill(ctx context.Context) error {
+	now := s.NowUTC().Format(timeLayout)
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	const reason = "legacy automatic reset backfill disabled; use bonus grants"
+	if _, err := tx.ExecContext(ctx, `
+UPDATE subscription_reset_periods
+SET legacy_ignored = 1, legacy_ignored_at = ?, legacy_ignore_reason = ?, updated_at = ?
+WHERE legacy_ignored = 0
+  AND reset_limit = 0
+  AND legacy_reset_backfilled = 0
+  AND EXISTS (
+    SELECT 1 FROM subscription_reset_backfill_runs backfill
+    WHERE backfill.tier_id = subscription_reset_periods.tier_id
+      AND subscription_reset_periods.fulfilled_at <= backfill.triggered_at
+  )
+`, now, reason, now); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `
+UPDATE subscription_reset_backfill_runs
+SET status = 'superseded', superseded_at = COALESCE(superseded_at, ?),
+    superseded_reason = CASE WHEN superseded_reason = '' THEN ? ELSE superseded_reason END,
+    completed_at = COALESCE(completed_at, ?), updated_at = ?
+WHERE status IN ('pending', 'running', 'failed')
+`, now, reason, now, now); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (s *Store) freezeLegacySubscriptionResetEligibility(ctx context.Context) error {

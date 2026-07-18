@@ -175,7 +175,7 @@ func (s *Service) buildSubscriptionCard(ctx context.Context, subscription sub2ap
 	card.ZeroResetLimit = card.CurrentPeriod != nil && card.CurrentPeriod.ResetLimit <= 0
 	if card.CurrentPeriod != nil {
 		var blocking int
-		if err := s.db().QueryRowContext(ctx, `SELECT COUNT(1) FROM subscription_reset_attempts WHERE period_id = ? AND status IN ('reserved', 'uncertain')`, card.CurrentPeriod.ID).Scan(&blocking); err != nil {
+		if err := s.db().QueryRowContext(ctx, `SELECT COUNT(1) FROM subscription_reset_attempts WHERE upstream_subscription_id = ? AND status IN ('reserved', 'uncertain')`, card.ID).Scan(&blocking); err != nil {
 			return card, err
 		}
 		card.OperationPending = blocking > 0
@@ -451,7 +451,10 @@ func (s *Service) fallbackSubscriptionCardForAttempt(ctx context.Context, attemp
 	if attempt == nil || s == nil || s.db() == nil {
 		return nil
 	}
-	period, err := s.getSubscriptionResetPeriodByID(ctx, attempt.PeriodID)
+	if attempt.PeriodID == nil {
+		return nil
+	}
+	period, err := s.getSubscriptionResetPeriodByID(ctx, *attempt.PeriodID)
 	if err != nil || period.UpstreamUserID != attempt.UpstreamUserID {
 		return nil
 	}
@@ -521,11 +524,11 @@ func (s *Service) reserveSubscriptionResetAttempt(ctx context.Context, requestID
 	}
 	result, err = tx.ExecContext(ctx, `
 INSERT INTO subscription_reset_attempts (
-  request_id, period_id, upstream_user_id, upstream_subscription_id,
+  request_id, period_id, entitlement_type, entitlement_id, upstream_user_id, upstream_subscription_id,
   reset_daily, reset_weekly, reset_monthly, status, before_snapshot_json,
   response_status, reserved_at, created_at, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, 'reserved', ?, 202, ?, ?, ?)
-`, requestID, periodID, userID, subscriptionID, boolInt(positiveAppLimit(group.DailyLimitUSD)), boolInt(positiveAppLimit(group.WeeklyLimitUSD)), boolInt(positiveAppLimit(group.MonthlyLimitUSD)), marshalJSON(before), formatTime(now), formatTime(now), formatTime(now))
+) VALUES (?, ?, 'base_period', ?, ?, ?, ?, ?, ?, 'reserved', ?, 202, ?, ?, ?)
+`, requestID, periodID, periodID, userID, subscriptionID, boolInt(positiveAppLimit(group.DailyLimitUSD)), boolInt(positiveAppLimit(group.WeeklyLimitUSD)), boolInt(positiveAppLimit(group.MonthlyLimitUSD)), marshalJSON(before), formatTime(now), formatTime(now), formatTime(now))
 	if err != nil {
 		return nil, err
 	}
@@ -569,7 +572,10 @@ func (s *Service) finishSubscriptionResetAttempt(ctx context.Context, attemptID 
 		return current, tx.Commit()
 	}
 	if release {
-		result, err := tx.ExecContext(ctx, `UPDATE subscription_reset_periods SET reset_used = reset_used - 1, updated_at = ? WHERE id = ? AND reset_used > 0`, formatTime(now), attempt.PeriodID)
+		if attempt.PeriodID == nil {
+			return nil, errors.New("base period reset attempt is missing period_id")
+		}
+		result, err := tx.ExecContext(ctx, `UPDATE subscription_reset_periods SET reset_used = reset_used - 1, updated_at = ? WHERE id = ? AND reset_used > 0`, formatTime(now), *attempt.PeriodID)
 		if err != nil {
 			return nil, err
 		}
@@ -634,7 +640,10 @@ WHERE a.id = ?
 	if resolution == "released" {
 		status = "failed"
 		responseStatus = 409
-		result, updateErr := tx.ExecContext(ctx, `UPDATE subscription_reset_periods SET reset_used = reset_used - 1, updated_at = ? WHERE id = ? AND reset_used > 0`, formatTime(now), attempt.PeriodID)
+		if attempt.PeriodID == nil {
+			return nil, errors.New("base period reset attempt is missing period_id")
+		}
+		result, updateErr := tx.ExecContext(ctx, `UPDATE subscription_reset_periods SET reset_used = reset_used - 1, updated_at = ? WHERE id = ? AND reset_used > 0`, formatTime(now), *attempt.PeriodID)
 		if updateErr != nil {
 			return nil, updateErr
 		}
@@ -696,7 +705,10 @@ func (s *Service) subscriptionResetAttemptAdminView(ctx context.Context, attempt
 	if err := s.db().QueryRowContext(ctx, `SELECT email, username FROM upstream_users WHERE upstream_user_id = ?`, attempt.UpstreamUserID).Scan(&item.Email, &item.Username); err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return item, err
 	}
-	period, err := s.getSubscriptionResetPeriodByID(ctx, attempt.PeriodID)
+	if attempt.PeriodID == nil {
+		return item, errors.New("base period reset attempt is missing period_id")
+	}
+	period, err := s.getSubscriptionResetPeriodByID(ctx, *attempt.PeriodID)
 	if err != nil {
 		return item, err
 	}
@@ -813,19 +825,21 @@ func getSubscriptionResetAttemptTx(ctx context.Context, tx *sql.Tx, id int64) (*
 }
 
 func subscriptionResetAttemptSelectSQL() string {
-	return `SELECT id, request_id, period_id, upstream_user_id, upstream_subscription_id, reset_daily, reset_weekly, reset_monthly, status, before_snapshot_json, after_snapshot_json, upstream_status, response_status, response_reason, error_message, resolution, reserved_at, completed_at, confirmed_at, confirmed_by_user_id, created_at, updated_at FROM subscription_reset_attempts`
+	return `SELECT id, request_id, period_id, entitlement_type, entitlement_id, upstream_user_id, upstream_subscription_id, reset_daily, reset_weekly, reset_monthly, status, before_snapshot_json, after_snapshot_json, upstream_status, response_status, response_reason, error_message, resolution, reserved_at, completed_at, confirmed_at, confirmed_by_user_id, created_at, updated_at FROM subscription_reset_attempts`
 }
 
 func scanSubscriptionResetAttempt(scanner interface{ Scan(...any) error }) (*models.SubscriptionResetAttempt, error) {
 	var out models.SubscriptionResetAttempt
 	var resetDaily, resetWeekly, resetMonthly int
+	var periodID sql.NullInt64
 	var upstreamStatus sql.NullInt64
 	var reservedAt, createdAt, updatedAt string
 	var completedAt, confirmedAt sql.NullString
 	var confirmedBy sql.NullInt64
-	if err := scanner.Scan(&out.ID, &out.RequestID, &out.PeriodID, &out.UpstreamUserID, &out.UpstreamSubscriptionID, &resetDaily, &resetWeekly, &resetMonthly, &out.Status, &out.BeforeSnapshotJSON, &out.AfterSnapshotJSON, &upstreamStatus, &out.ResponseStatus, &out.ResponseReason, &out.ErrorMessage, &out.Resolution, &reservedAt, &completedAt, &confirmedAt, &confirmedBy, &createdAt, &updatedAt); err != nil {
+	if err := scanner.Scan(&out.ID, &out.RequestID, &periodID, &out.EntitlementType, &out.EntitlementID, &out.UpstreamUserID, &out.UpstreamSubscriptionID, &resetDaily, &resetWeekly, &resetMonthly, &out.Status, &out.BeforeSnapshotJSON, &out.AfterSnapshotJSON, &upstreamStatus, &out.ResponseStatus, &out.ResponseReason, &out.ErrorMessage, &out.Resolution, &reservedAt, &completedAt, &confirmedAt, &confirmedBy, &createdAt, &updatedAt); err != nil {
 		return nil, err
 	}
+	out.PeriodID = parseNullableInt64(periodID)
 	out.ResetDaily, out.ResetWeekly, out.ResetMonthly = resetDaily != 0, resetWeekly != 0, resetMonthly != 0
 	if upstreamStatus.Valid {
 		value := int(upstreamStatus.Int64)

@@ -158,6 +158,9 @@ type SubscriptionResetPeriod struct {
 	InferredFromLegacy     bool       `json:"inferred_from_legacy"`
 	MigrationVersion       int        `json:"migration_version"`
 	LegacyResetBackfilled  bool       `json:"legacy_reset_backfilled"`
+	LegacyIgnored          bool       `json:"legacy_ignored"`
+	LegacyIgnoredAt        *time.Time `json:"legacy_ignored_at,omitempty"`
+	LegacyIgnoreReason     string     `json:"legacy_ignore_reason"`
 	LastSyncedAt           *time.Time `json:"last_synced_at,omitempty"`
 	LastError              string     `json:"last_error"`
 	CreatedAt              time.Time  `json:"created_at"`
@@ -167,7 +170,9 @@ type SubscriptionResetPeriod struct {
 type SubscriptionResetAttempt struct {
 	ID                     int64      `json:"id"`
 	RequestID              string     `json:"request_id"`
-	PeriodID               int64      `json:"period_id"`
+	PeriodID               *int64     `json:"period_id,omitempty"`
+	EntitlementType        string     `json:"entitlement_type"`
+	EntitlementID          int64      `json:"entitlement_id"`
 	UpstreamUserID         int64      `json:"upstream_user_id"`
 	UpstreamSubscriptionID int64      `json:"upstream_subscription_id"`
 	ResetDaily             bool       `json:"reset_daily"`

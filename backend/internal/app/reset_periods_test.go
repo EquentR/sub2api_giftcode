@@ -145,8 +145,8 @@ func TestReconcileSubscriptionResetPeriodsMarksStaleReservedAttemptUncertainWith
 	insertResetPeriodFixture(t, store, 1, 101, 1, 7, 77, 10, 1, now.Add(-time.Hour), now.Add(10*24*time.Hour), "active")
 	_, err := store.DB.Exec(`
 INSERT INTO subscription_reset_attempts (
-  request_id, period_id, upstream_user_id, upstream_subscription_id, status, reserved_at, created_at, updated_at
-) VALUES ('11111111-1111-4111-8111-111111111111', 1, 1, 77, 'reserved', ?, ?, ?)
+  request_id, period_id, entitlement_type, entitlement_id, upstream_user_id, upstream_subscription_id, status, reserved_at, created_at, updated_at
+) VALUES ('11111111-1111-4111-8111-111111111111', 1, 'base_period', 1, 1, 77, 'reserved', ?, ?, ?)
 `, formatTime(now.Add(-3*time.Minute)), formatTime(now.Add(-3*time.Minute)), formatTime(now.Add(-3*time.Minute)))
 	require.NoError(t, err)
 	resetCalls := 0
@@ -746,7 +746,8 @@ func loadResetPeriodsForTest(t *testing.T, store *db.Store) []models.Subscriptio
 	rows, err := store.DB.Query(`
 SELECT id, access_request_id, upstream_user_id, tier_id, sub2api_group_id, upstream_subscription_id,
        validity_days, reset_limit, reset_used, fulfilled_at, fulfillment_order, period_start, period_end,
-       status, inferred_from_legacy, migration_version, legacy_reset_backfilled, last_synced_at,
+       status, inferred_from_legacy, migration_version, legacy_reset_backfilled,
+       legacy_ignored, legacy_ignored_at, legacy_ignore_reason, last_synced_at,
        last_error, created_at, updated_at
 FROM subscription_reset_periods
 ORDER BY period_start ASC, fulfilled_at ASC, access_request_id ASC
