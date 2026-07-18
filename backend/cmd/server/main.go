@@ -56,6 +56,12 @@ func main() {
 		SubjectPrefix:  cfg.Mail.SubjectPrefix,
 	})
 	service := app.New(cfg, store, upstream, mailer)
+	if err := service.MigrateLegacySubscriptionExtensionEvents(ctx); err != nil {
+		log.Fatalf("migrate legacy subscription extension events: %v", err)
+	}
+	if err := service.RecoverStaleSubscriptionExtensionEvents(ctx); err != nil {
+		log.Fatalf("recover subscription extension events: %v", err)
+	}
 	router := httpapi.NewRouter(cfg, service)
 
 	runCtx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

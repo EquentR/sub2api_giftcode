@@ -74,6 +74,8 @@ func NewRouter(cfg *config.RuntimeConfig, service *app.Service) *gin.Engine {
 			admin.POST("/subscription-reset-bonus-batches", handlers.CreateSubscriptionResetBonusBatch)
 			admin.GET("/subscription-reset-bonus-batches", handlers.ListSubscriptionResetBonusBatches)
 			admin.GET("/subscription-reset-bonus-batches/:id/details", handlers.ListSubscriptionResetBonusBatchDetails)
+			admin.GET("/subscription-extension-events", handlers.ListSubscriptionExtensionEvents)
+			admin.POST("/subscription-extension-events/:id/resolve", handlers.ResolveSubscriptionExtensionEvent)
 			admin.GET("/subscription-reset-attempts", handlers.ListPendingSubscriptionResetAttempts)
 			admin.POST("/subscription-reset-attempts/:id/resolve", handlers.ResolveSubscriptionResetAttempt)
 			admin.GET("/subscription-reset-backfills", handlers.ListSubscriptionResetBackfillRuns)

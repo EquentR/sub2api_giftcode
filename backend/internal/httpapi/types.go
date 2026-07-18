@@ -112,6 +112,10 @@ type SubscriptionResetBonusCreateRequest struct {
 	PreviewToken string `json:"preview_token" binding:"required"`
 }
 
+type SubscriptionExtensionResolutionRequest struct {
+	Resolution string `json:"resolution" binding:"required,oneof=applied released"`
+}
+
 type LoginResponse struct {
 	User             any    `json:"user"`
 	IsAdmin          bool   `json:"is_admin"`

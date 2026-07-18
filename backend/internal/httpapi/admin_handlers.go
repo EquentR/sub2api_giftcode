@@ -275,3 +275,36 @@ func (h *Handlers) ListSubscriptionResetBonusBatchDetails(c *gin.Context) {
 	}
 	writeSuccess(c, items)
 }
+
+func (h *Handlers) ListSubscriptionExtensionEvents(c *gin.Context) {
+	items, err := h.service.ListSubscriptionExtensionEvents(c.Request.Context())
+	if err != nil {
+		writeServiceError(c, err)
+		return
+	}
+	writeSuccess(c, items)
+}
+
+func (h *Handlers) ResolveSubscriptionExtensionEvent(c *gin.Context) {
+	sessionUser, ok := getSessionUser(c)
+	if !ok || sessionUser == nil {
+		writeError(c, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil || id <= 0 {
+		writeError(c, http.StatusBadRequest, "invalid id")
+		return
+	}
+	var req SubscriptionExtensionResolutionRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		writeError(c, http.StatusBadRequest, err.Error())
+		return
+	}
+	event, err := h.service.ResolveSubscriptionExtensionEvent(c.Request.Context(), id, sessionUser.User.ID, req.Resolution)
+	if err != nil {
+		writeServiceError(c, err)
+		return
+	}
+	writeSuccess(c, event)
+}

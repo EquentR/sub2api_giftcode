@@ -520,6 +520,27 @@ func TestClientResetQuotaSendsOnlyConfiguredWindowsWithAdminKey(t *testing.T) {
 	require.Equal(t, map[string]bool{"daily": true, "weekly": false, "monthly": true}, body)
 }
 
+func TestClientExtendSubscriptionClassifiesRejectedAndUnknownResults(t *testing.T) {
+	t.Run("explicit rejection", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusConflict)
+			_ = json.NewEncoder(w).Encode(map[string]any{"code": 409, "message": "cannot extend", "reason": "locked"})
+		}))
+		defer server.Close()
+		_, err := NewClient(server.URL, "admin-key").ExtendSubscription(context.Background(), "extend-key", 55, 3)
+		require.ErrorIs(t, err, ErrUpstreamRejected)
+	})
+
+	t.Run("unverifiable success", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			writeEnvelope(w, Subscription{ID: 56, ExpiresAt: time.Now().UTC().Add(24 * time.Hour)})
+		}))
+		defer server.Close()
+		_, err := NewClient(server.URL, "admin-key").ExtendSubscription(context.Background(), "extend-key", 55, 3)
+		require.ErrorIs(t, err, ErrResultUnknown)
+	})
+}
+
 func TestClientResetQuotaClassifiesExplicitRejectionAndRedactsKey(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusConflict)

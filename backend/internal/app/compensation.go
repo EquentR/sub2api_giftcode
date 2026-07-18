@@ -149,11 +149,10 @@ func (s *Service) RunCompensationBatch(ctx context.Context, operator *SessionUse
 			extendedIDs := make([]int64, 0, len(subscriptions))
 			failedExtends := make([]map[string]any, 0)
 			for _, subscription := range subscriptions {
-				idempotencyKey := compensationSubscriptionExtensionIdempotencyKey(batch.BatchKey, user.ID, subscription.ID)
-				if _, err := s.upstream.ExtendSubscription(ctx, idempotencyKey, subscription.ID, input.SubscriptionDays); err != nil {
+				if _, err := s.extendCompensatedSubscription(ctx, batch.ID, batch.BatchKey, user.ID, subscription, input.SubscriptionDays); err != nil {
 					failedExtends = append(failedExtends, map[string]any{
 						"subscription_id": subscription.ID,
-						"error":           err.Error(),
+						"error":           compensationErrorMessage(err),
 					})
 					continue
 				}
@@ -174,6 +173,13 @@ func (s *Service) RunCompensationBatch(ctx context.Context, operator *SessionUse
 				batch.SubscriptionCompensatedUsers++
 			}
 			if err := s.insertCompensationBatchDetail(ctx, detail); err != nil {
+				return nil, err
+			}
+			detailID, err := s.compensationDetailID(ctx, batch.ID, detail.DetailKey)
+			if err != nil {
+				return nil, err
+			}
+			if err := s.attachCompensationDetailToExtensionEvents(ctx, batch.ID, detailID, user.ID); err != nil {
 				return nil, err
 			}
 			batch.DetailCount++
@@ -230,6 +236,17 @@ func (s *Service) RunCompensationBatch(ctx context.Context, operator *SessionUse
 		return nil, err
 	}
 	return s.GetCompensationBatch(ctx, batch.ID)
+}
+
+func compensationErrorMessage(err error) string {
+	var operationErr *sub2api.OperationError
+	if errors.As(err, &operationErr) && strings.TrimSpace(operationErr.Message) != "" {
+		return operationErr.Message
+	}
+	if err == nil {
+		return ""
+	}
+	return err.Error()
 }
 
 func (s *Service) ListCompensationBatches(ctx context.Context) ([]models.CompensationBatch, error) {

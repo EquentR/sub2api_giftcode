@@ -138,6 +138,191 @@ func TestRunCompensationBatchRecordsSummaryAndDetails(t *testing.T) {
 	require.False(t, details[3].RemarkRequested)
 }
 
+func TestCompensationExtensionEventExtendsResetEntitlements(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	beforeExpires := now.Add(10 * 24 * time.Hour)
+	afterExpires := beforeExpires.Add(5 * 24 * time.Hour)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/admin/users":
+			writeEnvelope(w, map[string]any{"items": []sub2api.User{{ID: 2, Email: "sub@example.com", Status: "active", Balance: 20}}, "total": 1, "page": 1, "page_size": 100, "pages": 1})
+		case "/api/v1/admin/subscriptions":
+			writeEnvelope(w, map[string]any{"items": []sub2api.Subscription{{ID: 101, UserID: 2, GroupID: 7, StartsAt: now.Add(-20 * 24 * time.Hour), ExpiresAt: beforeExpires, Status: "active"}}, "total": 1, "page": 1, "page_size": 100, "pages": 1})
+		case "/api/v1/admin/subscriptions/101/extend":
+			writeEnvelope(w, sub2api.Subscription{ID: 101, UserID: 2, GroupID: 7, StartsAt: now.Add(-20 * 24 * time.Hour), ExpiresAt: afterExpires, Status: "active"})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(upstream.Close)
+	store, err := db.Open("sqlite", ":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+	require.NoError(t, store.Migrate(context.Background()))
+	insertResetPeriodFixture(t, store, 1, 101, 2, 7, 101, 30, 2, now.Add(-20*24*time.Hour), beforeExpires, "active")
+	insertResetPeriodFixture(t, store, 2, 102, 2, 7, 101, 30, 1, beforeExpires, beforeExpires.Add(30*24*time.Hour), "scheduled")
+	_, err = store.DB.Exec(`UPDATE subscription_reset_periods SET created_at = ?, updated_at = ? WHERE id = 2`, formatTime(now.Add(-time.Hour)), formatTime(now.Add(-time.Hour)))
+	require.NoError(t, err)
+	insertBonusGrantFixture(t, store, 10, 100, 2, 7, 101, 3, 1, now.Add(-time.Hour), beforeExpires, "active")
+	svc := New(&config.RuntimeConfig{}, store, sub2api.NewClient(upstream.URL, "admin-key"), nil)
+	svc.nowFunc = func() time.Time { return now }
+	operator := &SessionUser{User: sub2api.User{ID: 900, Email: "admin@example.com"}, IsAdmin: true}
+
+	batch, err := svc.RunCompensationBatch(context.Background(), operator, CompensationBatchInput{SubscriptionDays: 5, BalanceAmount: 10, Note: "incident"})
+	require.NoError(t, err)
+	require.Equal(t, compensationBatchStatusCompleted, batch.Status)
+	var eventStatus, resolution, beforeRaw, afterRaw string
+	var baseCount, bonusCount int
+	require.NoError(t, store.DB.QueryRow(`SELECT status, resolution, before_expires_at, after_expires_at, applied_base_periods, applied_bonus_grants FROM subscription_extension_events WHERE upstream_subscription_id = 101`).Scan(&eventStatus, &resolution, &beforeRaw, &afterRaw, &baseCount, &bonusCount))
+	require.Equal(t, "succeeded", eventStatus)
+	require.Equal(t, "applied", resolution)
+	require.Equal(t, formatTime(beforeExpires), beforeRaw)
+	require.Equal(t, formatTime(afterExpires), afterRaw)
+	require.Equal(t, 2, baseCount)
+	require.Equal(t, 1, bonusCount)
+
+	var currentEnd, futureStart, futureEnd, bonusEnd string
+	var currentLimit, futureLimit, bonusLimit, bonusUsed int
+	require.NoError(t, store.DB.QueryRow(`SELECT period_end, reset_limit FROM subscription_reset_periods WHERE id = 1`).Scan(&currentEnd, &currentLimit))
+	require.NoError(t, store.DB.QueryRow(`SELECT period_start, period_end, reset_limit FROM subscription_reset_periods WHERE id = 2`).Scan(&futureStart, &futureEnd, &futureLimit))
+	require.NoError(t, store.DB.QueryRow(`SELECT expires_at, reset_limit, reset_used FROM subscription_reset_bonus_grants WHERE id = 10`).Scan(&bonusEnd, &bonusLimit, &bonusUsed))
+	require.Equal(t, formatTime(beforeExpires.Add(5*24*time.Hour)), currentEnd)
+	require.Equal(t, formatTime(beforeExpires.Add(5*24*time.Hour)), futureStart)
+	require.Equal(t, formatTime(beforeExpires.Add(35*24*time.Hour)), futureEnd)
+	require.Equal(t, formatTime(beforeExpires.Add(5*24*time.Hour)), bonusEnd)
+	require.Equal(t, 2, currentLimit)
+	require.Equal(t, 1, futureLimit)
+	require.Equal(t, 3, bonusLimit)
+	require.Equal(t, 1, bonusUsed)
+
+	require.NoError(t, svc.MigrateLegacySubscriptionExtensionEvents(context.Background()))
+	var eventCount int
+	require.NoError(t, store.DB.QueryRow(`SELECT COUNT(1) FROM subscription_extension_events WHERE upstream_subscription_id = 101`).Scan(&eventCount))
+	require.Equal(t, 1, eventCount, "a live extension event must not be migrated again as legacy")
+	require.NoError(t, store.DB.QueryRow(`SELECT period_end FROM subscription_reset_periods WHERE id = 1`).Scan(&currentEnd))
+	require.Equal(t, formatTime(beforeExpires.Add(5*24*time.Hour)), currentEnd)
+}
+
+func TestSubscriptionExtensionAppliedAfterOriginalBonusExpiryIsIdempotentAndSkipsLaterGrant(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	store := newResetPeriodTestStore(t)
+	insertResetPeriodFixture(t, store, 1, 101, 2, 7, 101, 30, 2, now.Add(-20*24*time.Hour), now.Add(10*24*time.Hour), "active")
+	insertBonusGrantFixture(t, store, 10, 100, 2, 7, 101, 2, 0, now.Add(-time.Hour), now.Add(24*time.Hour), "expired")
+	_, err := store.DB.Exec(`
+INSERT INTO subscription_extension_events (
+  id, event_key, source_type, upstream_user_id, sub2api_group_id, upstream_subscription_id,
+  extension_days, before_expires_at, status, reserved_at, created_at, updated_at
+) VALUES (1, 'manual-uncertain', 'compensation', 2, 7, 101, 5, ?, 'uncertain', ?, ?, ?)
+`, formatTime(now.Add(10*24*time.Hour)), formatTime(now), formatTime(now), formatTime(now))
+	require.NoError(t, err)
+	insertBonusGrantFixture(t, store, 11, 101, 2, 7, 101, 1, 0, now, now.Add(10*24*time.Hour), "active")
+	_, err = store.DB.Exec(`UPDATE subscription_reset_bonus_grants SET created_at = ?, updated_at = ? WHERE id = 11`, formatTime(now.Add(time.Minute)), formatTime(now.Add(time.Minute)))
+	require.NoError(t, err)
+	svc := New(&config.RuntimeConfig{}, store, nil, nil)
+	svc.nowFunc = func() time.Time { return now.Add(2 * 24 * time.Hour) }
+
+	event, err := svc.ResolveSubscriptionExtensionEvent(context.Background(), 1, 99, "applied")
+	require.NoError(t, err)
+	require.Equal(t, "succeeded", event.Status)
+	require.Equal(t, "applied", event.Resolution)
+	replayed, err := svc.ResolveSubscriptionExtensionEvent(context.Background(), 1, 99, "applied")
+	require.NoError(t, err)
+	require.Equal(t, event.ID, replayed.ID)
+	_, err = svc.ResolveSubscriptionExtensionEvent(context.Background(), 1, 99, "released")
+	require.ErrorIs(t, err, ErrConflict)
+
+	var earlyExpiry, lateExpiry string
+	require.NoError(t, store.DB.QueryRow(`SELECT expires_at FROM subscription_reset_bonus_grants WHERE id = 10`).Scan(&earlyExpiry))
+	require.NoError(t, store.DB.QueryRow(`SELECT expires_at FROM subscription_reset_bonus_grants WHERE id = 11`).Scan(&lateExpiry))
+	require.Equal(t, formatTime(now.Add(6*24*time.Hour)), earlyExpiry)
+	require.Equal(t, formatTime(now.Add(10*24*time.Hour)), lateExpiry)
+}
+
+func TestResolveSubscriptionExtensionEventReleasedDoesNotChangeEntitlements(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	store := newResetPeriodTestStore(t)
+	insertBonusGrantFixture(t, store, 10, 100, 2, 7, 101, 2, 0, now.Add(-time.Hour), now.Add(10*24*time.Hour), "active")
+	_, err := store.DB.Exec(`
+INSERT INTO subscription_extension_events (
+  id, event_key, source_type, upstream_user_id, sub2api_group_id, upstream_subscription_id,
+  extension_days, before_expires_at, status, reserved_at, created_at, updated_at
+) VALUES (1, 'manual-release', 'compensation', 2, 7, 101, 5, ?, 'uncertain', ?, ?, ?)
+`, formatTime(now.Add(10*24*time.Hour)), formatTime(now), formatTime(now), formatTime(now))
+	require.NoError(t, err)
+	svc := New(&config.RuntimeConfig{}, store, nil, nil)
+
+	event, err := svc.ResolveSubscriptionExtensionEvent(context.Background(), 1, 99, "released")
+	require.NoError(t, err)
+	require.Equal(t, "failed", event.Status)
+	require.Equal(t, "released", event.Resolution)
+	var expiry string
+	require.NoError(t, store.DB.QueryRow(`SELECT expires_at FROM subscription_reset_bonus_grants WHERE id = 10`).Scan(&expiry))
+	require.Equal(t, formatTime(now.Add(10*24*time.Hour)), expiry)
+}
+
+func TestLegacyExtensionAppliesToRebuiltBasePeriodAndSkipsLaterBonus(t *testing.T) {
+	store := newResetPeriodTestStore(t)
+	eventAt := time.Date(2026, 7, 10, 0, 0, 0, 0, time.UTC)
+	periodEnd := eventAt.Add(10 * 24 * time.Hour)
+	_, err := store.DB.Exec(`
+INSERT INTO compensation_batches (
+  id, batch_key, subscription_days, balance_amount, status, operator_upstream_user_id,
+  created_at, updated_at
+) VALUES (1, 'legacy-batch', 4, 10, 'completed', 99, ?, ?);
+INSERT INTO compensation_batch_details (
+  id, batch_id, detail_key, upstream_user_id, action_type, subscription_days,
+  status, upstream_reference_json, created_at, updated_at
+) VALUES (1, 1, 'legacy-detail', 2, 'subscription', 4, 'success',
+  '{"extended_ids":[101]}', ?, ?);
+`, formatTime(eventAt), formatTime(eventAt), formatTime(eventAt), formatTime(eventAt))
+	require.NoError(t, err)
+	insertResetPeriodFixture(t, store, 1, 101, 2, 7, 101, 30, 2, eventAt.Add(-20*24*time.Hour), periodEnd, "active")
+	_, err = store.DB.Exec(`UPDATE subscription_reset_periods SET status = 'expired', created_at = ?, updated_at = ? WHERE id = 1`, formatTime(eventAt.Add(24*time.Hour)), formatTime(eventAt.Add(24*time.Hour)))
+	require.NoError(t, err)
+	insertBonusGrantFixture(t, store, 10, 100, 2, 7, 101, 2, 0, eventAt, periodEnd, "active")
+	_, err = store.DB.Exec(`UPDATE subscription_reset_bonus_grants SET created_at = ?, updated_at = ? WHERE id = 10`, formatTime(eventAt.Add(time.Hour)), formatTime(eventAt.Add(time.Hour)))
+	require.NoError(t, err)
+	svc := New(&config.RuntimeConfig{}, store, nil, nil)
+
+	require.NoError(t, svc.MigrateLegacySubscriptionExtensionEvents(context.Background()))
+	require.NoError(t, svc.MigrateLegacySubscriptionExtensionEvents(context.Background()))
+	var eventCount int
+	var source, status, resolution string
+	var inferred, version int
+	require.NoError(t, store.DB.QueryRow(`SELECT COUNT(1), source_type, status, resolution, inferred_from_legacy, migration_version FROM subscription_extension_events`).Scan(&eventCount, &source, &status, &resolution, &inferred, &version))
+	require.Equal(t, 1, eventCount)
+	require.Equal(t, "legacy_compensation", source)
+	require.Equal(t, "succeeded", status)
+	require.Equal(t, "applied", resolution)
+	require.Equal(t, 1, inferred)
+	require.Equal(t, 1, version)
+	var migratedPeriodEnd, laterBonusEnd string
+	require.NoError(t, store.DB.QueryRow(`SELECT period_end FROM subscription_reset_periods WHERE id = 1`).Scan(&migratedPeriodEnd))
+	require.NoError(t, store.DB.QueryRow(`SELECT expires_at FROM subscription_reset_bonus_grants WHERE id = 10`).Scan(&laterBonusEnd))
+	require.Equal(t, formatTime(periodEnd.Add(4*24*time.Hour)), migratedPeriodEnd)
+	require.Equal(t, formatTime(periodEnd), laterBonusEnd)
+}
+
+func TestRecoverStaleSubscriptionExtensionEventMarksUncertainWithoutRetry(t *testing.T) {
+	store := newResetPeriodTestStore(t)
+	now := time.Now().UTC().Truncate(time.Second)
+	_, err := store.DB.Exec(`
+INSERT INTO subscription_extension_events (
+  event_key, source_type, upstream_user_id, sub2api_group_id, upstream_subscription_id,
+  extension_days, before_expires_at, status, reserved_at, created_at, updated_at
+) VALUES ('stale-reserved', 'compensation', 2, 7, 101, 5, ?, 'reserved', ?, ?, ?)
+`, formatTime(now.Add(10*24*time.Hour)), formatTime(now.Add(-3*time.Minute)), formatTime(now.Add(-3*time.Minute)), formatTime(now.Add(-3*time.Minute)))
+	require.NoError(t, err)
+	svc := New(&config.RuntimeConfig{}, store, nil, nil)
+	svc.nowFunc = func() time.Time { return now }
+
+	require.NoError(t, svc.RecoverStaleSubscriptionExtensionEvents(context.Background()))
+	var status, reason string
+	require.NoError(t, store.DB.QueryRow(`SELECT status, error_message FROM subscription_extension_events WHERE event_key = 'stale-reserved'`).Scan(&status, &reason))
+	require.Equal(t, "uncertain", status)
+	require.Contains(t, reason, "interrupted")
+}
+
 func TestRunCompensationBatchRetriesBalanceWithoutRemarkWhenUpstreamRejectsNotes(t *testing.T) {
 	var (
 		balanceBodies []map[string]any

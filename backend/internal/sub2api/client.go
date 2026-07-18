@@ -521,14 +521,25 @@ func (c *Client) AddUserBalance(ctx context.Context, idempotencyKey string, user
 }
 
 func (c *Client) ExtendSubscription(ctx context.Context, idempotencyKey string, subscriptionID int64, days int) (*Subscription, error) {
+	if subscriptionID <= 0 || days <= 0 {
+		return nil, fmt.Errorf("subscription ID and days must be positive")
+	}
 	var out Subscription
-	if err := c.postJSON(ctx, fmt.Sprintf("/api/v1/admin/subscriptions/%d/extend", subscriptionID), map[string]string{
+	err := c.postJSON(ctx, fmt.Sprintf("/api/v1/admin/subscriptions/%d/extend", subscriptionID), map[string]string{
 		"x-api-key":       c.AdminAPIKey,
 		"Idempotency-Key": idempotencyKey,
-	}, map[string]int{"days": days}, &out); err != nil {
-		return nil, err
+	}, map[string]int{"days": days}, &out)
+	if err == nil {
+		if out.ID != subscriptionID || out.ExpiresAt.IsZero() {
+			return nil, c.operationError(OperationErrorResultUnknown, "extend subscription", fmt.Errorf("unverifiable extension response"))
+		}
+		return &out, nil
 	}
-	return &out, nil
+	var apiErr *APIError
+	if errors.As(err, &apiErr) {
+		return nil, c.operationError(OperationErrorRejected, "extend subscription", err)
+	}
+	return nil, c.operationError(OperationErrorResultUnknown, "extend subscription", err)
 }
 
 func (c *Client) ListRedeemCodes(ctx context.Context, search string, pageSize int) ([]RedeemCode, error) {

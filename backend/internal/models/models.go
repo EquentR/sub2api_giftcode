@@ -273,6 +273,33 @@ type SubscriptionResetBonusGrant struct {
 	UpdatedAt                time.Time  `json:"updated_at"`
 }
 
+type SubscriptionExtensionEvent struct {
+	ID                     int64      `json:"id"`
+	EventKey               string     `json:"event_key"`
+	SourceType             string     `json:"source_type"`
+	CompensationBatchID    *int64     `json:"compensation_batch_id,omitempty"`
+	CompensationDetailID   *int64     `json:"compensation_detail_id,omitempty"`
+	UpstreamUserID         int64      `json:"upstream_user_id"`
+	Sub2APIGroupID         int64      `json:"sub2api_group_id"`
+	UpstreamSubscriptionID int64      `json:"upstream_subscription_id"`
+	ExtensionDays          int        `json:"extension_days"`
+	BeforeExpiresAt        *time.Time `json:"before_expires_at,omitempty"`
+	AfterExpiresAt         *time.Time `json:"after_expires_at,omitempty"`
+	Status                 string     `json:"status"`
+	Resolution             string     `json:"resolution"`
+	AppliedBasePeriods     int        `json:"applied_base_periods"`
+	AppliedBonusGrants     int        `json:"applied_bonus_grants"`
+	InferredFromLegacy     bool       `json:"inferred_from_legacy"`
+	MigrationVersion       int        `json:"migration_version"`
+	ErrorMessage           string     `json:"error_message"`
+	ReservedAt             time.Time  `json:"reserved_at"`
+	CompletedAt            *time.Time `json:"completed_at,omitempty"`
+	ConfirmedAt            *time.Time `json:"confirmed_at,omitempty"`
+	ConfirmedByUserID      *int64     `json:"confirmed_by_user_id,omitempty"`
+	CreatedAt              time.Time  `json:"created_at"`
+	UpdatedAt              time.Time  `json:"updated_at"`
+}
+
 type BalanceTier struct {
 	ID                   int64     `json:"id"`
 	Amount               float64   `json:"amount"`

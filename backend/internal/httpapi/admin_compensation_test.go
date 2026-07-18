@@ -125,3 +125,38 @@ func TestCompensationHandlersCreateListAndDetails(t *testing.T) {
 	require.NoError(t, json.Unmarshal(detailEnvelope.Data, &details))
 	require.Len(t, details, 2)
 }
+
+func TestSubscriptionExtensionEventHandlersListAndResolve(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	store, err := db.Open("sqlite", ":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+	require.NoError(t, store.Migrate(context.Background()))
+	now := time.Now().UTC().Truncate(time.Second)
+	_, err = store.DB.Exec(`
+INSERT INTO subscription_extension_events (
+  id, event_key, source_type, upstream_user_id, sub2api_group_id, upstream_subscription_id,
+  extension_days, before_expires_at, status, reserved_at, created_at, updated_at
+) VALUES (1, 'uncertain-event', 'compensation', 2, 7, 101, 5, ?, 'uncertain', ?, ?, ?)
+`, now.Add(10*24*time.Hour).Format(time.RFC3339Nano), now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano))
+	require.NoError(t, err)
+	cfg := &config.RuntimeConfig{}
+	svc := app.New(cfg, store, nil, nil)
+	handlers := &Handlers{cfg: cfg, service: svc}
+	operator := &app.SessionUser{User: sub2api.User{ID: 99}, IsAdmin: true}
+
+	listRecorder := httptest.NewRecorder()
+	listCtx, _ := gin.CreateTestContext(listRecorder)
+	listCtx.Request = httptest.NewRequest(http.MethodGet, "/api/admin/subscription-extension-events", nil)
+	handlers.ListSubscriptionExtensionEvents(listCtx)
+	require.Equal(t, http.StatusOK, listRecorder.Code)
+
+	resolveRecorder := httptest.NewRecorder()
+	resolveCtx, _ := gin.CreateTestContext(resolveRecorder)
+	resolveCtx.Request = httptest.NewRequest(http.MethodPost, "/api/admin/subscription-extension-events/1/resolve", strings.NewReader(`{"resolution":"released"}`))
+	resolveCtx.Request.Header.Set("Content-Type", "application/json")
+	resolveCtx.Params = gin.Params{{Key: "id", Value: "1"}}
+	withSessionUser(resolveCtx, operator)
+	handlers.ResolveSubscriptionExtensionEvent(resolveCtx)
+	require.Equal(t, http.StatusOK, resolveRecorder.Code)
+}

@@ -809,7 +809,7 @@ INSERT INTO subscription_reset_bonus_grants (
   id, batch_id, batch_detail_id, upstream_user_id, sub2api_group_id, upstream_subscription_id,
   reset_limit, reset_used, starts_at, expires_at, status, subscription_snapshot_json,
   created_at, updated_at
-) VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, '{}', ?, ?)
-`, id, detailID, userID, groupID, subscriptionID, resetLimit, resetUsed, formatTime(startsAt), formatTime(expiresAt), status, formatTime(startsAt), formatTime(startsAt))
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '{}', ?, ?)
+`, id, id, detailID, userID, groupID, subscriptionID, resetLimit, resetUsed, formatTime(startsAt), formatTime(expiresAt), status, formatTime(startsAt), formatTime(startsAt))
 	require.NoError(t, err)
 }
