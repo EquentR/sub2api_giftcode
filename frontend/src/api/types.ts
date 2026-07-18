@@ -184,6 +184,88 @@ export interface SubscriptionConcurrencyMonitorStatus {
   latest_error_at?: string | null
 }
 
+export type SubscriptionQuotaKind = 'daily' | 'weekly' | 'monthly'
+
+export interface SubscriptionQuotaWindow {
+  kind: SubscriptionQuotaKind
+  limit_usd: number
+  used_usd: number
+  remaining_usd: number
+  window_start?: string | null
+  resets_at?: string | null
+}
+
+export interface SubscriptionResetPeriodSummary {
+  id: number
+  period_start?: string | null
+  period_end?: string | null
+  status: 'pending_binding' | 'scheduled' | 'active' | 'expired' | 'inactive'
+  reset_limit: number
+  reset_used: number
+  reset_remaining: number
+}
+
+export interface SubscriptionCard {
+  id: number
+  group_id: number
+  group_name: string
+  group_platform: string
+  starts_at: string
+  expires_at: string
+  remaining_days: number
+  quota_windows: SubscriptionQuotaWindow[]
+  current_period?: SubscriptionResetPeriodSummary | null
+  next_period?: SubscriptionResetPeriodSummary | null
+  unlimited: boolean
+  can_reset: boolean
+  disabled_reason?: string
+}
+
+export interface SubscriptionResetAttempt {
+  id: number
+  request_id: string
+  period_id: number
+  upstream_user_id: number
+  upstream_subscription_id: number
+  reset_daily: boolean
+  reset_weekly: boolean
+  reset_monthly: boolean
+  status: 'reserved' | 'succeeded' | 'failed' | 'uncertain'
+  before_snapshot_json: string
+  after_snapshot_json: string
+  upstream_status?: number | null
+  response_status: number
+  response_reason: string
+  error_message: string
+  resolution: string
+  reserved_at: string
+  completed_at?: string | null
+  confirmed_at?: string | null
+  confirmed_by_user_id?: number | null
+  created_at: string
+  updated_at: string
+}
+
+export interface SubscriptionResetResult {
+  operation: SubscriptionResetAttempt
+  subscription?: SubscriptionCard | null
+}
+
+export interface SubscriptionResetBackfillRun {
+  id: number
+  tier_id: number
+  reset_limit: number
+  status: 'pending' | 'running' | 'succeeded' | 'failed'
+  total_records: number
+  processed_records: number
+  granted_records: number
+  error_message: string
+  triggered_at: string
+  started_at?: string | null
+  completed_at?: string | null
+  updated_at: string
+}
+
 export interface SubscriptionConcurrencyMonitorDetail {
   upstream_user_id: number
   username: string

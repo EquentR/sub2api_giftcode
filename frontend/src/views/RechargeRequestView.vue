@@ -1,6 +1,8 @@
 <template>
   <AppLayout title="兑换申请" subtitle="选择余额或订阅档位，并选择直充或发码方式">
-    <div class="recharge-page">
+    <el-tabs v-model="activeTab" class="recharge-tabs">
+      <el-tab-pane label="兑换申请" name="request">
+        <div class="recharge-page">
       <section class="recharge-hero">
         <div>
           <div class="eyebrow">Recharge</div>
@@ -213,7 +215,12 @@
           </div>
         </aside>
       </div>
-    </div>
+        </div>
+      </el-tab-pane>
+      <el-tab-pane label="订阅管理" name="subscriptions" lazy>
+        <SubscriptionManagement :active="activeTab === 'subscriptions'" />
+      </el-tab-pane>
+    </el-tabs>
   </AppLayout>
 </template>
 
@@ -223,6 +230,7 @@ import { useRoute } from 'vue-router'
 import { CopyDocument, Refresh } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import AppLayout from '@/components/AppLayout.vue'
+import SubscriptionManagement from '@/components/SubscriptionManagement.vue'
 import StatusTag from '@/components/StatusTag.vue'
 import { createAccessRequest, listAccessRequests } from '@/api/access'
 import { listRedeemCodes, listRedeemRequests, listRedeemTiers } from '@/api/redeem'
@@ -240,6 +248,7 @@ import {
 import { copyText } from '@/utils/clipboard'
 
 const loading = ref(false)
+const activeTab = ref('request')
 const loadingCore = ref(false)
 const loadingCodes = ref(false)
 const tiers = ref<RedeemTier[]>([])
@@ -515,6 +524,15 @@ onBeforeUnmount(() => {
 </script>
 
 <style scoped>
+.recharge-tabs :deep(.el-tabs__header) {
+  margin: 0 0 16px;
+}
+
+.recharge-tabs :deep(.el-tabs__item) {
+  min-width: 112px;
+  font-weight: 700;
+}
+
 .recharge-page {
   --recharge-side-width: 340px;
   display: grid;

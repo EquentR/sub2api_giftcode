@@ -53,6 +53,81 @@
         <div v-else class="muted">正在读取监控状态</div>
       </div>
 
+      <section class="reset-admin-monitor" aria-live="polite">
+        <div class="monitor-heading">
+          <div>
+            <div style="font-weight: 700">订阅额度重置</div>
+            <div class="muted">查看旧订阅补发进度，并处置无法自动确认的重置操作。</div>
+          </div>
+          <el-button size="small" :icon="Refresh" :loading="resetAdminLoading" @click="loadResetAdminState">刷新</el-button>
+        </div>
+        <el-alert v-if="resetAdminError" :title="resetAdminError" type="error" :closable="false" show-icon />
+        <div class="reset-admin-grid">
+          <div class="reset-admin-section">
+            <div class="reset-section-title">
+              <strong>待确认操作</strong>
+              <el-tag type="warning" effect="plain">{{ resetAttempts.length }}</el-tag>
+            </div>
+            <el-table :data="resetAttempts" size="small" max-height="300" empty-text="暂无待确认操作">
+              <el-table-column prop="id" label="操作" width="72" />
+              <el-table-column label="用户 / 订阅" min-width="150">
+                <template #default="{ row }">
+                  <div class="reset-operation-target">
+                    <span>用户 {{ row.upstream_user_id }}</span>
+                    <small>订阅 {{ row.upstream_subscription_id }}</small>
+                  </div>
+                </template>
+              </el-table-column>
+              <el-table-column label="状态" width="100">
+                <template #default="{ row }">
+                  <el-tag :type="row.status === 'uncertain' ? 'warning' : 'info'" size="small">
+                    {{ row.status === 'uncertain' ? '待人工确认' : '执行中' }}
+                  </el-tag>
+                </template>
+              </el-table-column>
+              <el-table-column label="预占时间" min-width="160">
+                <template #default="{ row }">{{ formatTime(row.reserved_at) }}</template>
+              </el-table-column>
+              <el-table-column label="操作" width="190" fixed="right">
+                <template #default="{ row }">
+                  <template v-if="row.status === 'uncertain'">
+                    <el-button size="small" type="success" text @click="openResetResolution(row, 'consumed')">确认已消耗</el-button>
+                    <el-button size="small" type="danger" text @click="openResetResolution(row, 'released')">释放次数</el-button>
+                  </template>
+                  <span v-else class="muted">等待上游完成</span>
+                </template>
+              </el-table-column>
+            </el-table>
+          </div>
+
+          <div class="reset-admin-section">
+            <div class="reset-section-title">
+              <strong>历史订阅补发</strong>
+              <el-tag effect="plain">{{ resetBackfills.length }}</el-tag>
+            </div>
+            <el-table :data="resetBackfills" size="small" max-height="300" empty-text="暂无补发任务">
+              <el-table-column prop="tier_id" label="档位" width="72" />
+              <el-table-column label="进度" min-width="190">
+                <template #default="{ row }">
+                  <div class="backfill-progress">
+                    <el-progress :percentage="backfillPercentage(row)" :stroke-width="7" />
+                    <small>已处理 {{ row.processed_records }} / {{ row.total_records }}，已补发 {{ row.granted_records }}</small>
+                  </div>
+                </template>
+              </el-table-column>
+              <el-table-column label="状态" width="90">
+                <template #default="{ row }">
+                  <el-tag :type="backfillTagType(row.status)" size="small">{{ backfillStatusLabel(row.status) }}</el-tag>
+                </template>
+              </el-table-column>
+              <el-table-column prop="error_message" label="最近错误" min-width="150" show-overflow-tooltip>
+                <template #default="{ row }">{{ row.error_message || '-' }}</template>
+              </el-table-column>
+            </el-table>
+          </div>
+        </div>
+      </section>
+
       <TierEditor
         v-model="tiers"
         :subscription-groups="subscriptionGroups"
@@ -117,6 +192,35 @@
         </el-table-column>
       </el-table>
     </el-dialog>
+
+    <el-dialog v-model="resetResolutionVisible" :title="resetResolution === 'consumed' ? '确认重置已消耗' : '确认释放重置次数'" width="min(500px, 92vw)">
+      <div v-if="selectedResetAttempt" class="resolution-copy">
+        <el-alert
+          :title="resetResolution === 'consumed' ? '确认后保留本次次数消耗，并将操作标记为成功。' : '确认后将操作标记为失败，并归还本次预占次数。'"
+          :type="resetResolution === 'consumed' ? 'warning' : 'error'"
+          :closable="false"
+          show-icon
+        />
+        <el-descriptions :column="1" border size="small">
+          <el-descriptions-item label="操作 ID">{{ selectedResetAttempt.id }}</el-descriptions-item>
+          <el-descriptions-item label="请求 ID">{{ selectedResetAttempt.request_id }}</el-descriptions-item>
+          <el-descriptions-item label="用户 / 订阅">
+            {{ selectedResetAttempt.upstream_user_id }} / {{ selectedResetAttempt.upstream_subscription_id }}
+          </el-descriptions-item>
+          <el-descriptions-item label="目标窗口">{{ resetAttemptTargets(selectedResetAttempt) }}</el-descriptions-item>
+        </el-descriptions>
+      </div>
+      <template #footer>
+        <el-button @click="resetResolutionVisible = false">取消</el-button>
+        <el-button
+          :type="resetResolution === 'consumed' ? 'warning' : 'danger'"
+          :loading="resetResolutionLoading"
+          @click="submitResetResolution"
+        >
+          {{ resetResolution === 'consumed' ? '确认已消耗' : '释放次数' }}
+        </el-button>
+      </template>
+    </el-dialog>
   </AppLayout>
 </template>
 
@@ -126,9 +230,9 @@ import { Check, List, Refresh, Upload } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import AppLayout from '@/components/AppLayout.vue'
 import TierEditor from '@/components/TierEditor.vue'
-import { listRedeemTiers, listSubscriptionConcurrencyDetails, listSubscriptionConcurrencyStatus, listSubscriptionGroups, syncRedeemCodes, updateRedeemTiers, stats as fetchStats } from '@/api/admin'
+import { listRedeemTiers, listSubscriptionConcurrencyDetails, listSubscriptionConcurrencyStatus, listSubscriptionGroups, listSubscriptionResetAttempts, listSubscriptionResetBackfills, resolveSubscriptionResetAttempt, syncRedeemCodes, updateRedeemTiers, stats as fetchStats } from '@/api/admin'
 import { ApiError } from '@/api/http'
-import type { DashboardStats, RedeemTier, SubscriptionConcurrencyMonitorDetail, SubscriptionConcurrencyMonitorStatus, SubscriptionGroup } from '@/api/types'
+import type { DashboardStats, RedeemTier, SubscriptionConcurrencyMonitorDetail, SubscriptionConcurrencyMonitorStatus, SubscriptionGroup, SubscriptionResetAttempt, SubscriptionResetBackfillRun } from '@/api/types'
 import { useBrandingStore } from '@/stores/branding'
 import { tierCodeType } from '@/utils/tiers'
 
@@ -145,6 +249,14 @@ const monitorDetailFilter = ref('all')
 const loading = ref(false)
 const groupsLoading = ref(false)
 const groupsError = ref('')
+const resetAdminLoading = ref(false)
+const resetAdminError = ref('')
+const resetAttempts = ref<SubscriptionResetAttempt[]>([])
+const resetBackfills = ref<SubscriptionResetBackfillRun[]>([])
+const resetResolutionVisible = ref(false)
+const resetResolutionLoading = ref(false)
+const selectedResetAttempt = ref<SubscriptionResetAttempt | null>(null)
+const resetResolution = ref<'consumed' | 'released'>('consumed')
 const branding = useBrandingStore()
 
 const enabledCount = computed(() => tiers.value.filter((tier) => tier.enabled).length)
@@ -182,6 +294,7 @@ async function loadAll() {
   groupsLoading.value = true
   groupsError.value = ''
   const monitorLoad = loadMonitorStatus()
+  const resetAdminLoad = loadResetAdminState()
   try {
     const [tierData, groupData, statData] = await Promise.all([
       listRedeemTiers(),
@@ -198,6 +311,7 @@ async function loadAll() {
     ElMessage.error(error?.message ?? '加载档位失败')
   } finally {
     await monitorLoad
+    await resetAdminLoad
     loading.value = false
     groupsLoading.value = false
   }
@@ -234,6 +348,69 @@ async function loadMonitorStatus() {
   } catch (error: any) {
     monitorError.value = error?.message ?? '订阅并发监控状态加载失败'
   }
+}
+
+async function loadResetAdminState() {
+  resetAdminLoading.value = true
+  resetAdminError.value = ''
+  try {
+    const [attempts, backfills] = await Promise.all([
+      listSubscriptionResetAttempts(),
+      listSubscriptionResetBackfills(),
+    ])
+    resetAttempts.value = attempts
+    resetBackfills.value = backfills
+  } catch (error: any) {
+    resetAdminError.value = error?.message ?? '订阅重置管理状态加载失败'
+  } finally {
+    resetAdminLoading.value = false
+  }
+}
+
+function openResetResolution(attempt: SubscriptionResetAttempt, resolution: 'consumed' | 'released') {
+  if (attempt.status !== 'uncertain') return
+  selectedResetAttempt.value = attempt
+  resetResolution.value = resolution
+  resetResolutionVisible.value = true
+}
+
+async function submitResetResolution() {
+  if (!selectedResetAttempt.value || resetResolutionLoading.value) return
+  resetResolutionLoading.value = true
+  try {
+    await resolveSubscriptionResetAttempt(selectedResetAttempt.value.id, resetResolution.value)
+    ElMessage.success(resetResolution.value === 'consumed' ? '已确认次数消耗' : '已释放重置次数')
+    resetResolutionVisible.value = false
+    await loadResetAdminState()
+  } catch (error: any) {
+    ElMessage.error(error instanceof ApiError && error.reason ? error.reason : (error?.message ?? '人工决议失败'))
+  } finally {
+    resetResolutionLoading.value = false
+  }
+}
+
+function resetAttemptTargets(attempt: SubscriptionResetAttempt) {
+  const targets: string[] = []
+  if (attempt.reset_daily) targets.push('日限额')
+  if (attempt.reset_weekly) targets.push('周限额')
+  if (attempt.reset_monthly) targets.push('月限额')
+  return targets.join('、') || '-'
+}
+
+function backfillPercentage(run: SubscriptionResetBackfillRun) {
+  if (run.total_records <= 0) return run.status === 'succeeded' ? 100 : 0
+  return Math.min(100, Math.round((run.processed_records / run.total_records) * 100))
+}
+
+function backfillStatusLabel(status: SubscriptionResetBackfillRun['status']) {
+  return { pending: '待执行', running: '执行中', succeeded: '已完成', failed: '失败' }[status]
+}
+
+function backfillTagType(status: SubscriptionResetBackfillRun['status']) {
+  if (status === 'succeeded') return 'success'
+  if (status === 'failed') return 'danger'
+  if (status === 'running') return 'warning'
+  return 'info'
 }
 
 function formatTime(value?: string | null) {
@@ -333,5 +510,54 @@ onMounted(loadAll)
 .monitor-errors {
   display: grid;
   gap: 4px;
+}
+
+.reset-admin-monitor {
+  display: grid;
+  gap: 12px;
+  margin: 0 0 16px;
+  padding: 14px 0;
+  border-top: 1px solid #dfe7f1;
+  border-bottom: 1px solid #dfe7f1;
+}
+
+.reset-admin-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.reset-admin-section {
+  min-width: 0;
+}
+
+.reset-section-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.reset-operation-target,
+.backfill-progress,
+.resolution-copy {
+  display: grid;
+  gap: 4px;
+}
+
+.reset-operation-target small,
+.backfill-progress small {
+  color: #64748b;
+}
+
+.resolution-copy {
+  gap: 14px;
+}
+
+@media (max-width: 980px) {
+  .reset-admin-grid {
+    grid-template-columns: 1fr;
+  }
 }
 </style>

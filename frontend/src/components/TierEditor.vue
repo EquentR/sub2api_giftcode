@@ -133,6 +133,21 @@
         </template>
       </el-table-column>
 
+      <el-table-column prop="reset_count" label="重置次数" width="150">
+        <template #default="{ row }">
+          <el-input-number
+            v-model="row.reset_count"
+            :min="0"
+            :step="1"
+            :precision="0"
+            :disabled="!tierCanResetQuota(row)"
+            controls-position="right"
+            style="width: 100%"
+            @change="emitUpdate"
+          />
+        </template>
+      </el-table-column>
+
       <el-table-column prop="sort_order" label="排序" width="130">
         <template #default="{ row }">
           <el-input-number
@@ -216,6 +231,7 @@ function sanitizedRows() {
         sub2api_group_id: tier.sub2api_group_id ?? null,
         validity_days: Number(tier.validity_days ?? 30),
         concurrency: Math.max(0, Number(tier.concurrency || 0)),
+        reset_count: tierCanResetQuota(tier) ? Math.max(0, Number(tier.reset_count || 0)) : 0,
       }
     }
     return {
@@ -230,6 +246,7 @@ function sanitizedRows() {
       sub2api_monthly_limit_usd: null,
       validity_days: 0,
       concurrency: 0,
+      reset_count: 0,
     }
   })
 }
@@ -265,6 +282,7 @@ function addRow(codeType: 'balance' | 'subscription') {
     sub2api_monthly_limit_usd: null,
     validity_days: validityDays,
     concurrency,
+    reset_count: 0,
     upstream_available: true,
     upstream_error: '',
     created_at: '',
@@ -293,6 +311,7 @@ function onTypeChange(row: RedeemTier) {
     row.sub2api_group_id = null
     row.validity_days = 0
     row.concurrency = 0
+    row.reset_count = 0
   }
   emitUpdate()
 }
@@ -308,7 +327,21 @@ function onGroupChange(row: RedeemTier) {
   row.sub2api_daily_limit_usd = group?.daily_limit_usd ?? null
   row.sub2api_weekly_limit_usd = group?.weekly_limit_usd ?? null
   row.sub2api_monthly_limit_usd = group?.monthly_limit_usd ?? null
+  if (!tierCanResetQuota(row)) {
+    row.reset_count = 0
+  }
   emitUpdate()
+}
+
+function tierCanResetQuota(row: RedeemTier) {
+  if (tierCodeType(row) !== 'subscription') return false
+  const group = row.sub2api_group_id ? groupMap.value.get(row.sub2api_group_id) : null
+  const limits = group ?? row
+  return [
+    'daily_limit_usd' in limits ? limits.daily_limit_usd : row.sub2api_daily_limit_usd,
+    'weekly_limit_usd' in limits ? limits.weekly_limit_usd : row.sub2api_weekly_limit_usd,
+    'monthly_limit_usd' in limits ? limits.monthly_limit_usd : row.sub2api_monthly_limit_usd,
+  ].some((value) => Number(value ?? 0) > 0)
 }
 
 function groupLimitText(row: RedeemTier) {

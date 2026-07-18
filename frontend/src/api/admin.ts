@@ -13,6 +13,8 @@ import type {
   SubscriptionGroup,
   SubscriptionConcurrencyMonitorDetail,
   SubscriptionConcurrencyMonitorStatus,
+  SubscriptionResetAttempt,
+  SubscriptionResetBackfillRun,
   UserSummary,
 } from './types'
 
@@ -35,6 +37,28 @@ export function listSubscriptionConcurrencyDetails() {
     method: 'GET',
     url: '/admin/subscription-concurrency/details',
   }).then(asArray)
+}
+
+export function listSubscriptionResetAttempts() {
+  return request<SubscriptionResetAttempt[] | null>({
+    method: 'GET',
+    url: '/admin/subscription-reset-attempts',
+  }).then(asArray)
+}
+
+export function listSubscriptionResetBackfills() {
+  return request<SubscriptionResetBackfillRun[] | null>({
+    method: 'GET',
+    url: '/admin/subscription-reset-backfills',
+  }).then(asArray)
+}
+
+export function resolveSubscriptionResetAttempt(id: number, resolution: 'consumed' | 'released') {
+  return request<SubscriptionResetAttempt>({
+    method: 'POST',
+    url: `/admin/subscription-reset-attempts/${id}/resolve`,
+    data: { resolution },
+  })
 }
 
 export function listUsers() {

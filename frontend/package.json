@@ -5,6 +5,7 @@
   "packageManager": "pnpm@10.33.0",
   "scripts": {
     "dev": "vite --host 0.0.0.0",
+    "test": "node --experimental-strip-types --test tests/*.test.ts",
     "build": "vue-tsc --noEmit && vite build"
   },
   "dependencies": {
