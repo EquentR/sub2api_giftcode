@@ -71,14 +71,10 @@
               </div>
             </div>
             <div class="entitlement-zone">
-              <div v-if="subscription.bonus_grants.length" class="bonus-grants" aria-label="活动赠送明细">
-                <div v-for="grant in subscription.bonus_grants" :key="grant.id" class="bonus-grant-row">
-                  <span>{{ grant.note || `赠送批次 #${grant.batch_id}` }}</span>
-                  <strong>{{ grant.reset_remaining }} / {{ grant.reset_limit }} 次</strong>
-                  <small>{{ formatDate(grant.expires_at) }} 到期</small>
-                </div>
+              <div class="bonus-detail-trigger">
+                <span>{{ subscription.bonus_grants.length ? '赠送次数按到期时间依次使用' : '暂无活动赠送次数' }}</span>
+                <el-button v-if="subscription.bonus_grants.length" link type="primary" @click="openBonusDetails(subscription)">查看详情</el-button>
               </div>
-              <div v-else class="bonus-empty">暂无活动赠送次数</div>
               <div v-if="subscription.next_entitlement" class="next-entitlement">
                 下次消耗：{{ entitlementTypeLabel(subscription.next_entitlement.type) }}，有效至 {{ formatDateTime(subscription.next_entitlement.expires_at) }}
               </div>
@@ -110,16 +106,48 @@
         当前账号没有有效订阅
       </div>
     </div>
+
+    <el-dialog
+      v-model="bonusDetailVisible"
+      class="bonus-detail-dialog"
+      :title="`${selectedBonusSubscription?.group_name || '订阅'} · 赠送详情`"
+      width="min(720px, 94vw)"
+      @closed="clearBonusDetails"
+    >
+      <div v-if="selectedBonusSubscription" class="bonus-detail-list">
+        <article v-for="grant in selectedBonusSubscription.bonus_grants" :key="grant.id" class="bonus-detail-row">
+          <header>
+            <strong>{{ bonusGrantNoteLabel(grant) }}</strong>
+            <el-tag :type="grant.reset_remaining > 0 ? 'success' : 'info'" effect="light">
+              {{ bonusGrantStatusLabel(grant) }}
+            </el-tag>
+          </header>
+          <div class="bonus-detail-metrics">
+            <div><span>获赠</span><strong>{{ grant.reset_limit }} 次</strong></div>
+            <div><span>已使用</span><strong>{{ grant.reset_used }} 次</strong></div>
+            <div><span>剩余</span><strong>{{ grant.reset_remaining }} 次</strong></div>
+            <div><span>到期时间</span><strong>{{ formatDateTime(grant.expires_at) }}</strong></div>
+          </div>
+        </article>
+      </div>
+    </el-dialog>
   </section>
 </template>
 
 <script setup lang="ts">
-import { onBeforeUnmount, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { MagicStick, Refresh, RefreshRight } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { listSubscriptions, resetSubscriptionQuota } from '@/api/subscriptions'
 import type { SubscriptionCard } from '@/api/types'
-import { quotaKindLabel, quotaUsagePercentage, resetReasonLabel, resetTargetSummaries } from '@/utils/subscriptions'
+import {
+  bonusGrantNoteLabel,
+  bonusGrantStatusLabel,
+  quotaKindLabel,
+  quotaUsagePercentage,
+  resetReasonLabel,
+  resetTargetSummaries,
+} from '@/utils/subscriptions'
 
 const props = defineProps<{
   active: boolean
@@ -129,19 +157,43 @@ const subscriptions = ref<SubscriptionCard[]>([])
 const loading = ref(false)
 const loadError = ref('')
 const pendingSubscriptionIds = ref(new Set<number>())
+const bonusDetailVisible = ref(false)
+const bonusDetailSubscriptionID = ref<number | null>(null)
+const selectedBonusSubscription = computed(() => subscriptions.value.find(
+  (subscription) => subscription.id === bonusDetailSubscriptionID.value,
+) ?? null)
 let pollTimer: number | undefined
 
 async function loadSubscriptions(options: { silent?: boolean } = {}) {
   if (!props.active) return
   if (!options.silent) loading.value = true
   try {
-    subscriptions.value = await listSubscriptions()
+    const nextSubscriptions = await listSubscriptions()
+    subscriptions.value = nextSubscriptions
+    syncBonusDetailSubscription(nextSubscriptions)
     loadError.value = ''
   } catch (error: any) {
     loadError.value = error?.message ?? '订阅信息加载失败'
   } finally {
     if (!options.silent) loading.value = false
   }
+}
+
+function openBonusDetails(subscription: SubscriptionCard) {
+  bonusDetailSubscriptionID.value = subscription.id
+  bonusDetailVisible.value = true
+}
+
+function clearBonusDetails() {
+  bonusDetailSubscriptionID.value = null
+}
+
+function syncBonusDetailSubscription(nextSubscriptions: SubscriptionCard[]) {
+  if (!bonusDetailVisible.value || bonusDetailSubscriptionID.value === null) return
+  if (nextSubscriptions.some((subscription) => subscription.id === bonusDetailSubscriptionID.value)) return
+  bonusDetailVisible.value = false
+  bonusDetailSubscriptionID.value = null
+  ElMessage.warning('订阅状态已经变化，赠送详情已关闭')
 }
 
 async function confirmReset(subscription: SubscriptionCard) {
@@ -276,12 +328,16 @@ onBeforeUnmount(stopPolling)
 .subscription-grid {
   min-height: 260px;
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 330px), 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 330px), 630px));
   gap: 14px;
   align-items: stretch;
+  justify-content: center;
 }
 
 .subscription-card {
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 630px;
   min-width: 0;
   min-height: 520px;
   display: grid;
@@ -406,34 +462,74 @@ onBeforeUnmount(stopPolling)
   gap: 7px;
 }
 
-.bonus-grants {
-  max-height: 70px;
-  overflow-y: auto;
-  display: grid;
-  gap: 5px;
-  padding-right: 4px;
-}
-
-.bonus-grant-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 2px 8px;
-  font-size: 12px;
-}
-
-.bonus-grant-row span {
-  overflow-wrap: anywhere;
-}
-
-.bonus-grant-row small {
-  grid-column: 1 / -1;
-  color: #64748b;
-}
-
 .bonus-empty,
 .next-entitlement {
   color: #64748b;
   font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.bonus-detail-trigger {
+  min-height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  color: #64748b;
+  font-size: 12px;
+}
+
+.bonus-detail-trigger span {
+  overflow-wrap: anywhere;
+}
+
+.bonus-detail-list {
+  max-height: min(620px, 68vh);
+  overflow-y: auto;
+  display: grid;
+  gap: 10px;
+  padding-right: 4px;
+}
+
+.bonus-detail-row {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid #dfe7f1;
+  border-radius: 8px;
+  background: #fbfcfe;
+}
+
+.bonus-detail-row header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.bonus-detail-row header strong {
+  overflow-wrap: anywhere;
+}
+
+.bonus-detail-metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.bonus-detail-metrics > div {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.bonus-detail-metrics span {
+  color: #64748b;
+  font-size: 11px;
+}
+
+.bonus-detail-metrics strong {
+  font-size: 13px;
   overflow-wrap: anywhere;
 }
 
@@ -485,6 +581,10 @@ onBeforeUnmount(stopPolling)
   .subscription-card {
     min-height: 520px;
     padding: 15px;
+  }
+
+  .bonus-detail-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 </style>

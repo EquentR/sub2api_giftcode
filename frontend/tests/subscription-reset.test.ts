@@ -5,6 +5,8 @@ import { fileURLToPath } from 'node:url'
 import { test } from 'node:test'
 
 import {
+  bonusGrantNoteLabel,
+  bonusGrantStatusLabel,
   quotaUsagePercentage,
   resetReasonLabel,
   resetTargetSummaries,
@@ -60,6 +62,29 @@ test('subscription management uses UUID idempotency and blocks duplicate submiss
   assert.match(source, /total_reset_remaining/)
   assert.match(source, /bonus_grants/)
   assert.match(source, /next_entitlement/)
+})
+
+test('bonus grant detail labels include exhausted grants and blank note fallback', () => {
+  assert.equal(bonusGrantNoteLabel({ note: '' }), '未填写赠送说明')
+  assert.equal(bonusGrantNoteLabel({ note: ' 周年活动 ' }), '周年活动')
+  assert.equal(bonusGrantStatusLabel({ reset_remaining: 2 }), '可用')
+  assert.equal(bonusGrantStatusLabel({ reset_remaining: 0 }), '已用完')
+})
+
+test('subscription management keeps bonus details in a synchronized dialog and caps card width', () => {
+  const source = readSource('../src/components/SubscriptionManagement.vue')
+  assert.match(source, /查看详情/)
+  assert.match(source, /class="bonus-detail-dialog"/)
+  assert.match(source, /bonusDetailSubscriptionID/)
+  assert.match(source, /selectedBonusSubscription/)
+  assert.match(source, /syncBonusDetailSubscription/)
+  assert.match(source, /订阅状态已经变化/)
+  assert.match(source, /bonusGrantNoteLabel/)
+  assert.match(source, /bonusGrantStatusLabel/)
+  assert.doesNotMatch(source, /class="bonus-grants"/)
+  assert.doesNotMatch(source, /v-for="grant in subscription\.bonus_grants"/)
+  assert.match(source, /\.subscription-card\s*\{[\s\S]*?max-width:\s*630px/)
+  assert.match(source, /grid-template-columns:\s*repeat\(auto-fit,\s*minmax\(min\(100%,\s*330px\),\s*630px\)\)/)
 })
 
 test('tier editor disables reset count for balance and unlimited tiers', () => {

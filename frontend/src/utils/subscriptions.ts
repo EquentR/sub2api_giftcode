@@ -35,3 +35,11 @@ export function quotaUsagePercentage(window: { limit_usd: number; used_usd: numb
 export function resetTargetSummaries(windows: Array<{ kind: string; used_usd: number }>) {
 	return windows.map((window) => `${quotaKindLabel(window.kind)}（当前已用 $${Number(window.used_usd || 0).toFixed(2)}）`)
 }
+
+export function bonusGrantNoteLabel(grant: { note?: string | null }) {
+  return grant.note?.trim() || '未填写赠送说明'
+}
+
+export function bonusGrantStatusLabel(grant: { reset_remaining: number }) {
+  return grant.reset_remaining > 0 ? '可用' : '已用完'
+}
