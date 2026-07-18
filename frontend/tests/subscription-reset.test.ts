@@ -47,6 +47,7 @@ test('subscription management uses UUID idempotency and blocks duplicate submiss
   assert.match(source, /if \(pendingSubscriptionIds\.value\.has\(subscription\.id\)\) return/)
   assert.match(source, /watch\(\s*\(\) => props\.active/)
   assert.match(source, /class="unlimited-placeholder"/)
+  assert.match(source, /\.unlimited-placeholder\s*\{[\s\S]*?box-sizing:\s*border-box/)
   assert.match(source, /\.subscription-card\s*\{[\s\S]*?min-height:\s*520px/)
   assert.match(source, /首次使用后开始计时/)
   assert.match(source, /base_reset_remaining/)

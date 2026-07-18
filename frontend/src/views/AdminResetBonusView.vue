@@ -141,7 +141,7 @@
         <el-table-column label="创建时间" width="170">
           <template #default="{ row }">{{ formatTime(row.created_at) }}</template>
         </el-table-column>
-        <el-table-column label="操作" width="92" fixed="right">
+        <el-table-column label="操作" width="92">
           <template #default="{ row }">
             <el-button text type="primary" @click="openBatchDetails(row)">查看明细</el-button>
           </template>
@@ -177,7 +177,7 @@
             <el-tag :type="extensionTagType(row.status)">{{ extensionEventStatusLabel(row.status, row.resolution) }}</el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="190" fixed="right">
+        <el-table-column label="操作" width="190">
           <template #default="{ row }">
             <template v-if="row.status === 'uncertain'">
               <el-button text type="success" @click="resolveExtension(row, 'applied')">确认已应用</el-button>

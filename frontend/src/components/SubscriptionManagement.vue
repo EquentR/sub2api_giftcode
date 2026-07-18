@@ -345,6 +345,7 @@ onBeforeUnmount(stopPolling)
 }
 
 .unlimited-placeholder {
+  box-sizing: border-box;
   min-height: 210px;
   display: grid;
   place-content: center;
