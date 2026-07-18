@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -290,6 +291,154 @@ func TestResetQuotaExplicitFailureReleasesReservedCount(t *testing.T) {
 	require.Zero(t, resetUsed)
 	require.Equal(t, "failed", status)
 	require.Equal(t, http.StatusConflict, upstreamStatus)
+}
+
+func TestSubscriptionsListAllowsExternalSubscriptionWithBonus(t *testing.T) {
+	store := newResetPeriodTestStore(t)
+	now := time.Now().UTC().Truncate(time.Second)
+	insertBonusGrantFixture(t, store, 10, 100, 1, 7, 77, 3, 1, now.Add(-time.Hour), now.Add(20*24*time.Hour), "active")
+	dailyLimit := 10.0
+	dailyStart := now.Add(-2 * time.Hour)
+	subscription := sub2api.Subscription{
+		ID: 77, UserID: 1, GroupID: 7, StartsAt: now.Add(-time.Hour), ExpiresAt: now.Add(30 * 24 * time.Hour), Status: "active",
+		DailyUsageUSD: 4, DailyWindowStart: &dailyStart, Group: &sub2api.Group{ID: 7, Name: "External", DailyLimitUSD: &dailyLimit},
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/admin/subscriptions":
+			writeRedeemTestEnvelope(w, subscriptionPageForTest([]sub2api.Subscription{subscription}))
+		case "/api/v1/admin/subscriptions/77":
+			writeRedeemTestEnvelope(w, subscription)
+		case "/api/v1/admin/subscriptions/77/progress":
+			writeRedeemTestEnvelope(w, sub2api.SubscriptionProgress{ID: 77, Daily: &sub2api.UsageWindowProgress{LimitUSD: 10, UsedUSD: 4, RemainingUSD: 6, WindowStart: &dailyStart}})
+		case "/api/v1/admin/subscriptions/77/reset-quota":
+			updated := subscription
+			updated.DailyUsageUSD = 0
+			writeRedeemTestEnvelope(w, updated)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(server.Close)
+	svc := New(&config.RuntimeConfig{}, store, sub2api.NewClient(server.URL, "admin-key"), nil)
+
+	cards, err := svc.ListSubscriptions(context.Background(), 1)
+	require.NoError(t, err)
+	require.Len(t, cards, 1)
+	require.True(t, cards[0].ExternalPeriod)
+	require.Zero(t, cards[0].BaseResetRemaining)
+	require.Equal(t, 2, cards[0].BonusResetRemaining)
+	require.Equal(t, 2, cards[0].TotalResetRemaining)
+	require.Len(t, cards[0].BonusGrants, 1)
+	require.Equal(t, "bonus_grant", cards[0].NextEntitlement.Type)
+	require.True(t, cards[0].CanReset)
+	result, err := svc.ResetSubscriptionQuota(context.Background(), 1, 77, "56565656-5656-4656-8656-565656565656")
+	require.NoError(t, err)
+	require.Equal(t, "bonus_grant", result.Operation.EntitlementType)
+	require.Nil(t, result.Operation.PeriodID)
+	_, err = store.DB.Exec(`UPDATE subscription_reset_bonus_grants SET reset_used = reset_limit, status = 'exhausted' WHERE id = 10`)
+	require.NoError(t, err)
+	cards, err = svc.ListSubscriptions(context.Background(), 1)
+	require.NoError(t, err)
+	require.False(t, cards[0].CanReset)
+	require.Equal(t, SubscriptionResetReasonResetExhausted, cards[0].DisabledReason)
+}
+
+func TestResetQuotaUsesBonusBeforeBaseAtSameExpiryAndFailureReleasesBonus(t *testing.T) {
+	store := newResetPeriodTestStore(t)
+	now := time.Now().UTC().Truncate(time.Second)
+	expiresAt := now.Add(30 * 24 * time.Hour)
+	insertResetPeriodFixture(t, store, 1, 101, 1, 7, 77, 30, 1, now.Add(-time.Hour), expiresAt, "active")
+	insertBonusGrantFixture(t, store, 10, 100, 1, 7, 77, 1, 0, now.Add(-time.Hour), expiresAt, "active")
+	svc := newResetTransactionTestService(t, store, now, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusConflict)
+		_ = json.NewEncoder(w).Encode(map[string]any{"code": 409, "message": "quota locked", "reason": "quota_locked"})
+	})
+
+	_, err := svc.ResetSubscriptionQuota(context.Background(), 1, 77, "12121212-1212-4212-8212-121212121212")
+	require.ErrorIs(t, err, ErrConflict)
+	var entitlementType, status string
+	var entitlementID int64
+	var periodID sql.NullInt64
+	require.NoError(t, store.DB.QueryRow(`SELECT period_id, entitlement_type, entitlement_id, status FROM subscription_reset_attempts`).Scan(&periodID, &entitlementType, &entitlementID, &status))
+	require.False(t, periodID.Valid)
+	require.Equal(t, "bonus_grant", entitlementType)
+	require.Equal(t, int64(10), entitlementID)
+	require.Equal(t, "failed", status)
+	var bonusUsed, periodUsed int
+	require.NoError(t, store.DB.QueryRow(`SELECT reset_used FROM subscription_reset_bonus_grants WHERE id = 10`).Scan(&bonusUsed))
+	require.NoError(t, store.DB.QueryRow(`SELECT reset_used FROM subscription_reset_periods WHERE id = 1`).Scan(&periodUsed))
+	require.Zero(t, bonusUsed)
+	require.Zero(t, periodUsed)
+}
+
+func TestResolveSubscriptionResetBonusAttemptReleasedRestoresOriginalGrant(t *testing.T) {
+	store := newResetPeriodTestStore(t)
+	now := time.Now().UTC().Truncate(time.Second)
+	insertBonusGrantFixture(t, store, 10, 100, 1, 7, 77, 1, 1, now.Add(-time.Hour), now.Add(20*24*time.Hour), "exhausted")
+	_, err := store.DB.Exec(`
+INSERT INTO subscription_reset_attempts (
+  request_id, period_id, entitlement_type, entitlement_id, upstream_user_id, upstream_subscription_id,
+  status, before_snapshot_json, response_status, response_reason, reserved_at, created_at, updated_at
+) VALUES ('34343434-3434-4434-8434-343434343434', NULL, 'bonus_grant', 10, 1, 77,
+  'uncertain', '{"windows":[]}', 202, 'result_unknown', ?, ?, ?)
+`, formatTime(now), formatTime(now), formatTime(now))
+	require.NoError(t, err)
+	svc := New(&config.RuntimeConfig{}, store, nil, nil)
+
+	attempt, err := svc.ResolveSubscriptionResetAttempt(context.Background(), 1, 99, "released")
+	require.NoError(t, err)
+	require.Equal(t, "failed", attempt.Status)
+	require.Equal(t, "released", attempt.Resolution)
+	var resetUsed int
+	var grantStatus string
+	require.NoError(t, store.DB.QueryRow(`SELECT reset_used, status FROM subscription_reset_bonus_grants WHERE id = 10`).Scan(&resetUsed, &grantStatus))
+	require.Zero(t, resetUsed)
+	require.Equal(t, "active", grantStatus)
+}
+
+func TestReconcileRevokedBonusMarksGrantRevoked(t *testing.T) {
+	store := newResetPeriodTestStore(t)
+	now := time.Now().UTC().Truncate(time.Second)
+	insertBonusGrantFixture(t, store, 10, 100, 1, 7, 77, 2, 0, now.Add(-time.Hour), now.Add(20*24*time.Hour), "active")
+	revokedAt := now
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/admin/subscriptions/77" {
+			writeRedeemTestEnvelope(w, sub2api.Subscription{ID: 77, UserID: 1, GroupID: 7, Status: "revoked", RevokedAt: &revokedAt, ExpiresAt: now.Add(20 * 24 * time.Hour)})
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	t.Cleanup(server.Close)
+	svc := New(&config.RuntimeConfig{}, store, sub2api.NewClient(server.URL, "admin-key"), nil)
+
+	require.NoError(t, svc.ReconcileSubscriptionResetBonusGrants(context.Background()))
+	var status string
+	require.NoError(t, store.DB.QueryRow(`SELECT status FROM subscription_reset_bonus_grants WHERE id = 10`).Scan(&status))
+	require.Equal(t, "revoked", status)
+}
+
+func TestReleaseRevokedBonusDoesNotReactivateGrant(t *testing.T) {
+	store := newResetPeriodTestStore(t)
+	now := time.Now().UTC().Truncate(time.Second)
+	insertBonusGrantFixture(t, store, 10, 100, 1, 7, 77, 2, 1, now.Add(-time.Hour), now.Add(20*24*time.Hour), "revoked")
+	_, err := store.DB.Exec(`
+INSERT INTO subscription_reset_attempts (
+  request_id, entitlement_type, entitlement_id, upstream_user_id, upstream_subscription_id,
+  status, before_snapshot_json, response_status, response_reason, reserved_at, created_at, updated_at
+) VALUES ('45454545-4545-4545-8545-454545454545', 'bonus_grant', 10, 1, 77,
+  'uncertain', '{"windows":[]}', 202, 'result_unknown', ?, ?, ?)
+`, formatTime(now), formatTime(now), formatTime(now))
+	require.NoError(t, err)
+	svc := New(&config.RuntimeConfig{}, store, nil, nil)
+
+	_, err = svc.ResolveSubscriptionResetAttempt(context.Background(), 1, 99, "released")
+	require.NoError(t, err)
+	var resetUsed int
+	var status string
+	require.NoError(t, store.DB.QueryRow(`SELECT reset_used, status FROM subscription_reset_bonus_grants WHERE id = 10`).Scan(&resetUsed, &status))
+	require.Zero(t, resetUsed)
+	require.Equal(t, "revoked", status)
 }
 
 func TestResetQuotaUnknownResultKeepsReservationAndCanBeConfirmedByReconcile(t *testing.T) {
@@ -651,4 +800,16 @@ func newResetTransactionTestService(t *testing.T, store *db.Store, now time.Time
 	}))
 	t.Cleanup(server.Close)
 	return New(&config.RuntimeConfig{}, store, sub2api.NewClient(server.URL, "admin-key"), nil)
+}
+
+func insertBonusGrantFixture(t *testing.T, store *db.Store, id, detailID, userID, groupID, subscriptionID int64, resetLimit, resetUsed int, startsAt, expiresAt time.Time, status string) {
+	t.Helper()
+	_, err := store.DB.Exec(`
+INSERT INTO subscription_reset_bonus_grants (
+  id, batch_id, batch_detail_id, upstream_user_id, sub2api_group_id, upstream_subscription_id,
+  reset_limit, reset_used, starts_at, expires_at, status, subscription_snapshot_json,
+  created_at, updated_at
+) VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, '{}', ?, ?)
+`, id, detailID, userID, groupID, subscriptionID, resetLimit, resetUsed, formatTime(startsAt), formatTime(expiresAt), status, formatTime(startsAt), formatTime(startsAt))
+	require.NoError(t, err)
 }

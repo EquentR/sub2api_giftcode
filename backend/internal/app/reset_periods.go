@@ -91,9 +91,10 @@ func (s *Service) ReconcileSubscriptionResetPeriods(ctx context.Context) error {
 	if err := s.requireUpstreamClient(); err != nil {
 		return errors.Join(repairErr, err)
 	}
+	bonusErr := s.ReconcileSubscriptionResetBonusGrants(ctx)
 	periods, err := s.listSubscriptionResetPeriods(ctx)
 	if err != nil {
-		return errors.Join(repairErr, err)
+		return errors.Join(repairErr, bonusErr, err)
 	}
 
 	byGroup := make(map[subscriptionResetBoundaryKey][]*models.SubscriptionResetPeriod)
@@ -123,7 +124,7 @@ func (s *Service) ReconcileSubscriptionResetPeriods(ctx context.Context) error {
 		}
 	}
 	metadataErr := s.setSyncState(ctx, subscriptionResetLastReconciliationAtKey, formatTime(now), now)
-	return errors.Join(repairErr, reconcileErr, metadataErr)
+	return errors.Join(repairErr, bonusErr, reconcileErr, metadataErr)
 }
 
 func (s *Service) RunSubscriptionResetLoop(ctx context.Context, interval time.Duration) {
@@ -163,9 +164,10 @@ func (s *Service) WakeSubscriptionResetReconcile() {
 func (s *Service) markStaleResetReservationsUncertain(ctx context.Context, now time.Time) error {
 	cutoff := now.Add(-staleResetReservationAge)
 	rows, err := s.db().QueryContext(ctx, `
-SELECT a.id, a.upstream_user_id, p.sub2api_group_id
+SELECT a.id, a.upstream_user_id, COALESCE(p.sub2api_group_id, grant.sub2api_group_id)
 FROM subscription_reset_attempts a
-JOIN subscription_reset_periods p ON p.id = a.period_id
+LEFT JOIN subscription_reset_periods p ON a.entitlement_type = 'base_period' AND p.id = a.entitlement_id
+LEFT JOIN subscription_reset_bonus_grants grant ON a.entitlement_type = 'bonus_grant' AND grant.id = a.entitlement_id
 WHERE a.status = 'reserved' AND a.reserved_at < ?
 ORDER BY a.id
 `, formatTime(cutoff))

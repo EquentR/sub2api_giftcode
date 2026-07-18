@@ -195,6 +195,50 @@ func (s *Service) ProcessSubscriptionResetBonusBatches(ctx context.Context) erro
 	return nil
 }
 
+func (s *Service) ReconcileSubscriptionResetBonusGrants(ctx context.Context) error {
+	if err := s.requireUpstreamClient(); err != nil {
+		return err
+	}
+	rows, err := s.db().QueryContext(ctx, `SELECT DISTINCT upstream_subscription_id FROM subscription_reset_bonus_grants WHERE status IN ('active', 'exhausted') ORDER BY upstream_subscription_id`)
+	if err != nil {
+		return err
+	}
+	var subscriptionIDs []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		subscriptionIDs = append(subscriptionIDs, id)
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	now := s.now()
+	var reconcileErr error
+	for _, subscriptionID := range subscriptionIDs {
+		subscription, loadErr := s.upstream.GetSubscription(ctx, subscriptionID)
+		if loadErr != nil {
+			var operationErr *sub2api.OperationError
+			if errors.As(loadErr, &operationErr) && operationErr.Status == 404 {
+				_, updateErr := s.db().ExecContext(ctx, `UPDATE subscription_reset_bonus_grants SET status = 'revoked', last_synced_at = ?, last_error = '', updated_at = ? WHERE upstream_subscription_id = ? AND status IN ('active', 'exhausted')`, formatTime(now), formatTime(now), subscriptionID)
+				reconcileErr = errors.Join(reconcileErr, updateErr)
+				continue
+			}
+			reconcileErr = errors.Join(reconcileErr, loadErr)
+			continue
+		}
+		if subscription.RevokedAt != nil || !strings.EqualFold(strings.TrimSpace(subscription.Status), "active") {
+			_, err = s.db().ExecContext(ctx, `UPDATE subscription_reset_bonus_grants SET status = 'revoked', last_synced_at = ?, last_error = '', updated_at = ? WHERE upstream_subscription_id = ? AND status IN ('active', 'exhausted')`, formatTime(now), formatTime(now), subscriptionID)
+		} else {
+			_, err = s.db().ExecContext(ctx, `UPDATE subscription_reset_bonus_grants SET status = CASE WHEN expires_at <= ? OR ? <= ? THEN 'expired' WHEN reset_used >= reset_limit THEN 'exhausted' ELSE 'active' END, last_synced_at = ?, last_error = '', updated_at = ? WHERE upstream_subscription_id = ? AND status IN ('active', 'exhausted')`, formatTime(now), formatTime(subscription.ExpiresAt), formatTime(now), formatTime(now), formatTime(now), subscriptionID)
+		}
+		reconcileErr = errors.Join(reconcileErr, err)
+	}
+	return reconcileErr
+}
+
 func (s *Service) processSubscriptionResetBonusBatch(ctx context.Context, batchID int64) error {
 	batch, err := s.GetSubscriptionResetBonusBatch(ctx, batchID)
 	if err != nil {
@@ -666,6 +710,39 @@ func scanSubscriptionResetBonusBatchDetail(scanner interface{ Scan(...any) error
 		return nil, err
 	}
 	if out.SubscriptionExpiresAt, err = parseNonNullTime(expiresAt); err != nil {
+		return nil, err
+	}
+	if out.CreatedAt, err = parseNonNullTime(createdAt); err != nil {
+		return nil, err
+	}
+	if out.UpdatedAt, err = parseNonNullTime(updatedAt); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (s *Service) getSubscriptionResetBonusGrantByID(ctx context.Context, id int64) (*models.SubscriptionResetBonusGrant, error) {
+	var out models.SubscriptionResetBonusGrant
+	var startsAt, expiresAt, createdAt, updatedAt string
+	var lastSyncedAt sql.NullString
+	err := s.db().QueryRowContext(ctx, `
+SELECT id, batch_id, batch_detail_id, upstream_user_id, sub2api_group_id, upstream_subscription_id,
+       reset_limit, reset_used, starts_at, expires_at, status, subscription_snapshot_json,
+       last_synced_at, last_error, created_at, updated_at
+FROM subscription_reset_bonus_grants WHERE id = ?
+`, id).Scan(&out.ID, &out.BatchID, &out.BatchDetailID, &out.UpstreamUserID, &out.Sub2APIGroupID,
+		&out.UpstreamSubscriptionID, &out.ResetLimit, &out.ResetUsed, &startsAt, &expiresAt,
+		&out.Status, &out.SubscriptionSnapshotJSON, &lastSyncedAt, &out.LastError, &createdAt, &updatedAt)
+	if err != nil {
+		return nil, err
+	}
+	if out.StartsAt, err = parseNonNullTime(startsAt); err != nil {
+		return nil, err
+	}
+	if out.ExpiresAt, err = parseNonNullTime(expiresAt); err != nil {
+		return nil, err
+	}
+	if out.LastSyncedAt, err = scanMaybeTime(lastSyncedAt); err != nil {
 		return nil, err
 	}
 	if out.CreatedAt, err = parseNonNullTime(createdAt); err != nil {
