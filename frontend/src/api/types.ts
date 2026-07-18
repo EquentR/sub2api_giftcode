@@ -144,9 +144,16 @@ export interface OpenAIAccount {
   updated_at?: string
 }
 
-export interface UserSummary extends UserProfile {
+export interface UserSummary {
+  upstream_user_id: number
+  email: string
+  username: string
+  role: string
+  status: string
   profile_json: string
   last_seen_at: string
+  created_at: string
+  updated_at: string
   access_request_count: number
   redeem_request_count: number
   redeem_code_count: number

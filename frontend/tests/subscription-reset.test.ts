@@ -97,6 +97,16 @@ test('admin bonus page previews scoped grants and resolves extension events', ()
   assert.match(source, /释放延期/)
 })
 
+test('admin bonus user options bind the upstream user id returned by the API', () => {
+  const viewSource = readSource('../src/views/AdminResetBonusView.vue')
+  const typeSource = readSource('../src/api/types.ts')
+  assert.match(typeSource, /interface UserSummary[^{]*\{[\s\S]*?upstream_user_id:\s*number/)
+  assert.doesNotMatch(typeSource, /interface UserSummary extends UserProfile/)
+  assert.match(viewSource, /:key="user\.upstream_user_id"/)
+  assert.match(viewSource, /:value="user\.upstream_user_id"/)
+  assert.doesNotMatch(viewSource, /user\.id/)
+})
+
 test('extension event labels use backend status and resolution independently', () => {
   assert.equal(extensionEventStatusLabel('succeeded', 'applied'), '已应用')
   assert.equal(extensionEventStatusLabel('failed', 'released'), '已释放')

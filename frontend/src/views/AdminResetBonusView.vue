@@ -28,9 +28,9 @@
           >
             <el-option
               v-for="user in users"
-              :key="user.id"
-              :label="`${user.username || user.email || `用户 ${user.id}`} · ${user.email || `ID ${user.id}`}`"
-              :value="user.id"
+              :key="user.upstream_user_id"
+              :label="`${user.username || user.email || `用户 ${user.upstream_user_id}`} · ${user.email || `ID ${user.upstream_user_id}`}`"
+              :value="user.upstream_user_id"
             />
           </el-select>
         </el-form-item>
