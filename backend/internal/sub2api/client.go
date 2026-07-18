@@ -440,6 +440,61 @@ func (c *Client) ListActiveUserSubscriptions(ctx context.Context, userID int64) 
 	return out, nil
 }
 
+func (c *Client) ListAllActiveSubscriptions(ctx context.Context) ([]Subscription, error) {
+	const pageSize = 100
+	page := 1
+	out := make([]Subscription, 0)
+	seenIDs := make(map[int64]struct{})
+	var expectedTotal int64 = -1
+	var expectedPages int
+	for {
+		var pageData paginatedEnvelope[Subscription]
+		path := fmt.Sprintf("/api/v1/admin/subscriptions?status=active&page=%d&page_size=%d", page, pageSize)
+		if err := c.getJSONWithHeaders(ctx, path, map[string]string{"x-api-key": c.AdminAPIKey}, &pageData); err != nil {
+			return nil, c.operationError(OperationErrorAuthoritativeRead, "list all active subscriptions", err)
+		}
+		if pageData.Items == nil || pageData.Page != page || pageData.PageSize <= 0 || pageData.Total < 0 || pageData.Pages < 0 {
+			return nil, c.operationError(OperationErrorAuthoritativeRead, "list all active subscriptions", fmt.Errorf("unverifiable subscriptions page"))
+		}
+		if pageData.Total == 0 {
+			if page != 1 || len(pageData.Items) != 0 || pageData.Pages > 1 {
+				return nil, c.operationError(OperationErrorAuthoritativeRead, "list all active subscriptions", fmt.Errorf("inconsistent empty subscriptions page"))
+			}
+			return out, nil
+		}
+		calculatedPages := int((pageData.Total + int64(pageData.PageSize) - 1) / int64(pageData.PageSize))
+		if pageData.Pages != calculatedPages || pageData.Page > pageData.Pages || len(pageData.Items) == 0 || len(pageData.Items) > pageData.PageSize {
+			return nil, c.operationError(OperationErrorAuthoritativeRead, "list all active subscriptions", fmt.Errorf("inconsistent subscriptions pagination"))
+		}
+		if expectedTotal < 0 {
+			expectedTotal = pageData.Total
+			expectedPages = pageData.Pages
+		} else if pageData.Total != expectedTotal || pageData.Pages != expectedPages {
+			return nil, c.operationError(OperationErrorAuthoritativeRead, "list all active subscriptions", fmt.Errorf("subscriptions pagination changed during read"))
+		}
+		for _, subscription := range pageData.Items {
+			if subscription.ID <= 0 {
+				return nil, c.operationError(OperationErrorAuthoritativeRead, "list all active subscriptions", fmt.Errorf("invalid subscription ID in page"))
+			}
+			if _, exists := seenIDs[subscription.ID]; exists {
+				return nil, c.operationError(OperationErrorAuthoritativeRead, "list all active subscriptions", fmt.Errorf("duplicate subscription in pages"))
+			}
+			seenIDs[subscription.ID] = struct{}{}
+			out = append(out, subscription)
+		}
+		if int64(len(out)) > expectedTotal {
+			return nil, c.operationError(OperationErrorAuthoritativeRead, "list all active subscriptions", fmt.Errorf("subscriptions page exceeded total"))
+		}
+		if page == expectedPages {
+			if int64(len(out)) != expectedTotal {
+				return nil, c.operationError(OperationErrorAuthoritativeRead, "list all active subscriptions", fmt.Errorf("incomplete subscriptions result"))
+			}
+			return out, nil
+		}
+		page++
+	}
+}
+
 func (c *Client) GetSubscription(ctx context.Context, subscriptionID int64) (*Subscription, error) {
 	if subscriptionID <= 0 {
 		return nil, fmt.Errorf("subscription ID must be positive")

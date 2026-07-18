@@ -465,6 +465,94 @@ func TestClientListsSubscriptionPagesAndParsesUsage(t *testing.T) {
 	require.Equal(t, 10.0, *subscriptions[0].Group.DailyLimitUSD)
 }
 
+func TestClientListsAllActiveSubscriptionsAcrossVerifiedPages(t *testing.T) {
+	expiresAt := time.Date(2026, 8, 17, 0, 0, 0, 0, time.UTC)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, http.MethodGet, r.Method)
+		require.Equal(t, "/api/v1/admin/subscriptions", r.URL.Path)
+		require.Equal(t, "admin-key", r.Header.Get("x-api-key"))
+		require.Empty(t, r.Header.Get("Authorization"))
+		require.Empty(t, r.URL.Query().Get("user_id"))
+		require.Equal(t, "active", r.URL.Query().Get("status"))
+		require.Equal(t, "100", r.URL.Query().Get("page_size"))
+		switch r.URL.Query().Get("page") {
+		case "1":
+			items := make([]Subscription, 100)
+			for i := range items {
+				items[i] = Subscription{ID: int64(101 + i), UserID: 12, GroupID: 21, Status: "active", ExpiresAt: expiresAt}
+			}
+			items[0].User = &User{ID: 12, Username: "alice", Email: "alice@example.com"}
+			items[0].Group = &Group{ID: 21, Name: "Standard"}
+			writeEnvelope(w, paginatedEnvelope[Subscription]{
+				Items: items,
+				Total: 101, Page: 1, PageSize: 100, Pages: 2,
+			})
+		case "2":
+			writeEnvelope(w, paginatedEnvelope[Subscription]{
+				Items: []Subscription{{ID: 201, UserID: 13, GroupID: 22, Status: "active", ExpiresAt: expiresAt}},
+				Total: 101, Page: 2, PageSize: 100, Pages: 2,
+			})
+		default:
+			t.Fatalf("unexpected page %q", r.URL.Query().Get("page"))
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	subscriptions, err := NewClient(server.URL, "admin-key").ListAllActiveSubscriptions(context.Background())
+	require.NoError(t, err)
+	require.Len(t, subscriptions, 101)
+	require.Equal(t, "alice", subscriptions[0].User.Username)
+	require.Equal(t, "Standard", subscriptions[0].Group.Name)
+}
+
+func TestClientListAllActiveSubscriptionsAcceptsVerifiedEmptyPage(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeEnvelope(w, paginatedEnvelope[Subscription]{
+			Items: []Subscription{}, Total: 0, Page: 1, PageSize: 100, Pages: 0,
+		})
+	}))
+	t.Cleanup(server.Close)
+
+	items, err := NewClient(server.URL, "admin-key").ListAllActiveSubscriptions(context.Background())
+	require.NoError(t, err)
+	require.Empty(t, items)
+}
+
+func TestClientListAllActiveSubscriptionsRejectsUnverifiablePage(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeEnvelope(w, paginatedEnvelope[Subscription]{
+			Items: []Subscription{{ID: 101}}, Total: 1, Page: 0, PageSize: 100, Pages: 1,
+		})
+	}))
+	t.Cleanup(server.Close)
+
+	_, err := NewClient(server.URL, "admin-key").ListAllActiveSubscriptions(context.Background())
+	require.ErrorIs(t, err, ErrAuthoritativeReadFailed)
+}
+
+func TestClientListAllActiveSubscriptionsRejectsDuplicatePages(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		page := 1
+		if r.URL.Query().Get("page") == "2" {
+			page = 2
+		}
+		writeEnvelope(w, paginatedEnvelope[Subscription]{
+			Items: []Subscription{{ID: 101, UserID: 12, GroupID: 21, Status: "active"}},
+			Total: 2, Page: page, PageSize: 1, Pages: 2,
+		})
+	}))
+	t.Cleanup(server.Close)
+
+	_, err := NewClient(server.URL, "admin-key").ListAllActiveSubscriptions(context.Background())
+	require.ErrorIs(t, err, ErrAuthoritativeReadFailed)
+}
+
+func TestClientListAllActiveSubscriptionsClassifiesNetworkFailure(t *testing.T) {
+	client := NewClient("http://127.0.0.1:1", "admin-key")
+	_, err := client.ListAllActiveSubscriptions(context.Background())
+	require.ErrorIs(t, err, ErrAuthoritativeReadFailed)
+}
+
 func TestClientGetsSubscriptionAndProgress(t *testing.T) {
 	windowStart := time.Date(2026, 7, 17, 0, 0, 0, 0, time.UTC)
 	resetsAt := windowStart.Add(24 * time.Hour)
