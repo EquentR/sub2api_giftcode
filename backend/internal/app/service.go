@@ -27,6 +27,8 @@ type Service struct {
 	concurrencyMu        sync.Mutex
 	resetMu              sync.Mutex
 	resetWake            chan struct{}
+	bonusWake            chan struct{}
+	nowFunc              func() time.Time
 	resetBoundaryLocksMu sync.Mutex
 	resetBoundaryLocks   map[subscriptionResetBoundaryKey]*subscriptionResetBoundaryLock
 }
@@ -70,11 +72,15 @@ func New(cfg *config.RuntimeConfig, store *db.Store, upstream *sub2api.Client, m
 		upstream:           upstream,
 		mailer:             mailer,
 		resetWake:          make(chan struct{}, 1),
+		bonusWake:          make(chan struct{}, 1),
 		resetBoundaryLocks: make(map[subscriptionResetBoundaryKey]*subscriptionResetBoundaryLock),
 	}
 }
 
 func (s *Service) now() time.Time {
+	if s != nil && s.nowFunc != nil {
+		return s.nowFunc().UTC().Truncate(time.Second)
+	}
 	if s != nil && s.store != nil {
 		return s.store.NowUTC()
 	}

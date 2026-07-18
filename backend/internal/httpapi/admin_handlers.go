@@ -211,3 +211,67 @@ func (h *Handlers) ListCompensationBatchDetails(c *gin.Context) {
 	}
 	writeSuccess(c, items)
 }
+
+func (h *Handlers) PreviewSubscriptionResetBonusBatch(c *gin.Context) {
+	sessionUser, ok := getSessionUser(c)
+	if !ok || sessionUser == nil {
+		writeError(c, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	var req SubscriptionResetBonusPreviewRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		writeError(c, http.StatusBadRequest, err.Error())
+		return
+	}
+	preview, err := h.service.PreviewSubscriptionResetBonus(c.Request.Context(), sessionUser, app.SubscriptionResetBonusPreviewInput{
+		TargetScope: req.TargetScope, SelectedUserIDs: req.SelectedUserIDs, GroupIDs: req.GroupIDs,
+		ResetCount: req.ResetCount, Note: req.Note,
+	})
+	if err != nil {
+		writeServiceError(c, err)
+		return
+	}
+	writeSuccess(c, preview)
+}
+
+func (h *Handlers) CreateSubscriptionResetBonusBatch(c *gin.Context) {
+	sessionUser, ok := getSessionUser(c)
+	if !ok || sessionUser == nil {
+		writeError(c, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	var req SubscriptionResetBonusCreateRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		writeError(c, http.StatusBadRequest, err.Error())
+		return
+	}
+	batch, err := h.service.CreateSubscriptionResetBonusBatch(c.Request.Context(), sessionUser, req.PreviewToken)
+	if err != nil {
+		writeServiceError(c, err)
+		return
+	}
+	c.JSON(http.StatusAccepted, Response{Code: 0, Message: "success", Data: batch})
+}
+
+func (h *Handlers) ListSubscriptionResetBonusBatches(c *gin.Context) {
+	items, err := h.service.ListSubscriptionResetBonusBatches(c.Request.Context())
+	if err != nil {
+		writeServiceError(c, err)
+		return
+	}
+	writeSuccess(c, items)
+}
+
+func (h *Handlers) ListSubscriptionResetBonusBatchDetails(c *gin.Context) {
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil || id <= 0 {
+		writeError(c, http.StatusBadRequest, "invalid id")
+		return
+	}
+	items, err := h.service.ListSubscriptionResetBonusBatchDetails(c.Request.Context(), id)
+	if err != nil {
+		writeServiceError(c, err)
+		return
+	}
+	writeSuccess(c, items)
+}

@@ -211,6 +211,68 @@ type SubscriptionResetBackfillRun struct {
 	UpdatedAt        time.Time  `json:"updated_at"`
 }
 
+type SubscriptionResetBonusBatch struct {
+	ID                     int64      `json:"id"`
+	BatchKey               string     `json:"batch_key"`
+	TargetScope            string     `json:"target_scope"`
+	SelectedUserIDs        []int64    `json:"selected_user_ids"`
+	GroupIDs               []int64    `json:"group_ids"`
+	ResetCount             int        `json:"reset_count"`
+	Note                   string     `json:"note"`
+	PreviewDigest          string     `json:"preview_digest"`
+	Status                 string     `json:"status"`
+	TotalCandidates        int        `json:"total_candidates"`
+	ProcessedCandidates    int        `json:"processed_candidates"`
+	GrantedSubscriptions   int        `json:"granted_subscriptions"`
+	SkippedSubscriptions   int        `json:"skipped_subscriptions"`
+	FailedSubscriptions    int        `json:"failed_subscriptions"`
+	OperatorUpstreamUserID int64      `json:"operator_upstream_user_id"`
+	OperatorEmail          string     `json:"operator_email"`
+	OperatorUsername       string     `json:"operator_username"`
+	ErrorMessage           string     `json:"error_message"`
+	CreatedAt              time.Time  `json:"created_at"`
+	StartedAt              *time.Time `json:"started_at,omitempty"`
+	CompletedAt            *time.Time `json:"completed_at,omitempty"`
+	UpdatedAt              time.Time  `json:"updated_at"`
+}
+
+type SubscriptionResetBonusBatchDetail struct {
+	ID                       int64     `json:"id"`
+	BatchID                  int64     `json:"batch_id"`
+	UpstreamUserID           int64     `json:"upstream_user_id"`
+	Sub2APIGroupID           int64     `json:"sub2api_group_id"`
+	UpstreamSubscriptionID   int64     `json:"upstream_subscription_id"`
+	SubscriptionStartsAt     time.Time `json:"subscription_starts_at"`
+	SubscriptionExpiresAt    time.Time `json:"subscription_expires_at"`
+	SubscriptionStatus       string    `json:"subscription_status"`
+	SubscriptionSnapshotJSON string    `json:"subscription_snapshot_json"`
+	Status                   string    `json:"status"`
+	Reason                   string    `json:"reason"`
+	ErrorMessage             string    `json:"error_message"`
+	BonusGrantID             *int64    `json:"bonus_grant_id,omitempty"`
+	CreatedAt                time.Time `json:"created_at"`
+	UpdatedAt                time.Time `json:"updated_at"`
+}
+
+type SubscriptionResetBonusGrant struct {
+	ID                       int64      `json:"id"`
+	BatchID                  int64      `json:"batch_id"`
+	BatchDetailID            int64      `json:"batch_detail_id"`
+	UpstreamUserID           int64      `json:"upstream_user_id"`
+	Sub2APIGroupID           int64      `json:"sub2api_group_id"`
+	UpstreamSubscriptionID   int64      `json:"upstream_subscription_id"`
+	ResetLimit               int        `json:"reset_limit"`
+	ResetUsed                int        `json:"reset_used"`
+	StartsAt                 time.Time  `json:"starts_at"`
+	ExpiresAt                time.Time  `json:"expires_at"`
+	Status                   string     `json:"status"`
+	SubscriptionSnapshotJSON string     `json:"subscription_snapshot_json"`
+	LastSyncedAt             *time.Time `json:"last_synced_at,omitempty"`
+	LastError                string     `json:"last_error"`
+	CreatedAt                time.Time  `json:"created_at"`
+	UpdatedAt                time.Time  `json:"updated_at"`
+}
+
 type BalanceTier struct {
 	ID                   int64     `json:"id"`
 	Amount               float64   `json:"amount"`

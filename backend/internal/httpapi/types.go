@@ -100,6 +100,18 @@ type CompensationBatchCreateRequest struct {
 	Note             string   `json:"note"`
 }
 
+type SubscriptionResetBonusPreviewRequest struct {
+	TargetScope     string  `json:"target_scope" binding:"required,oneof=all selected"`
+	SelectedUserIDs []int64 `json:"selected_user_ids"`
+	GroupIDs        []int64 `json:"group_ids" binding:"required,min=1"`
+	ResetCount      int     `json:"reset_count" binding:"required,gt=0"`
+	Note            string  `json:"note"`
+}
+
+type SubscriptionResetBonusCreateRequest struct {
+	PreviewToken string `json:"preview_token" binding:"required"`
+}
+
 type LoginResponse struct {
 	User             any    `json:"user"`
 	IsAdmin          bool   `json:"is_admin"`
