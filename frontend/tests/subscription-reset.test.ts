@@ -40,6 +40,7 @@ test('subscription management uses UUID idempotency and blocks duplicate submiss
   assert.match(source, /if \(pendingSubscriptionIds\.value\.has\(subscription\.id\)\) return/)
   assert.match(source, /watch\(\s*\(\) => props\.active/)
   assert.match(source, /class="unlimited-placeholder"/)
+  assert.match(source, /\.subscription-card\s*\{[\s\S]*?min-height:\s*520px/)
 })
 
 test('tier editor disables reset count for balance and unlimited tiers', () => {

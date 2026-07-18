@@ -252,7 +252,7 @@ onBeforeUnmount(stopPolling)
 
 .subscription-card {
   min-width: 0;
-  min-height: 410px;
+  min-height: 520px;
   display: grid;
   grid-template-rows: auto auto 1fr auto;
   gap: 14px;
@@ -405,7 +405,7 @@ onBeforeUnmount(stopPolling)
   }
 
   .subscription-card {
-    min-height: 410px;
+    min-height: 520px;
     padding: 15px;
   }
 }
