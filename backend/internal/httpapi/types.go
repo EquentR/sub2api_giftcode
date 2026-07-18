@@ -50,6 +50,14 @@ type RedeemRequestCreateRequest struct {
 	Note   string `json:"note"`
 }
 
+type SubscriptionResetRequest struct {
+	RequestID string `json:"request_id" binding:"required"`
+}
+
+type SubscriptionResetResolutionRequest struct {
+	Resolution string `json:"resolution" binding:"required,oneof=consumed released"`
+}
+
 type SiteBrandingRequest struct {
 	Title             string `json:"title" binding:"required"`
 	Subtitle          string `json:"subtitle"`
@@ -136,7 +144,7 @@ func statusForError(err error) (int, string, string) {
 	case errors.Is(err, app.ErrNotFound):
 		return http.StatusNotFound, "not found", ""
 	case errors.Is(err, app.ErrConflict):
-		return http.StatusConflict, "conflict", ""
+		return http.StatusConflict, "conflict", app.StableReason(err)
 	case errors.Is(err, app.ErrBadRequest):
 		var concurrencyConflict *app.TierConcurrencyConflictError
 		if errors.As(err, &concurrencyConflict) {
@@ -150,6 +158,9 @@ func statusForError(err error) (int, string, string) {
 	}
 	if errors.Is(err, app.ErrUpstreamFailed) {
 		return http.StatusBadGateway, "upstream failed", ""
+	}
+	if errors.Is(err, app.ErrUpstreamUnavailable) {
+		return http.StatusBadGateway, "upstream unavailable", app.StableReason(err)
 	}
 	return http.StatusInternalServerError, "internal server error", ""
 }

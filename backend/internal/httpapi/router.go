@@ -42,6 +42,8 @@ func NewRouter(cfg *config.RuntimeConfig, service *app.Service) *gin.Engine {
 			user.GET("/redeem-codes", handlers.ListMyRedeemCodes)
 			user.GET("/redeem-tiers", handlers.ListEnabledRedeemTiers)
 			user.GET("/redeem-balance-tiers", handlers.ListBalanceTiers)
+			user.GET("/subscriptions", handlers.ListSubscriptions)
+			user.POST("/subscriptions/:id/reset-quota", handlers.ResetSubscriptionQuota)
 		}
 
 		admin := api.Group("/admin", authRequired(cfg, service), adminRequired())
@@ -68,6 +70,9 @@ func NewRouter(cfg *config.RuntimeConfig, service *app.Service) *gin.Engine {
 			admin.POST("/compensation-batches", handlers.CreateCompensationBatch)
 			admin.GET("/compensation-batches", handlers.ListCompensationBatches)
 			admin.GET("/compensation-batches/:id/details", handlers.ListCompensationBatchDetails)
+			admin.GET("/subscription-reset-attempts", handlers.ListPendingSubscriptionResetAttempts)
+			admin.POST("/subscription-reset-attempts/:id/resolve", handlers.ResolveSubscriptionResetAttempt)
+			admin.GET("/subscription-reset-backfills", handlers.ListSubscriptionResetBackfillRuns)
 		}
 	}
 

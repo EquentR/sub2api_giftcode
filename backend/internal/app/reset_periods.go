@@ -117,7 +117,10 @@ func (s *Service) ReconcileSubscriptionResetPeriods(ctx context.Context) error {
 			confirmedGroups[key] = true
 			subscription := matchingResetSubscription(subscriptions, key.UserID, key.GroupID)
 			activeGroups[key] = subscription != nil
-			return s.reconcileSubscriptionResetPeriodGroup(ctx, groupPeriods, subscription, now)
+			if err := s.reconcileSubscriptionResetPeriodGroup(ctx, groupPeriods, subscription, now); err != nil {
+				return err
+			}
+			return s.reconcileUncertainSubscriptionResetAttempts(ctx, subscription, now)
 		}()
 		if groupErr != nil {
 			reconcileErr = errors.Join(reconcileErr, fmt.Errorf("user %d group %d: %w", key.UserID, key.GroupID, groupErr))
@@ -167,12 +170,46 @@ func (s *Service) WakeSubscriptionResetReconcile() {
 
 func (s *Service) markStaleResetReservationsUncertain(ctx context.Context, now time.Time) error {
 	cutoff := now.Add(-staleResetReservationAge)
-	_, err := s.db().ExecContext(ctx, `
+	rows, err := s.db().QueryContext(ctx, `
+SELECT a.id, a.upstream_user_id, p.sub2api_group_id
+FROM subscription_reset_attempts a
+JOIN subscription_reset_periods p ON p.id = a.period_id
+WHERE a.status = 'reserved' AND a.reserved_at < ?
+ORDER BY a.id
+`, formatTime(cutoff))
+	if err != nil {
+		return err
+	}
+	type staleReservation struct{ id, userID, groupID int64 }
+	var stale []staleReservation
+	for rows.Next() {
+		var item staleReservation
+		if err := rows.Scan(&item.id, &item.userID, &item.groupID); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		stale = append(stale, item)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return err
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	for _, item := range stale {
+		unlock := s.lockSubscriptionResetBoundary(item.userID, item.groupID)
+		_, updateErr := s.db().ExecContext(ctx, `
 UPDATE subscription_reset_attempts
 SET status = 'uncertain', response_reason = 'reservation_timeout', completed_at = ?, updated_at = ?
-WHERE status = 'reserved' AND reserved_at < ?
-`, formatTime(now), formatTime(now), formatTime(cutoff))
-	return err
+WHERE id = ? AND status = 'reserved' AND reserved_at < ?
+`, formatTime(now), formatTime(now), item.id, formatTime(cutoff))
+		unlock()
+		if updateErr != nil {
+			return updateErr
+		}
+	}
+	return nil
 }
 
 func (s *Service) repairMissingSubscriptionResetPeriods(ctx context.Context, now time.Time) error {
