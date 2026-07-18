@@ -205,6 +205,23 @@ export interface SubscriptionResetPeriodSummary {
   reset_remaining: number
 }
 
+export interface SubscriptionResetBonusSummary {
+  id: number
+  batch_id: number
+  note: string
+  reset_limit: number
+  reset_used: number
+  reset_remaining: number
+  expires_at: string
+  status: string
+}
+
+export interface SubscriptionResetEntitlementSummary {
+  type: 'base_period' | 'bonus_grant'
+  id: number
+  expires_at: string
+}
+
 export interface SubscriptionCard {
   id: number
   group_id: number
@@ -216,6 +233,13 @@ export interface SubscriptionCard {
   quota_windows: SubscriptionQuotaWindow[]
   current_period?: SubscriptionResetPeriodSummary | null
   next_period?: SubscriptionResetPeriodSummary | null
+  base_reset_limit: number
+  base_reset_used: number
+  base_reset_remaining: number
+  bonus_reset_remaining: number
+  total_reset_remaining: number
+  bonus_grants: SubscriptionResetBonusSummary[]
+  next_entitlement?: SubscriptionResetEntitlementSummary | null
   unlimited: boolean
   external_period: boolean
   zero_reset_limit: boolean
@@ -227,7 +251,9 @@ export interface SubscriptionCard {
 export interface SubscriptionResetAttempt {
   id: number
   request_id: string
-  period_id: number
+  period_id?: number | null
+  entitlement_type: 'base_period' | 'bonus_grant'
+  entitlement_id: number
   upstream_user_id: number
   upstream_subscription_id: number
   reset_daily: boolean
@@ -250,11 +276,120 @@ export interface SubscriptionResetAttempt {
   username?: string
   email?: string
   period?: SubscriptionResetPeriodDetail
+  bonus_grant?: SubscriptionResetBonusGrant
   before_snapshot?: SubscriptionQuotaWindow[]
   after_snapshot?: SubscriptionQuotaWindow[]
   current_snapshot?: SubscriptionQuotaWindow[]
   snapshot_error?: string
   current_snapshot_error?: string
+}
+
+export interface SubscriptionResetBonusGrant {
+  id: number
+  batch_id: number
+  batch_detail_id: number
+  upstream_user_id: number
+  sub2api_group_id: number
+  upstream_subscription_id: number
+  reset_limit: number
+  reset_used: number
+  starts_at: string
+  expires_at: string
+  status: string
+  subscription_snapshot_json: string
+  last_synced_at?: string | null
+  last_error: string
+  created_at: string
+  updated_at: string
+}
+
+export interface SubscriptionResetBonusPreviewInput {
+  target_scope: 'all' | 'selected'
+  selected_user_ids: number[]
+  group_ids: number[]
+  reset_count: number
+  note: string
+}
+
+export interface SubscriptionResetBonusPreview {
+  user_count: number
+  subscription_count: number
+  group_counts: Record<string, number>
+  missing_user_ids: number[]
+  skipped_counts: Record<string, number>
+  preview_digest: string
+  preview_token: string
+  expires_at: string
+}
+
+export interface SubscriptionResetBonusBatch {
+  id: number
+  batch_key: string
+  target_scope: 'all' | 'selected'
+  selected_user_ids: number[]
+  group_ids: number[]
+  reset_count: number
+  note: string
+  preview_digest: string
+  status: string
+  total_candidates: number
+  processed_candidates: number
+  granted_subscriptions: number
+  skipped_subscriptions: number
+  failed_subscriptions: number
+  operator_upstream_user_id: number
+  operator_email: string
+  operator_username: string
+  error_message: string
+  created_at: string
+  started_at?: string | null
+  completed_at?: string | null
+  updated_at: string
+}
+
+export interface SubscriptionResetBonusBatchDetail {
+  id: number
+  batch_id: number
+  upstream_user_id: number
+  sub2api_group_id: number
+  upstream_subscription_id: number
+  subscription_starts_at: string
+  subscription_expires_at: string
+  subscription_status: string
+  subscription_snapshot_json: string
+  status: string
+  reason: string
+  error_message: string
+  bonus_grant_id?: number | null
+  created_at: string
+  updated_at: string
+}
+
+export interface SubscriptionExtensionEvent {
+  id: number
+  event_key: string
+  source_type: string
+  compensation_batch_id?: number | null
+  compensation_detail_id?: number | null
+  upstream_user_id: number
+  sub2api_group_id: number
+  upstream_subscription_id: number
+  extension_days: number
+  before_expires_at?: string | null
+  after_expires_at?: string | null
+  status: 'reserved' | 'succeeded' | 'failed' | 'uncertain'
+  resolution: '' | 'applied' | 'released'
+  applied_base_periods: number
+  applied_bonus_grants: number
+  inferred_from_legacy: boolean
+  migration_version: number
+  error_message: string
+  reserved_at: string
+  completed_at?: string | null
+  confirmed_at?: string | null
+  confirmed_by_user_id?: number | null
+  created_at: string
+  updated_at: string
 }
 
 export interface SubscriptionResetPeriodDetail extends SubscriptionResetPeriodSummary {

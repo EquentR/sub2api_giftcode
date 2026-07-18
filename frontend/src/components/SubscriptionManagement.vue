@@ -54,16 +54,36 @@
           </div>
         </div>
 
-        <footer class="subscription-card-footer">
+        <footer class="subscription-card-footer" :class="{ unlimited: subscription.unlimited }">
           <template v-if="!subscription.unlimited">
             <div class="reset-period-summary">
               <div>
-                <span>本周期可用</span>
-                <strong>{{ subscription.current_period?.reset_remaining ?? 0 }} / {{ subscription.current_period?.reset_limit ?? 0 }}</strong>
+                <span>基础次数</span>
+                <strong>{{ subscription.base_reset_remaining }} / {{ subscription.base_reset_limit }}</strong>
               </div>
-              <div v-if="subscription.next_period">
-                <span>下一周期</span>
-                <strong>{{ subscription.next_period.reset_limit }} 次 · {{ formatDate(subscription.next_period.period_start) }}</strong>
+              <div>
+                <span>活动赠送</span>
+                <strong>{{ subscription.bonus_reset_remaining }} 次</strong>
+              </div>
+              <div>
+                <span>合计可用</span>
+                <strong>{{ subscription.total_reset_remaining }} 次</strong>
+              </div>
+            </div>
+            <div class="entitlement-zone">
+              <div v-if="subscription.bonus_grants.length" class="bonus-grants" aria-label="活动赠送明细">
+                <div v-for="grant in subscription.bonus_grants" :key="grant.id" class="bonus-grant-row">
+                  <span>{{ grant.note || `赠送批次 #${grant.batch_id}` }}</span>
+                  <strong>{{ grant.reset_remaining }} / {{ grant.reset_limit }} 次</strong>
+                  <small>{{ formatDate(grant.expires_at) }} 到期</small>
+                </div>
+              </div>
+              <div v-else class="bonus-empty">暂无活动赠送次数</div>
+              <div v-if="subscription.next_entitlement" class="next-entitlement">
+                下次消耗：{{ entitlementTypeLabel(subscription.next_entitlement.type) }}，有效至 {{ formatDateTime(subscription.next_entitlement.expires_at) }}
+              </div>
+              <div v-else-if="subscription.next_period" class="next-entitlement">
+                下一基础周期：{{ subscription.next_period.reset_limit }} 次，{{ formatDate(subscription.next_period.period_start) }} 开始
               </div>
             </div>
             <el-tooltip :content="subscription.can_reset ? '重置所有已配置额度窗口' : resetReasonLabel(subscription.disabled_reason)" placement="top">
@@ -131,7 +151,7 @@ async function confirmReset(subscription: SubscriptionCard) {
   const targets = resetTargetSummaries(subscription.quota_windows)
   try {
     await ElMessageBox.confirm(
-      `将重置 ${targets.join('、')}，并消耗 1 次重置机会。`,
+      `将重置 ${targets.join('、')}，并消耗 1 次${entitlementConfirmation(subscription)}。`,
       '确认重置额度',
       {
         confirmButtonText: '确认重置',
@@ -194,6 +214,16 @@ function formatDate(value?: string | null) {
 function formatDateTime(value?: string | null) {
   if (!value) return '-'
   return new Date(value).toLocaleString()
+}
+
+function entitlementTypeLabel(type: 'base_period' | 'bonus_grant') {
+  return type === 'bonus_grant' ? '活动赠送次数' : '基础周期次数'
+}
+
+function entitlementConfirmation(subscription: SubscriptionCard) {
+  const entitlement = subscription.next_entitlement
+  if (!entitlement) return '重置机会'
+  return `${entitlementTypeLabel(entitlement.type)}（有效至 ${formatDateTime(entitlement.expires_at)}）`
 }
 
 watch(
@@ -342,12 +372,16 @@ onBeforeUnmount(stopPolling)
 }
 
 .subscription-card-footer {
-  min-height: 92px;
+  min-height: 222px;
   display: grid;
   align-content: end;
   gap: 10px;
   padding-top: 12px;
   border-top: 1px solid #edf2f7;
+}
+
+.subscription-card-footer.unlimited {
+  border-top-color: transparent;
 }
 
 .reset-period-summary > div {
@@ -362,6 +396,48 @@ onBeforeUnmount(stopPolling)
 
 .reset-period-summary strong {
   font-size: 15px;
+}
+
+.entitlement-zone {
+  min-height: 96px;
+  display: grid;
+  align-content: start;
+  gap: 7px;
+}
+
+.bonus-grants {
+  max-height: 70px;
+  overflow-y: auto;
+  display: grid;
+  gap: 5px;
+  padding-right: 4px;
+}
+
+.bonus-grant-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 2px 8px;
+  font-size: 12px;
+}
+
+.bonus-grant-row span {
+  overflow-wrap: anywhere;
+}
+
+.bonus-grant-row small {
+  grid-column: 1 / -1;
+  color: #64748b;
+}
+
+.bonus-empty,
+.next-entitlement {
+  color: #64748b;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.next-entitlement {
+  color: #315f8a;
 }
 
 .reset-button-wrap,

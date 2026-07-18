@@ -57,7 +57,7 @@
         <div class="monitor-heading">
           <div>
             <div style="font-weight: 700">订阅额度重置</div>
-            <div class="muted">查看旧订阅补发进度，并处置无法自动确认的重置操作。</div>
+            <div class="muted">处置无法自动确认的额度重置操作。</div>
           </div>
           <el-button size="small" :icon="Refresh" :loading="resetAdminLoading" @click="loadResetAdminState">刷新</el-button>
         </div>
@@ -96,38 +96,6 @@
                     <el-button size="small" type="danger" text @click="openResetResolution(row, 'released')">释放次数</el-button>
                   </template>
                   <span v-else class="muted">等待上游完成</span>
-                </template>
-              </el-table-column>
-            </el-table>
-          </div>
-
-          <div class="reset-admin-section">
-            <div class="reset-section-title">
-              <strong>历史订阅补发</strong>
-              <el-tag effect="plain">{{ resetBackfills.length }}</el-tag>
-            </div>
-            <el-table :data="resetBackfills" size="small" max-height="300" empty-text="暂无补发任务">
-              <el-table-column prop="tier_id" label="档位" width="72" />
-              <el-table-column label="进度" min-width="190">
-                <template #default="{ row }">
-                  <div class="backfill-progress">
-                    <el-progress :percentage="backfillPercentage(row)" :stroke-width="7" />
-                    <small>已处理 {{ row.processed_records }} / {{ row.total_records }}，已补发 {{ row.granted_records }}</small>
-                  </div>
-                </template>
-              </el-table-column>
-              <el-table-column label="状态" width="90">
-                <template #default="{ row }">
-                  <el-tag :type="backfillTagType(row.status)" size="small">{{ backfillStatusLabel(row.status) }}</el-tag>
-                </template>
-              </el-table-column>
-              <el-table-column prop="retry_count" label="重试" width="72" />
-              <el-table-column prop="error_message" label="最近错误" min-width="150" show-overflow-tooltip>
-                <template #default="{ row }">
-                  <div class="backfill-error">
-                    <span>{{ row.error_message || '-' }}</span>
-                    <small v-if="row.last_error_at">{{ formatTime(row.last_error_at) }}</small>
-                  </div>
                 </template>
               </el-table-column>
             </el-table>
@@ -220,8 +188,14 @@
             {{ selectedResetAttempt.upstream_user_id }} / {{ selectedResetAttempt.upstream_subscription_id }}
           </el-descriptions-item>
           <el-descriptions-item label="目标窗口">{{ resetAttemptTargets(selectedResetAttempt) }}</el-descriptions-item>
-          <el-descriptions-item label="权益周期">
-            {{ formatTime(selectedResetAttempt.period?.period_start) }} 至 {{ formatTime(selectedResetAttempt.period?.period_end) }}
+          <el-descriptions-item label="权益来源">
+            <template v-if="selectedResetAttempt.entitlement_type === 'bonus_grant'">
+              活动赠送 #{{ selectedResetAttempt.bonus_grant?.batch_id ?? selectedResetAttempt.entitlement_id }}，
+              有效至 {{ formatTime(selectedResetAttempt.bonus_grant?.expires_at) }}
+            </template>
+            <template v-else>
+              基础周期，{{ formatTime(selectedResetAttempt.period?.period_start) }} 至 {{ formatTime(selectedResetAttempt.period?.period_end) }}
+            </template>
           </el-descriptions-item>
         </el-descriptions>
         <div class="snapshot-grid">
@@ -277,9 +251,9 @@ import { Check, List, Refresh, Upload } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import AppLayout from '@/components/AppLayout.vue'
 import TierEditor from '@/components/TierEditor.vue'
-import { listRedeemTiers, listSubscriptionConcurrencyDetails, listSubscriptionConcurrencyStatus, listSubscriptionGroups, listSubscriptionResetAttempts, listSubscriptionResetBackfills, resolveSubscriptionResetAttempt, syncRedeemCodes, updateRedeemTiers, stats as fetchStats } from '@/api/admin'
+import { listRedeemTiers, listSubscriptionConcurrencyDetails, listSubscriptionConcurrencyStatus, listSubscriptionGroups, listSubscriptionResetAttempts, resolveSubscriptionResetAttempt, syncRedeemCodes, updateRedeemTiers, stats as fetchStats } from '@/api/admin'
 import { ApiError } from '@/api/http'
-import type { DashboardStats, RedeemTier, SubscriptionConcurrencyMonitorDetail, SubscriptionConcurrencyMonitorStatus, SubscriptionGroup, SubscriptionResetAttempt, SubscriptionResetBackfillRun } from '@/api/types'
+import type { DashboardStats, RedeemTier, SubscriptionConcurrencyMonitorDetail, SubscriptionConcurrencyMonitorStatus, SubscriptionGroup, SubscriptionResetAttempt } from '@/api/types'
 import { useBrandingStore } from '@/stores/branding'
 import { tierCodeType } from '@/utils/tiers'
 import { quotaKindLabel, resetReasonLabel } from '@/utils/subscriptions'
@@ -300,7 +274,6 @@ const groupsError = ref('')
 const resetAdminLoading = ref(false)
 const resetAdminError = ref('')
 const resetAttempts = ref<SubscriptionResetAttempt[]>([])
-const resetBackfills = ref<SubscriptionResetBackfillRun[]>([])
 const resetResolutionVisible = ref(false)
 const resetResolutionLoading = ref(false)
 const selectedResetAttempt = ref<SubscriptionResetAttempt | null>(null)
@@ -402,12 +375,7 @@ async function loadResetAdminState() {
   resetAdminLoading.value = true
   resetAdminError.value = ''
   try {
-    const [attempts, backfills] = await Promise.all([
-      listSubscriptionResetAttempts(),
-      listSubscriptionResetBackfills(),
-    ])
-    resetAttempts.value = attempts
-    resetBackfills.value = backfills
+    resetAttempts.value = await listSubscriptionResetAttempts()
   } catch (error: any) {
     resetAdminError.value = error?.message ?? '订阅重置管理状态加载失败'
   } finally {
@@ -447,22 +415,6 @@ function resetAttemptTargets(attempt: SubscriptionResetAttempt) {
 
 function formatUSD(value?: number | null) {
   return `$${Number(value || 0).toFixed(2)}`
-}
-
-function backfillPercentage(run: SubscriptionResetBackfillRun) {
-  if (run.total_records <= 0) return run.status === 'succeeded' ? 100 : 0
-  return Math.min(100, Math.round((run.processed_records / run.total_records) * 100))
-}
-
-function backfillStatusLabel(status: SubscriptionResetBackfillRun['status']) {
-  return { pending: '待执行', running: '执行中', succeeded: '已完成', failed: '失败' }[status]
-}
-
-function backfillTagType(status: SubscriptionResetBackfillRun['status']) {
-  if (status === 'succeeded') return 'success'
-  if (status === 'failed') return 'danger'
-  if (status === 'running') return 'warning'
-  return 'info'
 }
 
 function formatTime(value?: string | null) {
@@ -575,7 +527,7 @@ onMounted(loadAll)
 
 .reset-admin-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: minmax(0, 1fr);
   gap: 16px;
 }
 
@@ -592,16 +544,12 @@ onMounted(loadAll)
 }
 
 .reset-operation-target,
-.backfill-progress,
-.backfill-error,
 .resolution-copy {
   display: grid;
   gap: 4px;
 }
 
-.reset-operation-target small,
-.backfill-progress small,
-.backfill-error small {
+.reset-operation-target small {
   color: #64748b;
 }
 

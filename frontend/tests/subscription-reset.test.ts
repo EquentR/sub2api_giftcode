@@ -9,6 +9,7 @@ import {
   resetReasonLabel,
   resetTargetSummaries,
 } from '../src/utils/subscriptions.ts'
+import { extensionEventStatusLabel } from '../src/utils/subscription-extension-events.ts'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const readSource = (path: string) => readFileSync(resolve(__dirname, path), 'utf8')
@@ -48,6 +49,11 @@ test('subscription management uses UUID idempotency and blocks duplicate submiss
   assert.match(source, /class="unlimited-placeholder"/)
   assert.match(source, /\.subscription-card\s*\{[\s\S]*?min-height:\s*520px/)
   assert.match(source, /首次使用后开始计时/)
+  assert.match(source, /base_reset_remaining/)
+  assert.match(source, /bonus_reset_remaining/)
+  assert.match(source, /total_reset_remaining/)
+  assert.match(source, /bonus_grants/)
+  assert.match(source, /next_entitlement/)
 })
 
 test('tier editor disables reset count for balance and unlimited tiers', () => {
@@ -57,10 +63,11 @@ test('tier editor disables reset count for balance and unlimited tiers', () => {
   assert.match(source, /reset_count: 0/)
 })
 
-test('admin tier page exposes backfill state and explicit manual resolutions', () => {
+test('admin tier page keeps reset attempt resolutions and removes legacy backfill state', () => {
   const source = readSource('../src/views/AdminTiersView.vue')
   assert.match(source, /listSubscriptionResetAttempts/)
-  assert.match(source, /listSubscriptionResetBackfills/)
+  assert.doesNotMatch(source, /listSubscriptionResetBackfills/)
+  assert.doesNotMatch(source, /历史订阅补发/)
   assert.match(source, /确认已消耗/)
   assert.match(source, /释放次数/)
   assert.match(source, /resolveSubscriptionResetAttempt/)
@@ -69,9 +76,29 @@ test('admin tier page exposes backfill state and explicit manual resolutions', (
   assert.match(source, /before_snapshot/)
   assert.match(source, /current_snapshot/)
   assert.match(source, /current_snapshot_error/)
-  assert.match(source, /retry_count/)
-  assert.match(source, /last_error_at/)
   assert.match(source, /modal-class="reset-resolution-overlay"/)
   assert.match(source, /reset-resolution-overlay[\s\S]*?max-height:\s*90vh/)
   assert.match(source, /reset-resolution-overlay[\s\S]*?overflow-y:\s*auto/)
+})
+
+test('admin bonus page previews scoped grants and resolves extension events', () => {
+  const source = readSource('../src/views/AdminResetBonusView.vue')
+  assert.match(source, /target_scope/)
+  assert.match(source, /selected_user_ids/)
+  assert.match(source, /group_ids/)
+  assert.match(source, /reset_count/)
+  assert.match(source, /previewSubscriptionResetBonus/)
+  assert.match(source, /createSubscriptionResetBonusBatch/)
+  assert.match(source, /listSubscriptionResetBonusBatchDetails/)
+  assert.match(source, /listSubscriptionExtensionEvents/)
+  assert.match(source, /resolveSubscriptionExtensionEvent/)
+  assert.match(source, /确认已应用/)
+  assert.match(source, /释放延期/)
+})
+
+test('extension event labels use backend status and resolution independently', () => {
+  assert.equal(extensionEventStatusLabel('succeeded', 'applied'), '已应用')
+  assert.equal(extensionEventStatusLabel('failed', 'released'), '已释放')
+  assert.equal(extensionEventStatusLabel('uncertain', ''), '待确认')
+  assert.equal(extensionEventStatusLabel('reserved', ''), '执行中')
 })

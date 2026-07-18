@@ -13,8 +13,12 @@ import type {
   SubscriptionGroup,
   SubscriptionConcurrencyMonitorDetail,
   SubscriptionConcurrencyMonitorStatus,
+  SubscriptionExtensionEvent,
   SubscriptionResetAttempt,
-  SubscriptionResetBackfillRun,
+  SubscriptionResetBonusBatch,
+  SubscriptionResetBonusBatchDetail,
+  SubscriptionResetBonusPreview,
+  SubscriptionResetBonusPreviewInput,
   UserSummary,
 } from './types'
 
@@ -46,17 +50,55 @@ export function listSubscriptionResetAttempts() {
   }).then(asArray)
 }
 
-export function listSubscriptionResetBackfills() {
-  return request<SubscriptionResetBackfillRun[] | null>({
-    method: 'GET',
-    url: '/admin/subscription-reset-backfills',
-  }).then(asArray)
-}
-
 export function resolveSubscriptionResetAttempt(id: number, resolution: 'consumed' | 'released') {
   return request<SubscriptionResetAttempt>({
     method: 'POST',
     url: `/admin/subscription-reset-attempts/${id}/resolve`,
+    data: { resolution },
+  })
+}
+
+export function previewSubscriptionResetBonus(payload: SubscriptionResetBonusPreviewInput) {
+  return request<SubscriptionResetBonusPreview>({
+    method: 'POST',
+    url: '/admin/subscription-reset-bonus-batches/preview',
+    data: payload,
+  })
+}
+
+export function createSubscriptionResetBonusBatch(payload: { preview_token: string }) {
+  return request<SubscriptionResetBonusBatch>({
+    method: 'POST',
+    url: '/admin/subscription-reset-bonus-batches',
+    data: payload,
+  })
+}
+
+export function listSubscriptionResetBonusBatches() {
+  return request<SubscriptionResetBonusBatch[] | null>({
+    method: 'GET',
+    url: '/admin/subscription-reset-bonus-batches',
+  }).then(asArray)
+}
+
+export function listSubscriptionResetBonusBatchDetails(id: number) {
+  return request<SubscriptionResetBonusBatchDetail[] | null>({
+    method: 'GET',
+    url: `/admin/subscription-reset-bonus-batches/${id}/details`,
+  }).then(asArray)
+}
+
+export function listSubscriptionExtensionEvents() {
+  return request<SubscriptionExtensionEvent[] | null>({
+    method: 'GET',
+    url: '/admin/subscription-extension-events',
+  }).then(asArray)
+}
+
+export function resolveSubscriptionExtensionEvent(id: number, resolution: 'applied' | 'released') {
+  return request<SubscriptionExtensionEvent>({
+    method: 'POST',
+    url: `/admin/subscription-extension-events/${id}/resolve`,
     data: { resolution },
   })
 }
