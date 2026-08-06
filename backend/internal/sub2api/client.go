@@ -121,14 +121,22 @@ type ResetQuotaInput struct {
 }
 
 type Account struct {
-	ID          int64          `json:"id"`
-	Name        string         `json:"name"`
-	Platform    string         `json:"platform"`
-	Type        string         `json:"type"`
-	Status      string         `json:"status"`
-	Credentials map[string]any `json:"credentials"`
-	CreatedAt   time.Time      `json:"created_at"`
-	UpdatedAt   time.Time      `json:"updated_at"`
+	ID                      int64          `json:"id"`
+	Name                    string         `json:"name"`
+	Platform                string         `json:"platform"`
+	Type                    string         `json:"type"`
+	Status                  string         `json:"status"`
+	Credentials             map[string]any `json:"credentials"`
+	Extra                   map[string]any `json:"extra"`
+	Schedulable             bool           `json:"schedulable"`
+	RateLimitedAt           *time.Time     `json:"rate_limited_at"`
+	RateLimitResetAt        *time.Time     `json:"rate_limit_reset_at"`
+	OverloadUntil           *time.Time     `json:"overload_until"`
+	TempUnschedulableUntil  *time.Time     `json:"temp_unschedulable_until"`
+	TempUnschedulableReason string         `json:"temp_unschedulable_reason"`
+	LastUsedAt              *time.Time     `json:"last_used_at"`
+	CreatedAt               time.Time      `json:"created_at"`
+	UpdatedAt               time.Time      `json:"updated_at"`
 }
 
 func (a Account) UserAgent() string {
@@ -641,6 +649,53 @@ func (c *Client) UpdateOpenAIAccountUserAgent(ctx context.Context, accountID int
 		return nil, err
 	}
 	return &out, nil
+}
+
+func (c *Client) UpdateOpenAIAccountStatus(ctx context.Context, accountID int64, status string) (*Account, error) {
+	if accountID <= 0 {
+		return nil, fmt.Errorf("account ID must be positive")
+	}
+	var out Account
+	if err := c.putJSON(ctx, fmt.Sprintf("/api/v1/admin/accounts/%d", accountID), map[string]string{
+		"x-api-key": c.AdminAPIKey,
+	}, map[string]string{"status": status}, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *Client) SetOpenAIAccountSchedulable(ctx context.Context, accountID int64, schedulable bool) (*Account, error) {
+	if accountID <= 0 {
+		return nil, fmt.Errorf("account ID must be positive")
+	}
+	var out Account
+	if err := c.postJSON(ctx, fmt.Sprintf("/api/v1/admin/accounts/%d/schedulable", accountID), map[string]string{
+		"x-api-key": c.AdminAPIKey,
+	}, map[string]bool{"schedulable": schedulable}, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+type usageLogListItem struct {
+	CreatedAt time.Time `json:"created_at"`
+}
+
+func (c *Client) HasOpenAIUsageLogAfter(ctx context.Context, accountID int64, since time.Time) (bool, error) {
+	if accountID <= 0 {
+		return false, fmt.Errorf("account ID must be positive")
+	}
+	startDate := since.UTC().Format("2006-01-02")
+	endDate := time.Now().UTC().AddDate(0, 0, 1).Format("2006-01-02")
+	var out paginatedEnvelope[usageLogListItem]
+	path := fmt.Sprintf("/api/v1/admin/usage?account_id=%d&start_date=%s&end_date=%s&timezone=UTC&page=1&page_size=1&sort_by=created_at&sort_order=desc&exact_total=false", accountID, startDate, endDate)
+	if err := c.getJSONWithHeaders(ctx, path, map[string]string{"x-api-key": c.AdminAPIKey}, &out); err != nil {
+		return false, err
+	}
+	if len(out.Items) == 0 {
+		return false, nil
+	}
+	return out.Items[0].CreatedAt.After(since), nil
 }
 
 func cloneCredentials(credentials map[string]any) map[string]any {

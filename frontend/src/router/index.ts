@@ -8,6 +8,7 @@ import RechargeRequestView from '@/views/RechargeRequestView.vue'
 import AdminDashboardView from '@/views/AdminDashboardView.vue'
 import AdminAccessQueueView from '@/views/AdminAccessQueueView.vue'
 import AdminOpenAIAccountsView from '@/views/AdminOpenAIAccountsView.vue'
+import AdminAuxSchedulerView from '@/views/AdminAuxSchedulerView.vue'
 import AdminTiersView from '@/views/AdminTiersView.vue'
 import AdminCompensationView from '@/views/AdminCompensationView.vue'
 import AdminResetBonusView from '@/views/AdminResetBonusView.vue'
@@ -25,6 +26,7 @@ const router = createRouter({
     { path: '/admin', name: 'admin-dashboard', component: AdminDashboardView, meta: { requiresAuth: true, requiresAdmin: true } },
     { path: '/admin/access', name: 'admin-access', component: AdminAccessQueueView, meta: { requiresAuth: true, requiresAdmin: true } },
     { path: '/admin/openai-accounts', name: 'admin-openai-accounts', component: AdminOpenAIAccountsView, meta: { requiresAuth: true, requiresAdmin: true } },
+    { path: '/admin/aux-scheduler', name: 'admin-aux-scheduler', component: AdminAuxSchedulerView, meta: { requiresAuth: true, requiresAdmin: true } },
     { path: '/admin/tiers', name: 'admin-tiers', component: AdminTiersView, meta: { requiresAuth: true, requiresAdmin: true } },
     { path: '/admin/compensation', name: 'admin-compensation', component: AdminCompensationView, meta: { requiresAuth: true, requiresAdmin: true } },
     { path: '/admin/reset-bonuses', name: 'admin-reset-bonuses', component: AdminResetBonusView, meta: { requiresAuth: true, requiresAdmin: true } },

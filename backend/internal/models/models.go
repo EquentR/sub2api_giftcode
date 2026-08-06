@@ -312,6 +312,20 @@ type BalanceTier struct {
 	UpdatedAt            time.Time `json:"updated_at"`
 }
 
+type AuxSchedulerRule struct {
+	ID                int64      `json:"id"`
+	Name              string     `json:"name"`
+	Enabled           bool       `json:"enabled"`
+	PrimaryAccountIDs []int64    `json:"primary_account_ids"`
+	BackupAccountIDs  []int64    `json:"backup_account_ids"`
+	State             string     `json:"state"`
+	ActivatedAt       *time.Time `json:"activated_at,omitempty"`
+	LastCheckedAt     *time.Time `json:"last_checked_at,omitempty"`
+	LastError         string     `json:"last_error"`
+	CreatedAt         time.Time  `json:"created_at"`
+	UpdatedAt         time.Time  `json:"updated_at"`
+}
+
 type SyncState struct {
 	Key       string    `json:"key"`
 	Value     string    `json:"value"`

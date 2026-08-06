@@ -62,5 +62,6 @@ session:
 	require.Equal(t, "./public", cfg.App.StaticDir)
 	require.Equal(t, "sqlite", cfg.Database.Driver)
 	require.Equal(t, 300, cfg.Sync.IntervalSeconds)
+	require.Equal(t, 30, cfg.AuxScheduler.IntervalSeconds)
 	require.Equal(t, 72, cfg.Mail.ApprovalTTLHour)
 }

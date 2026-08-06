@@ -15,6 +15,7 @@ Sub2API站长无真实充值渠道时的审批发码平台。
 - 用户可查看自己的申请和兑换码
 - 站长可查看申请队列、用户、兑换码和统计数据
 - 支持可编辑的充值档位
+- 辅助调度器：OpenAI 主力账号临时不可调度或模型冷却时自动启用备用账号
 - SQLite 本地保存申请、会话、档位和兑换码同步状态
 - 后端可直接托管前端构建产物，统一通过一个端口访问
 
@@ -137,6 +138,7 @@ Docker 镜像会先构建 `frontend/dist`，再复制到最终镜像的 `/app/pu
 - `sub2api.admin_api_key`：用于生成兑换码的管理 Key
 - `mail.approval_ttl_hours`：邮件审批链接有效期，默认 72 小时
 - `sync.interval_seconds`：兑换码同步间隔，默认 300 秒
+- `aux_scheduler.interval_seconds`：辅助调度器扫描间隔，默认 30 秒
 
 ## Sub2API 嵌入模式
 

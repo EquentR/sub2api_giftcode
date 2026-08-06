@@ -34,6 +34,10 @@
           <el-icon><Connection /></el-icon>
           <span>OpenAI UA</span>
         </el-menu-item>
+        <el-menu-item v-if="session.isAdmin" index="/admin/aux-scheduler">
+          <el-icon><Timer /></el-icon>
+          <span>辅助调度</span>
+        </el-menu-item>
         <el-menu-item v-if="session.isAdmin" index="/admin/tiers">
           <el-icon><Setting /></el-icon>
           <span>档位设置</span>
@@ -81,7 +85,7 @@
 <script setup lang="ts">
 import { computed, nextTick, watchEffect } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { Connection, DataLine, Expand, Fold, House, Operation, Present, Setting, SwitchButton, Wallet } from '@element-plus/icons-vue'
+import { Connection, DataLine, Expand, Fold, House, Operation, Present, Setting, SwitchButton, Timer, Wallet } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import { useBrandingStore } from '@/stores/branding'
 import { useLayoutStore } from '@/stores/layout'

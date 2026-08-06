@@ -25,6 +25,7 @@ type Service struct {
 	upstream             *sub2api.Client
 	mailer               *mail.Mailer
 	concurrencyMu        sync.Mutex
+	auxMu                sync.Mutex
 	resetMu              sync.Mutex
 	resetWake            chan struct{}
 	bonusWake            chan struct{}

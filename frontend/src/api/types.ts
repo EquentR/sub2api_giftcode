@@ -144,6 +144,30 @@ export interface OpenAIAccount {
   updated_at?: string
 }
 
+export interface AuxSchedulerAccountInfo {
+  id: number
+  name: string
+  type: string
+  status: string
+}
+
+export interface AuxSchedulerRule {
+  id: number
+  name: string
+  enabled: boolean
+  primary_account_ids: number[]
+  backup_account_ids: number[]
+  state: 'idle' | 'backup_active'
+  activated_at?: string | null
+  last_checked_at?: string | null
+  last_error: string
+  created_at: string
+  updated_at: string
+  primary_accounts: AuxSchedulerAccountInfo[]
+  backup_accounts: AuxSchedulerAccountInfo[]
+  upstream_error?: string
+}
+
 export interface UserSummary {
   upstream_user_id: number
   email: string

@@ -3,6 +3,7 @@ import { asArray } from './arrays'
 import type {
   AccessApprovalResponse,
   AccessRequest,
+  AuxSchedulerRule,
   BalanceTier,
   CompensationBatch,
   CompensationBatchDetail,
@@ -216,6 +217,53 @@ export function updateOpenAIAccountUserAgent(id: number, userAgent: string) {
     method: 'PUT',
     url: `/admin/openai-accounts/${id}/user-agent`,
     data: { user_agent: userAgent },
+  })
+}
+
+export function listAuxSchedulerRules() {
+  return request<AuxSchedulerRule[] | null>({
+    method: 'GET',
+    url: '/admin/aux-scheduler/rules',
+  }).then(asArray)
+}
+
+export function createAuxSchedulerRule(payload: {
+  name: string
+  enabled: boolean
+  primary_account_ids: number[]
+  backup_account_ids: number[]
+}) {
+  return request<AuxSchedulerRule>({
+    method: 'POST',
+    url: '/admin/aux-scheduler/rules',
+    data: payload,
+  })
+}
+
+export function updateAuxSchedulerRule(id: number, payload: {
+  name: string
+  enabled: boolean
+  primary_account_ids: number[]
+  backup_account_ids: number[]
+}) {
+  return request<AuxSchedulerRule>({
+    method: 'PUT',
+    url: `/admin/aux-scheduler/rules/${id}`,
+    data: payload,
+  })
+}
+
+export function deleteAuxSchedulerRule(id: number) {
+  return request<{ deleted: boolean }>({
+    method: 'DELETE',
+    url: `/admin/aux-scheduler/rules/${id}`,
+  })
+}
+
+export function checkAuxSchedulerRule(id: number) {
+  return request<AuxSchedulerRule>({
+    method: 'POST',
+    url: `/admin/aux-scheduler/rules/${id}/check`,
   })
 }
 

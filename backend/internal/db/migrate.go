@@ -431,6 +431,23 @@ CREATE INDEX IF NOT EXISTS idx_compensation_batch_details_batch
 
 CREATE INDEX IF NOT EXISTS idx_compensation_batch_details_user
   ON compensation_batch_details(upstream_user_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS aux_scheduler_rules (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL,
+  enabled INTEGER NOT NULL DEFAULT 1,
+  primary_account_ids_json TEXT NOT NULL DEFAULT '[]',
+  backup_account_ids_json TEXT NOT NULL DEFAULT '[]',
+  state TEXT NOT NULL DEFAULT 'idle' CHECK (state IN ('idle', 'backup_active')),
+  activated_at TEXT NULL,
+  last_checked_at TEXT NULL,
+  last_error TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_aux_scheduler_rules_enabled
+  ON aux_scheduler_rules(enabled, id);
 `
 
 func (s *Store) Migrate(ctx context.Context) error {

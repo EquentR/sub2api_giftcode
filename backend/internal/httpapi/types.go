@@ -93,6 +93,13 @@ type OpenAIAccountUserAgentRequest struct {
 	UserAgent string `json:"user_agent"`
 }
 
+type AuxSchedulerRuleRequest struct {
+	Name              string  `json:"name" binding:"required"`
+	Enabled           bool    `json:"enabled"`
+	PrimaryAccountIDs []int64 `json:"primary_account_ids" binding:"required,min=1"`
+	BackupAccountIDs  []int64 `json:"backup_account_ids" binding:"required,min=1"`
+}
+
 type CompensationBatchCreateRequest struct {
 	SubscriptionDays int      `json:"subscription_days" binding:"required,gt=0"`
 	BalanceAmount    float64  `json:"balance_amount" binding:"required,gt=0"`

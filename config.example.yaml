@@ -21,3 +21,5 @@ session:
   cookie_secret: "change-me"
 sync:
   interval_seconds: 300
+aux_scheduler:
+  interval_seconds: 30

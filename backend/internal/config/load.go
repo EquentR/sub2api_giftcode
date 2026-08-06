@@ -62,6 +62,9 @@ func applyDefaults(cfg *Config) {
 	if cfg.Sync.IntervalSeconds <= 0 {
 		cfg.Sync.IntervalSeconds = 300
 	}
+	if cfg.AuxScheduler.IntervalSeconds <= 0 {
+		cfg.AuxScheduler.IntervalSeconds = 30
+	}
 	if cfg.Mail.SubjectPrefix == "" {
 		cfg.Mail.SubjectPrefix = "[sub2api-giftcode]"
 	}

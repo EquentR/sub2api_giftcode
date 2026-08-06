@@ -194,6 +194,43 @@ func TestClientListsOpenAIAccounts(t *testing.T) {
 	require.Equal(t, "fixed-upstream-ua", accounts[0].UserAgent())
 }
 
+func TestClientHasOpenAIUsageLogAfter(t *testing.T) {
+	since := time.Date(2026, 8, 5, 10, 0, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		name      string
+		createdAt time.Time
+		want      bool
+	}{
+		{name: "before since", createdAt: since.Add(-time.Minute), want: false},
+		{name: "after since", createdAt: since.Add(time.Minute), want: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				require.Equal(t, "/api/v1/admin/usage", r.URL.Path)
+				require.Equal(t, "7", r.URL.Query().Get("account_id"))
+				require.Equal(t, "2026-08-05", r.URL.Query().Get("start_date"))
+				require.Equal(t, "1", r.URL.Query().Get("page_size"))
+				require.Equal(t, "created_at", r.URL.Query().Get("sort_by"))
+				writeEnvelope(w, map[string]any{
+					"items": []map[string]any{
+						{"created_at": tc.createdAt.Format(time.RFC3339Nano)},
+					},
+					"total":     1,
+					"page":      1,
+					"page_size": 1,
+					"pages":     1,
+				})
+			}))
+			defer server.Close()
+
+			client := NewClient(server.URL, "admin-key")
+			hasLog, err := client.HasOpenAIUsageLogAfter(context.Background(), 7, since)
+			require.NoError(t, err)
+			require.Equal(t, tc.want, hasLog)
+		})
+	}
+}
+
 func TestClientUpdatesOpenAIAccountUserAgentPreservingReturnedCredentials(t *testing.T) {
 	var sawBody map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

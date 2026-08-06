@@ -38,6 +38,10 @@ type Config struct {
 	Sync struct {
 		IntervalSeconds int `yaml:"interval_seconds"`
 	} `yaml:"sync"`
+
+	AuxScheduler struct {
+		IntervalSeconds int `yaml:"interval_seconds"`
+	} `yaml:"aux_scheduler"`
 }
 
 type RuntimeConfig struct {
