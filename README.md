@@ -1,23 +1,44 @@
-# Sub2API Giftcode
+<h1 align="center">Sub2API Giftcode</h1>
 
-Sub2API站长无真实充值渠道时的审批发码平台。
+<p align="center">
+  <img alt="Go" src="https://img.shields.io/badge/Go-1.23%2B-00ADD8" />
+  <img alt="Gin" src="https://img.shields.io/badge/Gin-1.10-008ECF" />
+  <img alt="Vue 3" src="https://img.shields.io/badge/Vue%203-4FC08D?logo=vuedotjs&logoColor=white" />
+  <img alt="SQLite" src="https://img.shields.io/badge/SQLite-003B57?logo=sqlite&logoColor=white" />
+  <img alt="Docker" src="https://img.shields.io/badge/Docker-2496ED?logo=docker&logoColor=white" />
+  <img alt="GitHub Actions" src="https://img.shields.io/badge/GitHub%20Actions-2088FF?logo=githubactions&logoColor=white" />
+  <img alt="License" src="https://img.shields.io/badge/License-Apache%202.0-blue" />
+</p>
 
-这个项目用于给没有接入真实支付/充值渠道的 Sub2API 站点提供一套轻量的人工审批流程：用户提交充值/兑换申请，站长审核后自动向 Sub2API 生成余额兑换码，用户再领取兑换码完成充值。
+Sub2API 站长无真实充值渠道时的轻量人工审批平台，支持直充到账与兑换码发放。
 
-## 功能
+用户提交充值/兑换申请后，站长审批并选择交付方式：优先调用 Sub2API 管理接口直接为指定用户充值到账；直充失败时自动回退为生成余额兑换码，用户再领取兑换码完成充值。项目同时提供订阅配额管理、辅助调度、批量补偿、重置次数赠送等运营辅助功能。
+
+## 核心功能
 
 - 使用已有 Sub2API 用户账号登录
-- 用户提交充值发码申请
 - 支持 Sub2API 自定义菜单嵌入模式登录
-- 邮件发送审批链接给站长
-- 站长可通过邮件链接或后台审批申请
-- 审批通过后调用 Sub2API 管理接口生成余额兑换码
-- 用户可查看自己的申请和兑换码
+- 用户提交充值申请时可选择「直充到账（推荐）」或「下发兑换码」
+- 直充通过 Sub2API `create-and-redeem` 接口直接到账，使用稳定幂等键，重复审批不会重复充值
+- 直充失败时自动回退为兑换码发放，并记录失败原因供审计
+- 邮件发送审批链接给站长，站长可通过邮件链接或后台审批
+- 审批通过后按申请单选择的方式直充或生成兑换码
+- 用户可查看自己的申请、直充结果和兑换码
 - 站长可查看申请队列、用户、兑换码和统计数据
-- 支持可编辑的充值档位
-- 辅助调度器：OpenAI 主力账号临时不可调度或模型冷却时自动启用备用账号
+- 支持可编辑的充值档位：余额/订阅、原价/实付、订阅限额和并发数
+- 订阅管理：查看有效订阅、剩余天数、日/周/月配额使用进度，并支持手动重置配额
 - SQLite 本地保存申请、会话、档位和兑换码同步状态
 - 后端可直接托管前端构建产物，统一通过一个端口访问
+
+## 辅助功能
+
+- OpenAI 账号管理：批量查看、设置或清空上游账号的 User-Agent
+- 辅助调度器：主力 OpenAI 账号临时不可调度或模型冷却时，自动启用备用账号，恢复后自动收回
+- 订阅并发监控：订阅档位配置并发数，自动同步并执行用户并发上限，异常时保留并重试
+- 订阅重置权益：跟踪基础周期和活动赠送的重置次数，按最早到期优先扣减，过期/撤销自动失效
+- 重置次数赠送：面向全部或指定用户、一个或多个有限额订阅分组批量赠送次数，支持预览、幂等执行和完整审计
+- 批量补偿：面向全量用户按有效订阅补天数、无有效订阅补余额，支持排除邮箱域名和查看逐用户结果
+- 站点品牌设置：标题、副标题和邮件主题前缀可在管理端直接配置
 
 ## 目录
 
