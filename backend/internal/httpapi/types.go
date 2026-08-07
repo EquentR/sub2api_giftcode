@@ -173,7 +173,7 @@ func statusForError(err error) (int, string, string) {
 		if errors.As(err, &concurrencyConflict) {
 			return http.StatusBadRequest, "bad request", concurrencyConflict.Error()
 		}
-		return http.StatusBadRequest, "bad request", ""
+		return http.StatusBadRequest, err.Error(), ""
 	}
 	var apiErr *sub2api.APIError
 	if errors.As(err, &apiErr) {

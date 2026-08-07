@@ -651,19 +651,6 @@ func (c *Client) UpdateOpenAIAccountUserAgent(ctx context.Context, accountID int
 	return &out, nil
 }
 
-func (c *Client) UpdateOpenAIAccountStatus(ctx context.Context, accountID int64, status string) (*Account, error) {
-	if accountID <= 0 {
-		return nil, fmt.Errorf("account ID must be positive")
-	}
-	var out Account
-	if err := c.putJSON(ctx, fmt.Sprintf("/api/v1/admin/accounts/%d", accountID), map[string]string{
-		"x-api-key": c.AdminAPIKey,
-	}, map[string]string{"status": status}, &out); err != nil {
-		return nil, err
-	}
-	return &out, nil
-}
-
 func (c *Client) SetOpenAIAccountSchedulable(ctx context.Context, accountID int64, schedulable bool) (*Account, error) {
 	if accountID <= 0 {
 		return nil, fmt.Errorf("account ID must be positive")

@@ -28,7 +28,6 @@ func TestAuxSchedulerActivatesBackupsThenDeactivatesAfterSuccess(t *testing.T) {
 	var primary sub2api.Account
 	var backup sub2api.Account
 	var usageCreatedAt time.Time
-	var statusUpdates []string
 	var schedulableUpdates []bool
 
 	primary = sub2api.Account{
@@ -41,7 +40,7 @@ func TestAuxSchedulerActivatesBackupsThenDeactivatesAfterSuccess(t *testing.T) {
 			},
 		},
 	}
-	backup = sub2api.Account{ID: 2, Name: "backup", Platform: "openai", Type: "apikey", Status: "inactive", Schedulable: false}
+	backup = sub2api.Account{ID: 2, Name: "backup", Platform: "openai", Type: "apikey", Status: "active", Schedulable: false}
 
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
@@ -58,14 +57,6 @@ func TestAuxSchedulerActivatesBackupsThenDeactivatesAfterSuccess(t *testing.T) {
 		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/admin/accounts/1":
 			writeAuxTestEnvelope(w, primary)
 		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/admin/accounts/2":
-			writeAuxTestEnvelope(w, backup)
-		case r.Method == http.MethodPut && r.URL.Path == "/api/v1/admin/accounts/2":
-			var body struct {
-				Status string `json:"status"`
-			}
-			require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
-			backup.Status = body.Status
-			statusUpdates = append(statusUpdates, body.Status)
 			writeAuxTestEnvelope(w, backup)
 		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/admin/accounts/2/schedulable":
 			var body struct {
@@ -100,7 +91,6 @@ func TestAuxSchedulerActivatesBackupsThenDeactivatesAfterSuccess(t *testing.T) {
 	rule := currentAuxSchedulerRule(t, svc, ruleID)
 	require.Equal(t, AuxSchedulerStateBackupActive, rule.State)
 	require.NotNil(t, rule.ActivatedAt)
-	require.Equal(t, []string{"active"}, statusUpdates)
 	require.Equal(t, []bool{true}, schedulableUpdates)
 
 	// Cooldown cleared but no successful call yet: backups must stay active.
@@ -127,7 +117,6 @@ func TestAuxSchedulerActivatesBackupsThenDeactivatesAfterSuccess(t *testing.T) {
 	require.NoError(t, svc.ReconcileAuxScheduler(ctx))
 	rule = currentAuxSchedulerRule(t, svc, ruleID)
 	require.Equal(t, AuxSchedulerStateIdle, rule.State)
-	require.Equal(t, "inactive", statusUpdates[len(statusUpdates)-1])
 	require.False(t, schedulableUpdates[len(schedulableUpdates)-1])
 }
 
@@ -139,13 +128,12 @@ func TestAuxSchedulerUsesLastUsedAtAsSuccessSignal(t *testing.T) {
 	require.NoError(t, store.Migrate(ctx))
 
 	var mu sync.Mutex
-	var statusUpdates []string
 	var schedulableUpdates []bool
 	primary := sub2api.Account{
 		ID: 1, Name: "primary", Platform: "openai", Type: "oauth", Status: "active",
 		TempUnschedulableUntil: timePtr(time.Now().UTC().Add(5 * time.Minute)),
 	}
-	backup := sub2api.Account{ID: 2, Name: "backup", Platform: "openai", Type: "apikey", Status: "inactive", Schedulable: false}
+	backup := sub2api.Account{ID: 2, Name: "backup", Platform: "openai", Type: "apikey", Status: "active", Schedulable: false}
 
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
@@ -162,14 +150,6 @@ func TestAuxSchedulerUsesLastUsedAtAsSuccessSignal(t *testing.T) {
 		case r.URL.Path == "/api/v1/admin/accounts/1":
 			writeAuxTestEnvelope(w, primary)
 		case r.URL.Path == "/api/v1/admin/accounts/2" && r.Method == http.MethodGet:
-			writeAuxTestEnvelope(w, backup)
-		case r.URL.Path == "/api/v1/admin/accounts/2" && r.Method == http.MethodPut:
-			var body struct {
-				Status string `json:"status"`
-			}
-			require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
-			backup.Status = body.Status
-			statusUpdates = append(statusUpdates, body.Status)
 			writeAuxTestEnvelope(w, backup)
 		case r.URL.Path == "/api/v1/admin/accounts/2/schedulable":
 			var body struct {
@@ -201,7 +181,6 @@ func TestAuxSchedulerUsesLastUsedAtAsSuccessSignal(t *testing.T) {
 	require.NoError(t, svc.ReconcileAuxScheduler(ctx))
 	rule = currentAuxSchedulerRule(t, svc, ruleID)
 	require.Equal(t, AuxSchedulerStateIdle, rule.State)
-	require.Equal(t, "inactive", statusUpdates[len(statusUpdates)-1])
 	require.False(t, schedulableUpdates[len(schedulableUpdates)-1])
 }
 
@@ -252,6 +231,253 @@ func TestAuxSchedulerCreateUpdateDelete(t *testing.T) {
 	for _, item := range remaining {
 		require.NotEqual(t, view.ID, item.ID)
 	}
+}
+
+func TestAuxSchedulerCreateRejectsInactiveBackupAccount(t *testing.T) {
+	ctx := context.Background()
+	store, err := db.Open("sqlite", ":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+	require.NoError(t, store.Migrate(ctx))
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeAuxTestEnvelope(w, map[string]any{
+			"items": []sub2api.Account{
+				{ID: 1, Name: "primary", Platform: "openai", Type: "oauth", Status: "active"},
+				{ID: 2, Name: "backup", Platform: "openai", Type: "apikey", Status: "inactive"},
+			},
+			"total":     2,
+			"page":      1,
+			"page_size": 200,
+			"pages":     1,
+		})
+	}))
+	defer upstream.Close()
+
+	svc := New(&config.RuntimeConfig{}, store, sub2api.NewClient(upstream.URL, "admin-key"), nil)
+	_, err = svc.CreateAuxSchedulerRule(ctx, AuxSchedulerRuleInput{
+		Name: "bad backup", Enabled: true, PrimaryAccountIDs: []int64{1}, BackupAccountIDs: []int64{2},
+	})
+	require.ErrorIs(t, err, ErrBadRequest)
+	require.ErrorContains(t, err, "备用账号 backup (#2) 当前状态必须为 active 或 error")
+}
+
+func TestAuxSchedulerBackupAccountUniqueAcrossRules(t *testing.T) {
+	ctx := context.Background()
+	store, err := db.Open("sqlite", ":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+	require.NoError(t, store.Migrate(ctx))
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeAuxTestEnvelope(w, map[string]any{
+			"items": []sub2api.Account{
+				{ID: 1, Name: "primary-a", Platform: "openai", Type: "oauth", Status: "active"},
+				{ID: 2, Name: "backup-a", Platform: "openai", Type: "apikey", Status: "active"},
+				{ID: 3, Name: "primary-b", Platform: "openai", Type: "oauth", Status: "active"},
+				{ID: 4, Name: "backup-b", Platform: "openai", Type: "apikey", Status: "active"},
+			},
+			"total":     4,
+			"page":      1,
+			"page_size": 200,
+			"pages":     1,
+		})
+	}))
+	defer upstream.Close()
+
+	svc := New(&config.RuntimeConfig{}, store, sub2api.NewClient(upstream.URL, "admin-key"), nil)
+	ruleA, err := svc.CreateAuxSchedulerRule(ctx, AuxSchedulerRuleInput{
+		Name: "A", Enabled: true, PrimaryAccountIDs: []int64{1}, BackupAccountIDs: []int64{2},
+	})
+	require.NoError(t, err)
+	_, err = svc.CreateAuxSchedulerRule(ctx, AuxSchedulerRuleInput{
+		Name: "B", Enabled: true, PrimaryAccountIDs: []int64{3}, BackupAccountIDs: []int64{4},
+	})
+	require.NoError(t, err)
+
+	_, err = svc.CreateAuxSchedulerRule(ctx, AuxSchedulerRuleInput{
+		Name: "C", Enabled: true, PrimaryAccountIDs: []int64{3}, BackupAccountIDs: []int64{2},
+	})
+	require.ErrorIs(t, err, ErrBadRequest)
+	require.ErrorContains(t, err, "备用账号 backup-a (#2) 已被规则 A 使用")
+
+	_, err = svc.UpdateAuxSchedulerRule(ctx, ruleA.ID, AuxSchedulerRuleInput{
+		Name: "A", Enabled: true, PrimaryAccountIDs: []int64{1}, BackupAccountIDs: []int64{4},
+	})
+	require.ErrorIs(t, err, ErrBadRequest)
+	require.ErrorContains(t, err, "备用账号 backup-b (#4) 已被规则 B 使用")
+
+	_, err = svc.UpdateAuxSchedulerRule(ctx, ruleA.ID, AuxSchedulerRuleInput{
+		Name: "A", Enabled: true, PrimaryAccountIDs: []int64{1}, BackupAccountIDs: []int64{2},
+	})
+	require.NoError(t, err)
+}
+
+func TestAuxSchedulerActivationRejectsRuntimeInactiveBackup(t *testing.T) {
+	ctx := context.Background()
+	store, err := db.Open("sqlite", ":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+	require.NoError(t, store.Migrate(ctx))
+
+	primary := sub2api.Account{
+		ID: 1, Name: "primary", Platform: "openai", Type: "oauth", Status: "active",
+		TempUnschedulableUntil: timePtr(time.Now().UTC().Add(5 * time.Minute)),
+	}
+	backup := sub2api.Account{ID: 2, Name: "backup", Platform: "openai", Type: "apikey", Status: "inactive", Schedulable: false}
+	var schedulableCalls int
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/admin/accounts/1":
+			writeAuxTestEnvelope(w, primary)
+		case "/api/v1/admin/accounts/2":
+			writeAuxTestEnvelope(w, backup)
+		case "/api/v1/admin/accounts/2/schedulable":
+			schedulableCalls++
+			writeAuxTestEnvelope(w, backup)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer upstream.Close()
+
+	svc := New(&config.RuntimeConfig{}, store, sub2api.NewClient(upstream.URL, "admin-key"), nil)
+	ruleID := insertAuxTestRule(t, store, "runtime inactive backup", true, []int64{1}, []int64{2}, AuxSchedulerStateIdle)
+
+	err = svc.ReconcileAuxScheduler(ctx)
+	require.Error(t, err)
+	rule := currentAuxSchedulerRule(t, svc, ruleID)
+	require.Equal(t, AuxSchedulerStateIdle, rule.State)
+	require.NotEmpty(t, rule.LastError)
+	require.Equal(t, 0, schedulableCalls)
+}
+
+func TestAuxSchedulerAccountRoleConflictAcrossRules(t *testing.T) {
+	ctx := context.Background()
+	store, err := db.Open("sqlite", ":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+	require.NoError(t, store.Migrate(ctx))
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeAuxTestEnvelope(w, map[string]any{
+			"items": []sub2api.Account{
+				{ID: 1, Name: "a", Platform: "openai", Type: "oauth", Status: "active"},
+				{ID: 2, Name: "b", Platform: "openai", Type: "apikey", Status: "active"},
+				{ID: 3, Name: "c", Platform: "openai", Type: "oauth", Status: "active"},
+			},
+			"total":     3,
+			"page":      1,
+			"page_size": 200,
+			"pages":     1,
+		})
+	}))
+	defer upstream.Close()
+
+	svc := New(&config.RuntimeConfig{}, store, sub2api.NewClient(upstream.URL, "admin-key"), nil)
+	_, err = svc.CreateAuxSchedulerRule(ctx, AuxSchedulerRuleInput{
+		Name: "A", Enabled: true, PrimaryAccountIDs: []int64{1}, BackupAccountIDs: []int64{2},
+	})
+	require.NoError(t, err)
+
+	_, err = svc.CreateAuxSchedulerRule(ctx, AuxSchedulerRuleInput{
+		Name: "B", Enabled: true, PrimaryAccountIDs: []int64{2}, BackupAccountIDs: []int64{3},
+	})
+	require.ErrorIs(t, err, ErrBadRequest)
+	require.ErrorContains(t, err, "账号 b (#2) 已在规则 A 中作为备用账号使用")
+
+	_, err = svc.CreateAuxSchedulerRule(ctx, AuxSchedulerRuleInput{
+		Name: "C", Enabled: true, PrimaryAccountIDs: []int64{3}, BackupAccountIDs: []int64{1},
+	})
+	require.ErrorIs(t, err, ErrBadRequest)
+	require.ErrorContains(t, err, "账号 a (#1) 已在规则 A 中作为主力账号使用")
+}
+
+func TestAuxSchedulerCreateAllowsErrorBackupWithWarning(t *testing.T) {
+	ctx := context.Background()
+	store, err := db.Open("sqlite", ":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+	require.NoError(t, store.Migrate(ctx))
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeAuxTestEnvelope(w, map[string]any{
+			"items": []sub2api.Account{
+				{ID: 1, Name: "primary", Platform: "openai", Type: "oauth", Status: "active"},
+				{ID: 2, Name: "unpaid-backup", Platform: "openai", Type: "apikey", Status: "error"},
+			},
+			"total":     2,
+			"page":      1,
+			"page_size": 200,
+			"pages":     1,
+		})
+	}))
+	defer upstream.Close()
+
+	svc := New(&config.RuntimeConfig{}, store, sub2api.NewClient(upstream.URL, "admin-key"), nil)
+	view, err := svc.CreateAuxSchedulerRule(ctx, AuxSchedulerRuleInput{
+		Name: "warn backup", Enabled: true, PrimaryAccountIDs: []int64{1}, BackupAccountIDs: []int64{2},
+	})
+	require.NoError(t, err)
+	require.Equal(t, AuxSchedulerStateIdle, view.State)
+	require.Contains(t, view.LastError, "备用账号 unpaid-backup (#2) 当前状态为 error")
+}
+
+func TestAuxSchedulerActivationSkipsErrorBackupAndActivatesOthers(t *testing.T) {
+	ctx := context.Background()
+	store, err := db.Open("sqlite", ":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+	require.NoError(t, store.Migrate(ctx))
+
+	primary := sub2api.Account{
+		ID: 1, Name: "primary", Platform: "openai", Type: "oauth", Status: "active",
+		TempUnschedulableUntil: timePtr(time.Now().UTC().Add(5 * time.Minute)),
+	}
+	goodBackup := sub2api.Account{ID: 2, Name: "good-backup", Platform: "openai", Type: "apikey", Status: "active", Schedulable: false}
+	errorBackup := sub2api.Account{ID: 3, Name: "error-backup", Platform: "openai", Type: "apikey", Status: "error", Schedulable: false}
+	var schedulableIDs []int64
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/admin/accounts":
+			writeAuxTestEnvelope(w, map[string]any{
+				"items":     []sub2api.Account{primary, goodBackup, errorBackup},
+				"total":     3,
+				"page":      1,
+				"page_size": 200,
+				"pages":     1,
+			})
+		case "/api/v1/admin/accounts/1":
+			writeAuxTestEnvelope(w, primary)
+		case "/api/v1/admin/accounts/2":
+			writeAuxTestEnvelope(w, goodBackup)
+		case "/api/v1/admin/accounts/3":
+			writeAuxTestEnvelope(w, errorBackup)
+		case "/api/v1/admin/accounts/2/schedulable":
+			var body struct {
+				Schedulable bool `json:"schedulable"`
+			}
+			require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+			require.True(t, body.Schedulable)
+			schedulableIDs = append(schedulableIDs, 2)
+			goodBackup.Schedulable = true
+			writeAuxTestEnvelope(w, goodBackup)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer upstream.Close()
+
+	svc := New(&config.RuntimeConfig{}, store, sub2api.NewClient(upstream.URL, "admin-key"), nil)
+	ruleID := insertAuxTestRule(t, store, "mixed backups", true, []int64{1}, []int64{2, 3}, AuxSchedulerStateIdle)
+
+	require.NoError(t, svc.ReconcileAuxScheduler(ctx))
+	rule := currentAuxSchedulerRule(t, svc, ruleID)
+	require.Equal(t, AuxSchedulerStateBackupActive, rule.State)
+	require.Contains(t, rule.LastError, "备用账号 error-backup (#3) 当前状态为 error")
+	require.Equal(t, []int64{2}, schedulableIDs)
 }
 
 func TestAuxSchedulerCreateRejectsNonPositiveOnlyAccountIDs(t *testing.T) {

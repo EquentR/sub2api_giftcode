@@ -45,7 +45,7 @@ func (s *Service) RunAuxSchedulerLoop(ctx context.Context, interval time.Duratio
 		interval = 30 * time.Second
 	}
 	if err := s.ReconcileAuxScheduler(ctx); err != nil {
-		log.Printf("aux scheduler reconcile failed: %v", err)
+		log.Printf("辅助调度器扫描失败: %v", err)
 	}
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
@@ -55,7 +55,7 @@ func (s *Service) RunAuxSchedulerLoop(ctx context.Context, interval time.Duratio
 			return
 		case <-ticker.C:
 			if err := s.ReconcileAuxScheduler(ctx); err != nil {
-				log.Printf("aux scheduler reconcile failed: %v", err)
+				log.Printf("辅助调度器扫描失败: %v", err)
 			}
 		}
 	}
@@ -78,7 +78,7 @@ func (s *Service) ReconcileAuxScheduler(ctx context.Context) error {
 			continue
 		}
 		if err := s.reconcileAuxSchedulerRule(ctx, &rules[i]); err != nil {
-			errs = append(errs, fmt.Errorf("aux scheduler rule %d: %w", rules[i].ID, err))
+			errs = append(errs, fmt.Errorf("辅助调度器规则 %d: %w", rules[i].ID, err))
 		}
 	}
 	return errors.Join(errs...)
@@ -96,7 +96,8 @@ func (s *Service) CreateAuxSchedulerRule(ctx context.Context, input AuxScheduler
 	s.auxMu.Lock()
 	defer s.auxMu.Unlock()
 
-	if err := s.validateAuxSchedulerInput(ctx, input); err != nil {
+	warnings, err := s.validateAuxSchedulerInput(ctx, input, 0)
+	if err != nil {
 		return nil, err
 	}
 	now := s.now()
@@ -122,6 +123,16 @@ INSERT INTO aux_scheduler_rules (
 	if err != nil {
 		return nil, err
 	}
+	if len(warnings) > 0 {
+		_, err = s.db().ExecContext(ctx, `
+UPDATE aux_scheduler_rules
+SET last_error = ?, updated_at = ?
+WHERE id = ?
+`, strings.Join(warnings, "; "), formatTime(now), id)
+		if err != nil {
+			return nil, err
+		}
+	}
 	return s.getAuxSchedulerRuleView(ctx, id)
 }
 
@@ -133,7 +144,8 @@ func (s *Service) UpdateAuxSchedulerRule(ctx context.Context, id int64, input Au
 	if err != nil {
 		return nil, err
 	}
-	if err := s.validateAuxSchedulerInput(ctx, input); err != nil {
+	warnings, err := s.validateAuxSchedulerInput(ctx, input, id)
+	if err != nil {
 		return nil, err
 	}
 
@@ -147,9 +159,11 @@ func (s *Service) UpdateAuxSchedulerRule(ctx context.Context, id int64, input Au
 				return nil, err
 			}
 			added := differenceInt64s(nextBackupIDs, existing.BackupAccountIDs)
-			if err := s.activateAuxSchedulerBackupIDs(ctx, added); err != nil {
+			activationWarnings, err := s.activateAuxSchedulerBackupIDs(ctx, added)
+			if err != nil {
 				return nil, err
 			}
+			warnings = append(warnings, activationWarnings...)
 		} else {
 			if err := s.deactivateAuxSchedulerBackupIDs(ctx, existing.BackupAccountIDs); err != nil {
 				return nil, err
@@ -169,10 +183,10 @@ func (s *Service) UpdateAuxSchedulerRule(ctx context.Context, id int64, input Au
 	_, err = s.db().ExecContext(ctx, `
 UPDATE aux_scheduler_rules
 SET name = ?, enabled = ?, primary_account_ids_json = ?, backup_account_ids_json = ?,
-    state = ?, activated_at = ?, last_error = '', updated_at = ?
+    state = ?, activated_at = ?, last_error = ?, updated_at = ?
 WHERE id = ?
 `, strings.TrimSpace(input.Name), boolToInt(input.Enabled), string(primaryJSON), string(backupJSON),
-		state, formatNullableTime(activatedAt), formatTime(s.now()), id)
+		state, formatNullableTime(activatedAt), strings.Join(warnings, "; "), formatTime(s.now()), id)
 	if err != nil {
 		return nil, err
 	}
@@ -362,57 +376,119 @@ func parseInt64JSON(raw string) ([]int64, error) {
 	return out, nil
 }
 
-func (s *Service) validateAuxSchedulerInput(ctx context.Context, input AuxSchedulerRuleInput) error {
+func (s *Service) validateAuxSchedulerInput(ctx context.Context, input AuxSchedulerRuleInput, excludeRuleID int64) ([]string, error) {
 	if strings.TrimSpace(input.Name) == "" {
-		return fmt.Errorf("%w: rule name is required", ErrBadRequest)
+		return nil, fmt.Errorf("%w: 规则名称不能为空", ErrBadRequest)
 	}
 	if len(input.PrimaryAccountIDs) == 0 || len(input.BackupAccountIDs) == 0 {
-		return fmt.Errorf("%w: primary and backup accounts are required", ErrBadRequest)
+		return nil, fmt.Errorf("%w: 必须同时配置主力账号和备用账号", ErrBadRequest)
 	}
 	if err := s.requireUpstreamClient(); err != nil {
-		return err
+		return nil, err
 	}
 	accounts, err := s.ListOpenAIAccounts(ctx)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	byID := make(map[int64]sub2api.Account, len(accounts))
 	for i := range accounts {
 		byID[accounts[i].ID] = accounts[i]
 	}
+	backupOwners, primaryOwners, err := s.auxSchedulerAccountOwners(ctx, excludeRuleID)
+	if err != nil {
+		return nil, err
+	}
 	primary := deduplicateInt64s(input.PrimaryAccountIDs)
 	backup := deduplicateInt64s(input.BackupAccountIDs)
 	if len(primary) == 0 || len(backup) == 0 {
-		return fmt.Errorf("%w: primary and backup accounts are required", ErrBadRequest)
+		return nil, fmt.Errorf("%w: 必须同时配置主力账号和备用账号", ErrBadRequest)
 	}
 	primarySet := make(map[int64]struct{}, len(primary))
+	warnings := make([]string, 0, len(backup))
 	for _, id := range primary {
 		primarySet[id] = struct{}{}
 		if err := validateAuxSchedulerAccount(id, byID); err != nil {
-			return err
+			return nil, err
+		}
+		if owner := backupOwners[id]; owner != "" {
+			return nil, fmt.Errorf("%w: 账号 %s 已在规则 %s 中作为备用账号使用", ErrBadRequest, auxAccountLabel(byID[id].Name, id), owner)
 		}
 	}
 	for _, id := range backup {
 		if _, ok := primarySet[id]; ok {
-			return fmt.Errorf("%w: account %d cannot be both primary and backup", ErrBadRequest, id)
+			return nil, fmt.Errorf("%w: 账号 %s 不能同时作为主力账号和备用账号", ErrBadRequest, auxAccountLabel(byID[id].Name, id))
 		}
-		if err := validateAuxSchedulerAccount(id, byID); err != nil {
-			return err
+		if owner := backupOwners[id]; owner != "" {
+			return nil, fmt.Errorf("%w: 备用账号 %s 已被规则 %s 使用", ErrBadRequest, auxAccountLabel(byID[id].Name, id), owner)
+		}
+		if owner := primaryOwners[id]; owner != "" {
+			return nil, fmt.Errorf("%w: 账号 %s 已在规则 %s 中作为主力账号使用", ErrBadRequest, auxAccountLabel(byID[id].Name, id), owner)
+		}
+		warning, err := validateAuxSchedulerBackupAccount(id, byID)
+		if err != nil {
+			return nil, err
+		}
+		if warning != "" {
+			warnings = append(warnings, warning)
 		}
 	}
-	return nil
+	return warnings, nil
+}
+
+func (s *Service) auxSchedulerAccountOwners(ctx context.Context, excludeRuleID int64) (map[int64]string, map[int64]string, error) {
+	rules, err := s.listAuxSchedulerRulesRaw(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	backupOwners := make(map[int64]string)
+	primaryOwners := make(map[int64]string)
+	for i := range rules {
+		if rules[i].ID == excludeRuleID {
+			continue
+		}
+		for _, backupID := range rules[i].BackupAccountIDs {
+			backupOwners[backupID] = rules[i].Name
+		}
+		for _, primaryID := range rules[i].PrimaryAccountIDs {
+			primaryOwners[primaryID] = rules[i].Name
+		}
+	}
+	return backupOwners, primaryOwners, nil
 }
 
 func validateAuxSchedulerAccount(id int64, accounts map[int64]sub2api.Account) error {
 	account, ok := accounts[id]
 	if !ok {
-		return fmt.Errorf("%w: OpenAI account %d not found", ErrBadRequest, id)
+		return fmt.Errorf("%w: OpenAI 账号 #%d 不存在", ErrBadRequest, id)
 	}
 	accountType := strings.ToLower(strings.TrimSpace(account.Type))
 	if accountType != "oauth" && accountType != "apikey" {
-		return fmt.Errorf("%w: account %d type %q is not supported, only oauth and apikey", ErrBadRequest, id, account.Type)
+		return fmt.Errorf("%w: 账号 %s 的类型 %q 不受支持，仅支持 oauth 和 apikey", ErrBadRequest, auxAccountLabel(account.Name, id), account.Type)
 	}
 	return nil
+}
+
+func validateAuxSchedulerBackupAccount(id int64, accounts map[int64]sub2api.Account) (string, error) {
+	if err := validateAuxSchedulerAccount(id, accounts); err != nil {
+		return "", err
+	}
+	account := accounts[id]
+	status := strings.ToLower(strings.TrimSpace(account.Status))
+	if status == "error" {
+		return fmt.Sprintf("备用账号 %s 当前状态为 error，恢复为 active 前不会启用", auxAccountLabel(account.Name, id)), nil
+	}
+	if status != "active" {
+		return "", fmt.Errorf("%w: 备用账号 %s 当前状态必须为 active 或 error，实际状态为 %q", ErrBadRequest, auxAccountLabel(account.Name, id), account.Status)
+	}
+	return "", nil
+}
+
+func auxAccountLabel(name string, id int64) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return fmt.Sprintf("#%d", id)
+	}
+	return fmt.Sprintf("%s (#%d)", name, id)
 }
 
 func deduplicateInt64s(values []int64) []int64 {
@@ -456,7 +532,7 @@ func (s *Service) reconcileAuxSchedulerRule(ctx context.Context, rule *models.Au
 			return s.recordAuxSchedulerChecked(ctx, rule.ID)
 		}
 		if rule.ActivatedAt == nil {
-			return s.recordAuxSchedulerError(ctx, rule.ID, errors.New("backup activation timestamp is missing"))
+			return s.recordAuxSchedulerError(ctx, rule.ID, errors.New("备用启用时间缺失"))
 		}
 		hasSuccess, err := s.anyAuxPrimarySucceededSince(ctx, rule.PrimaryAccountIDs, *rule.ActivatedAt)
 		if err != nil {
@@ -468,7 +544,7 @@ func (s *Service) reconcileAuxSchedulerRule(ctx context.Context, rule *models.Au
 		if err := s.deactivateAuxSchedulerBackups(ctx, *rule); err != nil {
 			return s.recordAuxSchedulerError(ctx, rule.ID, err)
 		}
-		return s.setAuxSchedulerState(ctx, rule.ID, AuxSchedulerStateIdle, nil)
+		return s.setAuxSchedulerState(ctx, rule.ID, AuxSchedulerStateIdle, nil, "")
 	default:
 		unavailable, err := s.anyAuxPrimaryUnavailable(ctx, rule.PrimaryAccountIDs)
 		if err != nil {
@@ -477,11 +553,12 @@ func (s *Service) reconcileAuxSchedulerRule(ctx context.Context, rule *models.Au
 		if !unavailable {
 			return s.recordAuxSchedulerChecked(ctx, rule.ID)
 		}
-		if err := s.activateAuxSchedulerBackups(ctx, *rule); err != nil {
+		warnings, err := s.activateAuxSchedulerBackups(ctx, *rule)
+		if err != nil {
 			return s.recordAuxSchedulerError(ctx, rule.ID, err)
 		}
 		now := s.now()
-		return s.setAuxSchedulerState(ctx, rule.ID, AuxSchedulerStateBackupActive, &now)
+		return s.setAuxSchedulerState(ctx, rule.ID, AuxSchedulerStateBackupActive, &now, strings.Join(warnings, "; "))
 	}
 }
 
@@ -490,7 +567,7 @@ func (s *Service) anyAuxPrimaryUnavailable(ctx context.Context, accountIDs []int
 	for _, id := range accountIDs {
 		account, err := s.upstream.GetAccount(ctx, id)
 		if err != nil {
-			return false, fmt.Errorf("load primary account %d: %w", id, err)
+			return false, fmt.Errorf("加载主力账号 #%d 失败: %w", id, err)
 		}
 		if accountHasAuxTemporaryUnavailability(*account, now) {
 			return true, nil
@@ -503,14 +580,14 @@ func (s *Service) anyAuxPrimarySucceededSince(ctx context.Context, accountIDs []
 	for _, id := range accountIDs {
 		account, err := s.upstream.GetAccount(ctx, id)
 		if err != nil {
-			return false, fmt.Errorf("load primary account %d: %w", id, err)
+			return false, fmt.Errorf("加载主力账号 #%d 失败: %w", id, err)
 		}
 		if account.LastUsedAt != nil && account.LastUsedAt.After(since) {
 			return true, nil
 		}
 		hasLog, err := s.upstream.HasOpenAIUsageLogAfter(ctx, id, since)
 		if err != nil {
-			return false, fmt.Errorf("load usage logs for account %d: %w", id, err)
+			return false, fmt.Errorf("加载账号 #%d 的调用记录失败: %w", id, err)
 		}
 		if hasLog {
 			return true, nil
@@ -558,25 +635,40 @@ func parseModelRateLimitResetAt(raw any) *time.Time {
 	}
 }
 
-func (s *Service) activateAuxSchedulerBackups(ctx context.Context, rule models.AuxSchedulerRule) error {
+func (s *Service) activateAuxSchedulerBackups(ctx context.Context, rule models.AuxSchedulerRule) ([]string, error) {
 	return s.activateAuxSchedulerBackupIDs(ctx, rule.BackupAccountIDs)
 }
 
-func (s *Service) activateAuxSchedulerBackupIDs(ctx context.Context, accountIDs []int64) error {
+func (s *Service) activateAuxSchedulerBackupIDs(ctx context.Context, accountIDs []int64) ([]string, error) {
+	var warnings []string
 	var failures []string
+	activated := 0
 	for _, id := range accountIDs {
-		if _, err := s.upstream.UpdateOpenAIAccountStatus(ctx, id, "active"); err != nil {
-			failures = append(failures, fmt.Sprintf("account %d: %v", id, err))
+		account, err := s.upstream.GetAccount(ctx, id)
+		if err != nil {
+			failures = append(failures, fmt.Sprintf("账号 #%d 加载失败: %v", id, err))
+			continue
+		}
+		if !strings.EqualFold(strings.TrimSpace(account.Status), "active") {
+			warnings = append(warnings, fmt.Sprintf("备用账号 %s 当前状态为 %s，跳过启用", auxAccountLabel(account.Name, id), account.Status))
 			continue
 		}
 		if _, err := s.upstream.SetOpenAIAccountSchedulable(ctx, id, true); err != nil {
-			failures = append(failures, fmt.Sprintf("account %d schedulable: %v", id, err))
+			failures = append(failures, fmt.Sprintf("账号 %s 切换调度失败: %v", auxAccountLabel(account.Name, id), err))
+			continue
 		}
+		activated++
 	}
-	if len(failures) > 0 {
-		return fmt.Errorf("activate backup accounts failed: %s", strings.Join(failures, "; "))
+	if activated == 0 {
+		messages := append([]string{}, warnings...)
+		messages = append(messages, failures...)
+		if len(messages) == 0 {
+			messages = append(messages, "没有可用的备用账号")
+		}
+		return warnings, fmt.Errorf("启用备用账号失败: %s", strings.Join(messages, "; "))
 	}
-	return nil
+	warnings = append(warnings, failures...)
+	return warnings, nil
 }
 
 func (s *Service) deactivateAuxSchedulerBackups(ctx context.Context, rule models.AuxSchedulerRule) error {
@@ -586,27 +678,28 @@ func (s *Service) deactivateAuxSchedulerBackups(ctx context.Context, rule models
 func (s *Service) deactivateAuxSchedulerBackupIDs(ctx context.Context, accountIDs []int64) error {
 	var failures []string
 	for _, id := range accountIDs {
-		if _, err := s.upstream.UpdateOpenAIAccountStatus(ctx, id, "inactive"); err != nil {
-			failures = append(failures, fmt.Sprintf("account %d: %v", id, err))
-			continue
-		}
+		account, accountErr := s.upstream.GetAccount(ctx, id)
 		if _, err := s.upstream.SetOpenAIAccountSchedulable(ctx, id, false); err != nil {
-			failures = append(failures, fmt.Sprintf("account %d schedulable: %v", id, err))
+			label := fmt.Sprintf("#%d", id)
+			if accountErr == nil {
+				label = auxAccountLabel(account.Name, id)
+			}
+			failures = append(failures, fmt.Sprintf("账号 %s 切换调度失败: %v", label, err))
 		}
 	}
 	if len(failures) > 0 {
-		return fmt.Errorf("deactivate backup accounts failed: %s", strings.Join(failures, "; "))
+		return fmt.Errorf("关闭备用账号失败: %s", strings.Join(failures, "; "))
 	}
 	return nil
 }
 
-func (s *Service) setAuxSchedulerState(ctx context.Context, id int64, state string, activatedAt *time.Time) error {
+func (s *Service) setAuxSchedulerState(ctx context.Context, id int64, state string, activatedAt *time.Time, lastError string) error {
 	now := s.now()
 	_, err := s.db().ExecContext(ctx, `
 UPDATE aux_scheduler_rules
-SET state = ?, activated_at = ?, last_checked_at = ?, last_error = '', updated_at = ?
+SET state = ?, activated_at = ?, last_checked_at = ?, last_error = ?, updated_at = ?
 WHERE id = ?
-`, state, formatNullableTime(activatedAt), formatTime(now), formatTime(now), id)
+`, state, formatNullableTime(activatedAt), formatTime(now), lastError, formatTime(now), id)
 	return err
 }
 

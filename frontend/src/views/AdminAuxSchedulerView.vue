@@ -89,7 +89,7 @@
             placeholder="选择主力 OpenAI 账号"
             style="width: 100%"
           >
-            <el-option v-for="account in accountOptions" :key="account.id" :label="accountLabel(account)" :value="account.id" />
+            <el-option v-for="account in backupOptions" :key="account.id" :label="accountLabel(account)" :value="account.id" />
           </el-select>
         </el-form-item>
         <el-form-item label="备用账号" required>
@@ -105,7 +105,7 @@
           </el-select>
         </el-form-item>
         <div class="muted form-hint">
-          任一主力账号出现临时不可调度或模型冷却时，该规则内所有备用账号会切换为 active 并启用调度。
+          任一主力账号出现临时不可调度或模型冷却时，该规则内所有备用账号会启用调度；备用账号为 active 或 error 时可选，error 不会启用并会在错误信息列提示。备用账号不能被其他规则复用。
         </div>
       </el-form>
       <template #footer>
@@ -147,6 +147,11 @@ const form = reactive({
 const accountOptions = computed(() => {
   const type = (value: string) => value?.toLowerCase?.() ?? ''
   return accounts.value.filter((account) => type(account.type) === 'oauth' || type(account.type) === 'apikey')
+})
+
+const backupOptions = computed(() => {
+  const status = (value: string) => value?.toLowerCase?.() ?? ''
+  return accountOptions.value.filter((account) => status(account.status) === 'active' || status(account.status) === 'error')
 })
 
 async function loadAll() {
@@ -272,7 +277,8 @@ function accountText(infos: AuxSchedulerAccountInfo[], ids: number[]) {
 function accountLabel(account: OpenAIAccount) {
   const type = account.type?.toLowerCase?.() ?? ''
   const typeLabel = type === 'oauth' ? 'OAuth' : type === 'apikey' ? 'API Key' : account.type
-  return `${account.name} (#${account.id} · ${typeLabel})`
+  const statusLabel = account.status || 'unknown'
+  return `${account.name} (#${account.id} · ${typeLabel} · ${statusLabel})`
 }
 
 function formatTime(value?: string | null) {
