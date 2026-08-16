@@ -208,17 +208,13 @@ func auxLaneHasModelAvailability(lanes [][]int64, prefix int, observations map[i
 	return false
 }
 
-func auxResetLaneCoverageEvidence(evidence map[string]any, models, missing []string, lanes [][]int64, prefix int, observations map[int64]map[string]auxModelAvailability) {
-	missingSet := make(map[string]struct{}, len(missing))
-	for _, model := range missing {
-		missingSet[model] = struct{}{}
-	}
+func auxResetLaneCoverageEvidence(evidence map[string]any, models []string, lanes [][]int64, prefix int, observations map[int64]map[string]auxModelAvailability) {
 	for _, model := range models {
 		key := model + "_consecutive_unavailable"
 		if _, ok := evidence[key]; !ok {
 			continue
 		}
-		if _, stillMissing := missingSet[model]; stillMissing && !auxLaneHasModelAvailability(lanes, prefix, observations, model, availabilityUsable) {
+		if auxLaneHasModelAvailability(lanes, prefix, observations, model, availabilityUnavailable) {
 			continue
 		}
 		delete(evidence, key)
