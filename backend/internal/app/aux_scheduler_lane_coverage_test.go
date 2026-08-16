@@ -28,6 +28,22 @@ func auxCooldownExtra(model string, now time.Time) map[string]any {
 	}
 }
 
+func auxCooldownsExtra(models []string, now time.Time) map[string]any {
+	limits := make(map[string]any, len(models))
+	for _, model := range models {
+		limits[model] = map[string]any{
+			"rate_limit_reset_at": now.Add(5 * time.Minute).Format(time.RFC3339),
+		}
+	}
+	return map[string]any{"model_rate_limits": limits}
+}
+
+func (s *auxLaneUpstreamState) replaceAccount(account sub2api.Account) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.accounts[account.ID] = account
+}
+
 func TestAuxSchedulerLaneCoverageEscalatesUntilUnionCoversModels(t *testing.T) {
 	ctx := context.Background()
 	store, err := dbOpenMemory(t)
@@ -117,6 +133,56 @@ func TestAuxSchedulerLaneCoverageModelCooldownRequiresTwoObservations(t *testing
 	require.Len(t, state.calls, 1)
 	require.Equal(t, int64(2), state.calls[0].AccountID)
 	require.True(t, state.calls[0].Value)
+	state.mu.Unlock()
+}
+
+func TestAuxSchedulerLaneCoverageModelRecoveryResetsConsecutiveCounter(t *testing.T) {
+	ctx := context.Background()
+	store, err := dbOpenMemory(t)
+	require.NoError(t, err)
+	fixedNow := time.Date(2026, 8, 16, 12, 0, 0, 0, time.UTC)
+	account1 := auxModelAccountWithExtra(1, "both", auxCooldownsExtra([]string{"gpt-5", "o3"}, fixedNow), "gpt-5", "o3")
+	account2 := auxModelAccount(2, "o3-only", "o3")
+	account3 := auxModelAccount(3, "gpt-only", "gpt-5")
+	state := newAuxLaneUpstreamState(account1, account2, account3)
+	state.setSchedulable(1, true)
+	state.setSchedulable(2, false)
+	state.setSchedulable(3, false)
+	upstream := httptest.NewServer(state.serve(t, "/api/v1/admin/accounts"))
+	defer upstream.Close()
+	svc := New(&config.RuntimeConfig{}, store, sub2api.NewClient(upstream.URL, "admin-key"), nil)
+	svc.nowFunc = func() time.Time { return fixedNow }
+	id := insertAuxLaneRuleRaw(t, store, "reset counter", true, [][]int64{{1}, {2}, {3}}, []string{"gpt-5", "o3"}, 1, 3)
+
+	require.NoError(t, svc.ReconcileAuxScheduler(ctx))
+	rule := currentAuxSchedulerRule(t, svc, id)
+	require.Equal(t, "blocked", rule.TransitionStatus)
+	require.Equal(t, float64(1), rule.UpgradeEvidence["gpt-5_consecutive_unavailable"])
+	require.Equal(t, float64(1), rule.UpgradeEvidence["o3_consecutive_unavailable"])
+
+	gptRecovered := auxModelAccount(1, "both", "gpt-5", "o3")
+	gptRecovered.Extra = auxCooldownExtra("o3", fixedNow)
+	gptRecovered.Schedulable = true
+	state.replaceAccount(gptRecovered)
+	require.NoError(t, svc.ReconcileAuxScheduler(ctx))
+	rule = currentAuxSchedulerRule(t, svc, id)
+	require.Equal(t, 2, rule.ExpectedOpenThroughLane)
+	require.NotContains(t, rule.UpgradeEvidence, "gpt-5_consecutive_unavailable")
+	require.Equal(t, float64(2), rule.UpgradeEvidence["o3_consecutive_unavailable"])
+
+	freshGpt := auxModelAccount(1, "both", "gpt-5", "o3")
+	freshGpt.Extra = auxCooldownExtra("gpt-5", fixedNow)
+	freshGpt.Schedulable = true
+	state.replaceAccount(freshGpt)
+	require.NoError(t, svc.ReconcileAuxScheduler(ctx))
+	rule = currentAuxSchedulerRule(t, svc, id)
+	require.Equal(t, 2, rule.ExpectedOpenThroughLane)
+	require.Equal(t, "blocked", rule.TransitionStatus)
+	require.Contains(t, rule.BlockedReason, "第二次观测")
+	require.Equal(t, float64(1), rule.UpgradeEvidence["gpt-5_consecutive_unavailable"])
+	state.mu.Lock()
+	require.Len(t, state.calls, 1)
+	require.Equal(t, int64(2), state.calls[0].AccountID)
 	state.mu.Unlock()
 }
 

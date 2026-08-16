@@ -1100,6 +1100,7 @@ func (s *Service) reconcileAuxSchedulerLaneCoverage(ctx context.Context, rule *m
 	for key, value := range rule.UpgradeEvidence {
 		evidence[key] = value
 	}
+	auxResetLaneCoverageEvidence(evidence, rule.ModelNames, missing, lanes, expected, modelObservations)
 	unknownReasons := make([]string, 0, len(missing))
 	waitingReasons := make([]string, 0, len(missing))
 	confirmed := false
