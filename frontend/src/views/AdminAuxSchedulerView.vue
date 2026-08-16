@@ -53,14 +53,27 @@
             </div>
           </template>
         </el-table-column>
-        <el-table-column label="主力账号" min-width="220">
+        <el-table-column label="期望 / 观测" min-width="220">
           <template #default="{ row }">
-            <div class="account-tags">{{ accountText(row.primary_accounts, row.primary_account_ids) }}</div>
+            <div class="runtime-prefix">
+              <div>期望泳道 {{ row.expected_open_through_lane ?? 1 }} · 已验证 {{ row.verified_open_through_lane ?? 1 }}</div>
+              <div class="muted">上游观测 {{ row.observed_open_through_lane ?? 1 }}</div>
+            </div>
           </template>
         </el-table-column>
-        <el-table-column label="备用账号" min-width="220">
+        <el-table-column label="运行状态" min-width="260">
           <template #default="{ row }">
-            <div class="account-tags">{{ accountText(row.backup_accounts, row.backup_account_ids) }}</div>
+            <div class="runtime-state">
+              <el-tag :type="transitionTagType(row)" effect="light" size="small">{{ transitionStatusLabel(row) }}</el-tag>
+              <div v-if="row.missing_models?.length" class="runtime-warning">缺失模型: {{ row.missing_models.join(' · ') }}</div>
+              <div v-if="row.blocked_reason" class="runtime-warning">{{ row.blocked_reason }}</div>
+              <div v-if="row.recovery_candidate_lane != null" class="muted">
+                可收缩至泳道 {{ row.recovery_candidate_lane }} · 自 {{ formatTime(row.recovery_candidate_since) }}
+              </div>
+              <div v-if="row.upgrade_evidence && Object.keys(row.upgrade_evidence).length" class="muted">
+                证据: {{ evidenceText(row.upgrade_evidence) }}
+              </div>
+            </div>
           </template>
         </el-table-column>
         <el-table-column label="启用" width="80">
@@ -373,7 +386,45 @@ function statusTagType(rule: AuxSchedulerRule) {
 function statusLabel(rule: AuxSchedulerRule) {
   if (rule.migration_status === 'needs_migration') return '需要迁移'
   if (!rule.enabled) return '已禁用'
-  return rule.state === 'backup_active' ? '备用启用中' : '正常'
+  if (rule.transition_status === 'blocked') return '受阻塞'
+  return rule.state === 'backup_active' ? '备用启用中' : transitionStatusLabel(rule)
+}
+
+function transitionStatusLabel(rule: AuxSchedulerRule) {
+  switch (rule.transition_status) {
+    case 'stable':
+      return '稳定'
+    case 'applying':
+      return '应用中'
+    case 'uncertain':
+      return '不确定'
+    case 'failed':
+      return '失败'
+    case 'blocked':
+      return '阻塞'
+    default:
+      return rule.transition_status || '稳定'
+  }
+}
+
+function transitionTagType(rule: AuxSchedulerRule) {
+  switch (rule.transition_status) {
+    case 'applying':
+      return 'primary'
+    case 'uncertain':
+    case 'failed':
+      return 'danger'
+    case 'blocked':
+      return 'warning'
+    default:
+      return 'success'
+  }
+}
+
+function evidenceText(evidence: Record<string, unknown>) {
+  return Object.entries(evidence)
+    .map(([key, value]) => `${key}: ${value}`)
+    .join(' · ')
 }
 
 function laneText(rule: AuxSchedulerRule) {
@@ -435,6 +486,17 @@ onMounted(loadAll)
 
 .model-lane-text {
   line-height: 1.7;
+}
+
+.runtime-prefix,
+.runtime-state {
+  line-height: 1.7;
+  color: #374151;
+}
+
+.runtime-warning {
+  color: #b45309;
+  word-break: break-word;
 }
 
 .lane-editor {
