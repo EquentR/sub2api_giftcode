@@ -15,8 +15,9 @@ import (
 )
 
 const (
-	AuxSchedulerStateIdle         = "idle"
-	AuxSchedulerStateBackupActive = "backup_active"
+	AuxSchedulerStateIdle                     = "idle"
+	AuxSchedulerStateBackupActive             = "backup_active"
+	AuxSchedulerMigrationStatusNeedsMigration = "needs_migration"
 )
 
 type AuxSchedulerRuleInput struct {
@@ -27,16 +28,23 @@ type AuxSchedulerRuleInput struct {
 }
 
 type AuxSchedulerAccountInfo struct {
-	ID     int64  `json:"id"`
-	Name   string `json:"name"`
-	Type   string `json:"type"`
-	Status string `json:"status"`
+	ID          int64  `json:"id"`
+	Name        string `json:"name"`
+	Type        string `json:"type"`
+	Status      string `json:"status"`
+	Schedulable bool   `json:"schedulable"`
+}
+
+type AuxSchedulerLaneView struct {
+	Number   int                       `json:"number"`
+	Accounts []AuxSchedulerAccountInfo `json:"accounts"`
 }
 
 type AuxSchedulerRuleView struct {
 	models.AuxSchedulerRule
-	PrimaryAccounts []AuxSchedulerAccountInfo `json:"primary_accounts"`
-	BackupAccounts  []AuxSchedulerAccountInfo `json:"backup_accounts"`
+	LaneAccounts    []AuxSchedulerLaneView    `json:"lane_accounts"`
+	PrimaryAccounts []AuxSchedulerAccountInfo `json:"primary_accounts,omitempty"`
+	BackupAccounts  []AuxSchedulerAccountInfo `json:"backup_accounts,omitempty"`
 	UpstreamError   string                    `json:"upstream_error,omitempty"`
 }
 
@@ -74,7 +82,7 @@ func (s *Service) ReconcileAuxScheduler(ctx context.Context) error {
 	}
 	var errs []error
 	for i := range rules {
-		if !rules[i].Enabled {
+		if !rules[i].Enabled || rules[i].MigrationStatus == AuxSchedulerMigrationStatusNeedsMigration {
 			continue
 		}
 		if err := s.reconcileAuxSchedulerRule(ctx, &rules[i]); err != nil {
@@ -109,12 +117,21 @@ func (s *Service) CreateAuxSchedulerRule(ctx context.Context, input AuxScheduler
 	if err != nil {
 		return nil, err
 	}
+	lanesJSON, err := json.Marshal([][]int64{deduplicateInt64s(input.PrimaryAccountIDs), deduplicateInt64s(input.BackupAccountIDs)})
+	if err != nil {
+		return nil, err
+	}
 	result, err := s.db().ExecContext(ctx, `
 INSERT INTO aux_scheduler_rules (
   name, enabled, primary_account_ids_json, backup_account_ids_json,
-  state, created_at, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?)
+  model_names_json, lanes_json, maximum_auto_lane, migration_status, migration_source_json,
+  state, expected_open_through_lane, observed_open_through_lane, verified_open_through_lane,
+  target_open_through_lane, transition_status, transition_generation,
+  upgrade_evidence_json, missing_models_json,
+  created_at, updated_at
+) VALUES (?, ?, ?, ?, '[]', ?, 2, '', '', ?, 1, 1, 1, 1, 'stable', 0, '{}', '[]', ?, ?)
 `, strings.TrimSpace(input.Name), boolToInt(input.Enabled), string(primaryJSON), string(backupJSON),
+		string(lanesJSON),
 		AuxSchedulerStateIdle, formatTime(now), formatTime(now))
 	if err != nil {
 		return nil, err
@@ -151,7 +168,7 @@ func (s *Service) UpdateAuxSchedulerRule(ctx context.Context, id int64, input Au
 
 	state := existing.State
 	activatedAt := existing.ActivatedAt
-	if existing.State == AuxSchedulerStateBackupActive {
+	if existing.State == AuxSchedulerStateBackupActive && existing.MigrationStatus != AuxSchedulerMigrationStatusNeedsMigration {
 		nextBackupIDs := deduplicateInt64s(input.BackupAccountIDs)
 		if input.Enabled {
 			removed := differenceInt64s(existing.BackupAccountIDs, nextBackupIDs)
@@ -180,12 +197,17 @@ func (s *Service) UpdateAuxSchedulerRule(ctx context.Context, id int64, input Au
 	if err != nil {
 		return nil, err
 	}
+	lanesJSON, err := json.Marshal([][]int64{deduplicateInt64s(input.PrimaryAccountIDs), deduplicateInt64s(input.BackupAccountIDs)})
+	if err != nil {
+		return nil, err
+	}
 	_, err = s.db().ExecContext(ctx, `
 UPDATE aux_scheduler_rules
 SET name = ?, enabled = ?, primary_account_ids_json = ?, backup_account_ids_json = ?,
-    state = ?, activated_at = ?, last_error = ?, updated_at = ?
+    lanes_json = ?, state = ?, activated_at = ?, last_error = ?, updated_at = ?
 WHERE id = ?
 `, strings.TrimSpace(input.Name), boolToInt(input.Enabled), string(primaryJSON), string(backupJSON),
+		string(lanesJSON),
 		state, formatNullableTime(activatedAt), strings.Join(warnings, "; "), formatTime(s.now()), id)
 	if err != nil {
 		return nil, err
@@ -201,7 +223,7 @@ func (s *Service) DeleteAuxSchedulerRule(ctx context.Context, id int64) error {
 	if err != nil {
 		return err
 	}
-	if existing.State == AuxSchedulerStateBackupActive {
+	if existing.State == AuxSchedulerStateBackupActive && existing.MigrationStatus != AuxSchedulerMigrationStatusNeedsMigration {
 		if err := s.deactivateAuxSchedulerBackups(ctx, *existing); err != nil {
 			return err
 		}
@@ -228,7 +250,7 @@ func (s *Service) CheckAuxSchedulerRule(ctx context.Context, id int64) (*AuxSche
 	if err != nil {
 		return nil, err
 	}
-	if rule.Enabled {
+	if rule.Enabled && rule.MigrationStatus != AuxSchedulerMigrationStatusNeedsMigration {
 		if err := s.reconcileAuxSchedulerRule(ctx, rule); err != nil {
 			return nil, err
 		}
@@ -239,7 +261,13 @@ func (s *Service) CheckAuxSchedulerRule(ctx context.Context, id int64) (*AuxSche
 func (s *Service) listAuxSchedulerRulesRaw(ctx context.Context) ([]models.AuxSchedulerRule, error) {
 	rows, err := s.db().QueryContext(ctx, `
 SELECT id, name, enabled, primary_account_ids_json, backup_account_ids_json,
-       state, activated_at, last_checked_at, last_error, created_at, updated_at
+       model_names_json, lanes_json, maximum_auto_lane, migration_status, migration_source_json,
+       state, expected_open_through_lane, observed_open_through_lane, verified_open_through_lane,
+       target_open_through_lane, transition_status, transition_generation,
+       upgrade_evidence_json, missing_models_json,
+       recovery_candidate_lane, recovery_candidate_since,
+       last_observed_at, last_verified_at, blocked_reason, warnings,
+       activated_at, last_checked_at, last_error, created_at, updated_at
 FROM aux_scheduler_rules
 ORDER BY id
 `)
@@ -265,7 +293,13 @@ ORDER BY id
 func (s *Service) getAuxSchedulerRuleRaw(ctx context.Context, id int64) (*models.AuxSchedulerRule, error) {
 	row := s.db().QueryRowContext(ctx, `
 SELECT id, name, enabled, primary_account_ids_json, backup_account_ids_json,
-       state, activated_at, last_checked_at, last_error, created_at, updated_at
+       model_names_json, lanes_json, maximum_auto_lane, migration_status, migration_source_json,
+       state, expected_open_through_lane, observed_open_through_lane, verified_open_through_lane,
+       target_open_through_lane, transition_status, transition_generation,
+       upgrade_evidence_json, missing_models_json,
+       recovery_candidate_lane, recovery_candidate_since,
+       last_observed_at, last_verified_at, blocked_reason, warnings,
+       activated_at, last_checked_at, last_error, created_at, updated_at
 FROM aux_scheduler_rules
 WHERE id = ?
 `, id)
@@ -306,11 +340,27 @@ func (s *Service) enrichAuxSchedulerRules(ctx context.Context, rules []models.Au
 	views := make([]AuxSchedulerRuleView, 0, len(rules))
 	for _, rule := range rules {
 		view := AuxSchedulerRuleView{AuxSchedulerRule: rule, UpstreamError: upstreamError}
+		view.LaneAccounts = auxSchedulerLaneViews(rule, accounts)
 		view.PrimaryAccounts = auxAccountInfos(rule.PrimaryAccountIDs, accounts)
 		view.BackupAccounts = auxAccountInfos(rule.BackupAccountIDs, accounts)
 		views = append(views, view)
 	}
 	return views, nil
+}
+
+func auxSchedulerLaneViews(rule models.AuxSchedulerRule, accounts map[int64]sub2api.Account) []AuxSchedulerLaneView {
+	lanes := rule.Lanes
+	if len(lanes) == 0 {
+		lanes = [][]int64{rule.PrimaryAccountIDs, rule.BackupAccountIDs}
+	}
+	out := make([]AuxSchedulerLaneView, 0, len(lanes))
+	for index, ids := range lanes {
+		out = append(out, AuxSchedulerLaneView{
+			Number:   index + 1,
+			Accounts: auxAccountInfos(ids, accounts),
+		})
+	}
+	return out
 }
 
 func auxAccountInfos(ids []int64, accounts map[int64]sub2api.Account) []AuxSchedulerAccountInfo {
@@ -321,6 +371,7 @@ func auxAccountInfos(ids []int64, accounts map[int64]sub2api.Account) []AuxSched
 			info.Name = account.Name
 			info.Type = account.Type
 			info.Status = account.Status
+			info.Schedulable = account.Schedulable
 		}
 		out = append(out, info)
 	}
@@ -330,11 +381,22 @@ func auxAccountInfos(ids []int64, accounts map[int64]sub2api.Account) []AuxSched
 func scanAuxSchedulerRule(row interface{ Scan(dest ...any) error }) (models.AuxSchedulerRule, error) {
 	var rule models.AuxSchedulerRule
 	var enabled int
-	var primaryJSON, backupJSON, createdAt, updatedAt string
+	var primaryJSON, backupJSON string
+	var modelNamesJSON, lanesJSON, migrationSourceJSON string
+	var upgradeEvidenceJSON, missingModelsJSON string
+	var recoveryCandidateLane sql.NullInt64
+	var recoveryCandidateSince, lastObservedAt, lastVerifiedAt sql.NullString
+	var createdAt, updatedAt string
 	var activatedAt, lastCheckedAt sql.NullString
 	if err := row.Scan(
 		&rule.ID, &rule.Name, &enabled, &primaryJSON, &backupJSON,
-		&rule.State, &activatedAt, &lastCheckedAt, &rule.LastError, &createdAt, &updatedAt,
+		&modelNamesJSON, &lanesJSON, &rule.MaximumAutoLane, &rule.MigrationStatus, &migrationSourceJSON,
+		&rule.State, &rule.ExpectedOpenThroughLane, &rule.ObservedOpenThroughLane, &rule.VerifiedOpenThroughLane,
+		&rule.TargetOpenThroughLane, &rule.TransitionStatus, &rule.TransitionGeneration,
+		&upgradeEvidenceJSON, &missingModelsJSON,
+		&recoveryCandidateLane, &recoveryCandidateSince,
+		&lastObservedAt, &lastVerifiedAt, &rule.BlockedReason, &rule.Warnings,
+		&activatedAt, &lastCheckedAt, &rule.LastError, &createdAt, &updatedAt,
 	); err != nil {
 		return rule, err
 	}
@@ -344,6 +406,34 @@ func scanAuxSchedulerRule(row interface{ Scan(dest ...any) error }) (models.AuxS
 		return rule, err
 	}
 	if rule.BackupAccountIDs, err = parseInt64JSON(backupJSON); err != nil {
+		return rule, err
+	}
+	if rule.ModelNames, err = parseStringJSON(modelNamesJSON); err != nil {
+		return rule, err
+	}
+	if rule.Lanes, err = parseInt64SlicesJSON(lanesJSON); err != nil {
+		return rule, err
+	}
+	if rule.MigrationSource, err = parseAuxMigrationSourceJSON(migrationSourceJSON); err != nil {
+		return rule, err
+	}
+	if rule.UpgradeEvidence, err = parseAnyJSONMap(upgradeEvidenceJSON); err != nil {
+		return rule, err
+	}
+	if rule.MissingModels, err = parseStringJSON(missingModelsJSON); err != nil {
+		return rule, err
+	}
+	if recoveryCandidateLane.Valid {
+		value := int(recoveryCandidateLane.Int64)
+		rule.RecoveryCandidateLane = &value
+	}
+	if rule.RecoveryCandidateSince, err = parseTime(recoveryCandidateSince.String); err != nil {
+		return rule, err
+	}
+	if rule.LastObservedAt, err = parseTime(lastObservedAt.String); err != nil {
+		return rule, err
+	}
+	if rule.LastVerifiedAt, err = parseTime(lastVerifiedAt.String); err != nil {
 		return rule, err
 	}
 	if activatedAt.Valid {
@@ -374,6 +464,53 @@ func parseInt64JSON(raw string) ([]int64, error) {
 		return nil, err
 	}
 	return out, nil
+}
+
+func parseInt64SlicesJSON(raw string) ([][]int64, error) {
+	var out [][]int64
+	if strings.TrimSpace(raw) == "" {
+		return out, nil
+	}
+	if err := json.Unmarshal([]byte(raw), &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func parseStringJSON(raw string) ([]string, error) {
+	var out []string
+	if strings.TrimSpace(raw) == "" {
+		return out, nil
+	}
+	if err := json.Unmarshal([]byte(raw), &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func parseAnyJSONMap(raw string) (map[string]any, error) {
+	if strings.TrimSpace(raw) == "" {
+		return map[string]any{}, nil
+	}
+	var out map[string]any
+	if err := json.Unmarshal([]byte(raw), &out); err != nil {
+		return nil, err
+	}
+	if out == nil {
+		out = map[string]any{}
+	}
+	return out, nil
+}
+
+func parseAuxMigrationSourceJSON(raw string) (*models.AuxSchedulerMigrationSource, error) {
+	if strings.TrimSpace(raw) == "" {
+		return nil, nil
+	}
+	var out models.AuxSchedulerMigrationSource
+	if err := json.Unmarshal([]byte(raw), &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
 }
 
 func (s *Service) validateAuxSchedulerInput(ctx context.Context, input AuxSchedulerRuleInput, excludeRuleID int64) ([]string, error) {

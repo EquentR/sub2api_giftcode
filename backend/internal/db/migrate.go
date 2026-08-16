@@ -2,6 +2,8 @@ package db
 
 import (
 	"context"
+	"database/sql"
+	"encoding/json"
 	"fmt"
 	"strings"
 )
@@ -438,7 +440,26 @@ CREATE TABLE IF NOT EXISTS aux_scheduler_rules (
   enabled INTEGER NOT NULL DEFAULT 1,
   primary_account_ids_json TEXT NOT NULL DEFAULT '[]',
   backup_account_ids_json TEXT NOT NULL DEFAULT '[]',
+  model_names_json TEXT NOT NULL DEFAULT '[]',
+  lanes_json TEXT NOT NULL DEFAULT '[]',
+  maximum_auto_lane INTEGER NOT NULL DEFAULT 2,
+  migration_status TEXT NOT NULL DEFAULT '',
+  migration_source_json TEXT NOT NULL DEFAULT '',
   state TEXT NOT NULL DEFAULT 'idle' CHECK (state IN ('idle', 'backup_active')),
+  expected_open_through_lane INTEGER NOT NULL DEFAULT 1,
+  observed_open_through_lane INTEGER NOT NULL DEFAULT 1,
+  verified_open_through_lane INTEGER NOT NULL DEFAULT 1,
+  target_open_through_lane INTEGER NOT NULL DEFAULT 1,
+  transition_status TEXT NOT NULL DEFAULT 'stable',
+  transition_generation INTEGER NOT NULL DEFAULT 0,
+  upgrade_evidence_json TEXT NOT NULL DEFAULT '{}',
+  missing_models_json TEXT NOT NULL DEFAULT '[]',
+  recovery_candidate_lane INTEGER NULL,
+  recovery_candidate_since TEXT NULL,
+  last_observed_at TEXT NULL,
+  last_verified_at TEXT NULL,
+  blocked_reason TEXT NOT NULL DEFAULT '',
+  warnings TEXT NOT NULL DEFAULT '',
   activated_at TEXT NULL,
   last_checked_at TEXT NULL,
   last_error TEXT NOT NULL DEFAULT '',
@@ -497,6 +518,12 @@ func (s *Store) Migrate(ctx context.Context) error {
 		return err
 	}
 	if err := s.migrateBalanceTiersToRedeemTiers(ctx); err != nil {
+		return err
+	}
+	if err := s.ensureAuxSchedulerLaneColumns(ctx); err != nil {
+		return err
+	}
+	if err := s.migrateAuxSchedulerLegacyLanes(ctx); err != nil {
 		return err
 	}
 	return s.backfillDirectChargeRedeemCodes(ctx)
@@ -1185,6 +1212,115 @@ func normalizeMigrationCodeType(codeType string) string {
 		return "subscription"
 	}
 	return "balance"
+}
+
+func (s *Store) ensureAuxSchedulerLaneColumns(ctx context.Context) error {
+	return s.ensureColumns(ctx, "aux_scheduler_rules", map[string]string{
+		"model_names_json":           "TEXT NOT NULL DEFAULT '[]'",
+		"lanes_json":                 "TEXT NOT NULL DEFAULT '[]'",
+		"maximum_auto_lane":          "INTEGER NOT NULL DEFAULT 2",
+		"migration_status":           "TEXT NOT NULL DEFAULT ''",
+		"migration_source_json":      "TEXT NOT NULL DEFAULT ''",
+		"expected_open_through_lane": "INTEGER NOT NULL DEFAULT 1",
+		"observed_open_through_lane": "INTEGER NOT NULL DEFAULT 1",
+		"verified_open_through_lane": "INTEGER NOT NULL DEFAULT 1",
+		"target_open_through_lane":   "INTEGER NOT NULL DEFAULT 1",
+		"transition_status":          "TEXT NOT NULL DEFAULT 'stable'",
+		"transition_generation":      "INTEGER NOT NULL DEFAULT 0",
+		"upgrade_evidence_json":      "TEXT NOT NULL DEFAULT '{}'",
+		"missing_models_json":        "TEXT NOT NULL DEFAULT '[]'",
+		"recovery_candidate_lane":    "INTEGER NULL",
+		"recovery_candidate_since":   "TEXT NULL",
+		"last_observed_at":           "TEXT NULL",
+		"last_verified_at":           "TEXT NULL",
+		"blocked_reason":             "TEXT NOT NULL DEFAULT ''",
+		"warnings":                   "TEXT NOT NULL DEFAULT ''",
+	})
+}
+
+func (s *Store) migrateAuxSchedulerLegacyLanes(ctx context.Context) error {
+	rows, err := s.DB.QueryContext(ctx, `
+SELECT id, state, activated_at, primary_account_ids_json, backup_account_ids_json
+FROM aux_scheduler_rules
+WHERE lanes_json = '[]'
+`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	type legacyRule struct {
+		id          int64
+		state       string
+		activatedAt sql.NullString
+		primaryJSON string
+		backupJSON  string
+	}
+	items := make([]legacyRule, 0)
+	for rows.Next() {
+		var item legacyRule
+		if err := rows.Scan(&item.id, &item.state, &item.activatedAt, &item.primaryJSON, &item.backupJSON); err != nil {
+			return err
+		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	for _, item := range items {
+		var primaryIDs []int64
+		var backupIDs []int64
+		if err := json.Unmarshal([]byte(item.primaryJSON), &primaryIDs); err != nil {
+			return err
+		}
+		if err := json.Unmarshal([]byte(item.backupJSON), &backupIDs); err != nil {
+			return err
+		}
+		lanesJSON, err := json.Marshal([][]int64{primaryIDs, backupIDs})
+		if err != nil {
+			return err
+		}
+		source := map[string]any{
+			"legacy_state":               item.state,
+			"legacy_primary_account_ids": primaryIDs,
+			"legacy_backup_account_ids":  backupIDs,
+		}
+		if item.activatedAt.Valid {
+			source["legacy_activated_at"] = item.activatedAt.String
+		}
+		sourceJSON, err := json.Marshal(source)
+		if err != nil {
+			return err
+		}
+		if _, err := s.DB.ExecContext(ctx, `
+UPDATE aux_scheduler_rules
+SET model_names_json = '[]',
+    lanes_json = ?,
+    maximum_auto_lane = 2,
+    migration_status = 'needs_migration',
+    migration_source_json = ?,
+    expected_open_through_lane = 1,
+    observed_open_through_lane = 1,
+    verified_open_through_lane = 1,
+    target_open_through_lane = 1,
+    transition_status = 'stable',
+    transition_generation = 0,
+    upgrade_evidence_json = '{}',
+    missing_models_json = '[]',
+    recovery_candidate_lane = NULL,
+    recovery_candidate_since = NULL,
+    last_observed_at = NULL,
+    last_verified_at = NULL,
+    blocked_reason = '',
+    warnings = ''
+WHERE id = ? AND lanes_json = '[]'
+`, string(lanesJSON), string(sourceJSON), item.id); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 const timeLayout = "2006-01-02T15:04:05.000000000Z07:00"

@@ -312,18 +312,44 @@ type BalanceTier struct {
 	UpdatedAt            time.Time `json:"updated_at"`
 }
 
+type AuxSchedulerMigrationSource struct {
+	LegacyState             string     `json:"legacy_state"`
+	LegacyPrimaryAccountIDs []int64    `json:"legacy_primary_account_ids"`
+	LegacyBackupAccountIDs  []int64    `json:"legacy_backup_account_ids"`
+	LegacyActivatedAt       *time.Time `json:"legacy_activated_at,omitempty"`
+}
+
 type AuxSchedulerRule struct {
-	ID                int64      `json:"id"`
-	Name              string     `json:"name"`
-	Enabled           bool       `json:"enabled"`
-	PrimaryAccountIDs []int64    `json:"primary_account_ids"`
-	BackupAccountIDs  []int64    `json:"backup_account_ids"`
-	State             string     `json:"state"`
-	ActivatedAt       *time.Time `json:"activated_at,omitempty"`
-	LastCheckedAt     *time.Time `json:"last_checked_at,omitempty"`
-	LastError         string     `json:"last_error"`
-	CreatedAt         time.Time  `json:"created_at"`
-	UpdatedAt         time.Time  `json:"updated_at"`
+	ID                      int64                        `json:"id"`
+	Name                    string                       `json:"name"`
+	Enabled                 bool                         `json:"enabled"`
+	PrimaryAccountIDs       []int64                      `json:"primary_account_ids"`
+	BackupAccountIDs        []int64                      `json:"backup_account_ids"`
+	ModelNames              []string                     `json:"model_names"`
+	Lanes                   [][]int64                    `json:"lanes"`
+	MaximumAutoLane         int                          `json:"maximum_auto_lane"`
+	MigrationStatus         string                       `json:"migration_status"`
+	MigrationSource         *AuxSchedulerMigrationSource `json:"migration_source,omitempty"`
+	State                   string                       `json:"state"`
+	ExpectedOpenThroughLane int                          `json:"expected_open_through_lane"`
+	ObservedOpenThroughLane int                          `json:"observed_open_through_lane"`
+	VerifiedOpenThroughLane int                          `json:"verified_open_through_lane"`
+	TargetOpenThroughLane   int                          `json:"target_open_through_lane"`
+	TransitionStatus        string                       `json:"transition_status"`
+	TransitionGeneration    int64                        `json:"transition_generation"`
+	UpgradeEvidence         map[string]any               `json:"upgrade_evidence,omitempty"`
+	MissingModels           []string                     `json:"missing_models,omitempty"`
+	RecoveryCandidateLane   *int                         `json:"recovery_candidate_lane,omitempty"`
+	RecoveryCandidateSince  *time.Time                   `json:"recovery_candidate_since,omitempty"`
+	LastObservedAt          *time.Time                   `json:"last_observed_at,omitempty"`
+	LastVerifiedAt          *time.Time                   `json:"last_verified_at,omitempty"`
+	BlockedReason           string                       `json:"blocked_reason,omitempty"`
+	Warnings                string                       `json:"warnings,omitempty"`
+	ActivatedAt             *time.Time                   `json:"activated_at,omitempty"`
+	LastCheckedAt           *time.Time                   `json:"last_checked_at,omitempty"`
+	LastError               string                       `json:"last_error"`
+	CreatedAt               time.Time                    `json:"created_at"`
+	UpdatedAt               time.Time                    `json:"updated_at"`
 }
 
 type SyncState struct {

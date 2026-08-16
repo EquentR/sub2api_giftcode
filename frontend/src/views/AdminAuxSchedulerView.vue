@@ -20,6 +20,14 @@
         title="上游账号列表加载失败，部分账号名称可能未显示"
       />
 
+      <el-alert
+        v-if="rules.some((rule) => rule.migration_status === 'needs_migration')"
+        class="aux-alert"
+        type="warning"
+        :closable="false"
+        title="存在旧版主/备用规则：请先选择模型集合并保存有效配置，否则不会自动调度"
+      />
+
       <el-table
         v-loading="loading"
         :data="rules"
@@ -31,9 +39,21 @@
         <el-table-column prop="name" label="规则名称" min-width="160" />
         <el-table-column label="状态" width="110">
           <template #default="{ row }">
-            <el-tag :type="row.state === 'backup_active' ? 'warning' : 'success'" effect="light">
-              {{ row.state === 'backup_active' ? '备用启用中' : '正常' }}
+            <el-tag
+              :type="row.migration_status === 'needs_migration' ? 'warning' : row.state === 'backup_active' ? 'warning' : 'success'"
+              effect="light"
+            >
+              {{ statusLabel(row) }}
             </el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="模型 / 泳道" min-width="260">
+          <template #default="{ row }">
+            <div class="model-lane-text">
+              <div v-if="row.model_names?.length" class="muted">{{ row.model_names.join(' · ') }}</div>
+              <div v-else class="muted">未配置模型集合</div>
+              <div class="account-tags">{{ laneText(row) }}</div>
+            </div>
           </template>
         </el-table-column>
         <el-table-column label="主力账号" min-width="220">
@@ -274,6 +294,24 @@ function accountText(infos: AuxSchedulerAccountInfo[], ids: number[]) {
   return ids.map((id) => `#${id}`).join(' · ')
 }
 
+function statusLabel(rule: AuxSchedulerRule) {
+  if (rule.migration_status === 'needs_migration') return '需要迁移'
+  if (!rule.enabled) return '已禁用'
+  return rule.state === 'backup_active' ? '备用启用中' : '正常'
+}
+
+function laneText(rule: AuxSchedulerRule) {
+  if (rule.lane_accounts?.length) {
+    return rule.lane_accounts
+      .map((lane) => `泳道 ${lane.number}: ${lane.accounts.map((item) => item.name || `#${item.id}`).join(' · ')}`)
+      .join(' / ')
+  }
+  const lanes = rule.lanes?.length ? rule.lanes : [rule.primary_account_ids, rule.backup_account_ids]
+  return lanes
+    .map((ids, index) => `泳道 ${index + 1}: ${ids.map((id) => `#${id}`).join(' · ')}`)
+    .join(' / ')
+}
+
 function accountLabel(account: OpenAIAccount) {
   const type = account.type?.toLowerCase?.() ?? ''
   const typeLabel = type === 'oauth' ? 'OAuth' : type === 'apikey' ? 'API Key' : account.type
@@ -310,6 +348,10 @@ onMounted(loadAll)
   color: #374151;
   line-height: 1.7;
   word-break: break-all;
+}
+
+.model-lane-text {
+  line-height: 1.7;
 }
 
 .error-text {

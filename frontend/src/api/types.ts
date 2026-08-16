@@ -149,6 +149,19 @@ export interface AuxSchedulerAccountInfo {
   name: string
   type: string
   status: string
+  schedulable?: boolean
+}
+
+export interface AuxSchedulerLaneView {
+  number: number
+  accounts: AuxSchedulerAccountInfo[]
+}
+
+export interface AuxSchedulerMigrationSource {
+  legacy_state: string
+  legacy_primary_account_ids: number[]
+  legacy_backup_account_ids: number[]
+  legacy_activated_at?: string | null
 }
 
 export interface AuxSchedulerRule {
@@ -157,14 +170,34 @@ export interface AuxSchedulerRule {
   enabled: boolean
   primary_account_ids: number[]
   backup_account_ids: number[]
+  model_names: string[]
+  lanes: number[][]
+  maximum_auto_lane: number
+  migration_status: '' | 'needs_migration'
+  migration_source?: AuxSchedulerMigrationSource | null
   state: 'idle' | 'backup_active'
+  expected_open_through_lane: number
+  observed_open_through_lane: number
+  verified_open_through_lane: number
+  target_open_through_lane: number
+  transition_status: string
+  transition_generation: number
+  upgrade_evidence?: Record<string, unknown> | null
+  missing_models?: string[]
+  recovery_candidate_lane?: number | null
+  recovery_candidate_since?: string | null
+  last_observed_at?: string | null
+  last_verified_at?: string | null
+  blocked_reason?: string
+  warnings?: string
   activated_at?: string | null
   last_checked_at?: string | null
   last_error: string
   created_at: string
   updated_at: string
-  primary_accounts: AuxSchedulerAccountInfo[]
-  backup_accounts: AuxSchedulerAccountInfo[]
+  lane_accounts: AuxSchedulerLaneView[]
+  primary_accounts?: AuxSchedulerAccountInfo[]
+  backup_accounts?: AuxSchedulerAccountInfo[]
   upstream_error?: string
 }
 
