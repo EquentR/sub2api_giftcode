@@ -95,7 +95,7 @@ func (s *Service) ReconcileAuxScheduler(ctx context.Context) error {
 	}
 	var errs []error
 	for i := range rules {
-		if !rules[i].Enabled || rules[i].MigrationStatus == AuxSchedulerMigrationStatusNeedsMigration {
+		if !rules[i].Enabled || rules[i].MigrationStatus == AuxSchedulerMigrationStatusNeedsMigration || len(rules[i].Lanes) > 0 {
 			continue
 		}
 		if err := s.reconcileAuxSchedulerRule(ctx, &rules[i]); err != nil {
@@ -316,7 +316,7 @@ func (s *Service) CheckAuxSchedulerRule(ctx context.Context, id int64) (*AuxSche
 	if err != nil {
 		return nil, err
 	}
-	if rule.Enabled && rule.MigrationStatus != AuxSchedulerMigrationStatusNeedsMigration {
+	if rule.Enabled && rule.MigrationStatus != AuxSchedulerMigrationStatusNeedsMigration && len(rule.Lanes) == 0 {
 		if err := s.reconcileAuxSchedulerRule(ctx, rule); err != nil {
 			return nil, err
 		}
@@ -593,9 +593,6 @@ func normalizeAuxSchedulerConfig(input AuxSchedulerRuleInput) auxSchedulerConfig
 			config.PrimaryAccountIDs = input.Lanes[0]
 			config.BackupAccountIDs = input.Lanes[1]
 		}
-		if config.MaximumAutoLane <= 0 {
-			config.MaximumAutoLane = len(input.Lanes)
-		}
 	}
 	return config
 }
@@ -791,10 +788,7 @@ func (s *Service) auxSchedulerAccountOwners(ctx context.Context, excludeRuleID i
 		if rules[i].ID == excludeRuleID || !rules[i].Enabled || rules[i].MigrationStatus == AuxSchedulerMigrationStatusNeedsMigration {
 			continue
 		}
-		lanes := rules[i].Lanes
-		if len(lanes) == 0 {
-			lanes = [][]int64{rules[i].PrimaryAccountIDs, rules[i].BackupAccountIDs}
-		}
+		lanes := auxSchedulerOwnedLaneSlices(rules[i].Lanes, rules[i].PrimaryAccountIDs, rules[i].BackupAccountIDs)
 		for index, lane := range lanes {
 			target := owners.primary
 			if index > 0 {
@@ -817,15 +811,19 @@ func (s *Service) auxSchedulerLaneOwner(ctx context.Context, lanes [][]int64, ex
 		if rules[i].ID == excludeRuleID || !rules[i].Enabled || rules[i].MigrationStatus == AuxSchedulerMigrationStatusNeedsMigration {
 			continue
 		}
-		existingLanes := rules[i].Lanes
-		if len(existingLanes) == 0 {
-			existingLanes = [][]int64{rules[i].PrimaryAccountIDs, rules[i].BackupAccountIDs}
-		}
+		existingLanes := auxSchedulerOwnedLaneSlices(rules[i].Lanes, rules[i].PrimaryAccountIDs, rules[i].BackupAccountIDs)
 		if anyAuxLanesOverlap(lanes, existingLanes) {
 			return rules[i].Name, nil
 		}
 	}
 	return "", nil
+}
+
+func auxSchedulerOwnedLaneSlices(lanes [][]int64, primaryIDs, backupIDs []int64) [][]int64 {
+	if len(lanes) > 0 {
+		return lanes
+	}
+	return [][]int64{primaryIDs, backupIDs}
 }
 
 func anyAuxLanesOverlap(a, b [][]int64) bool {
@@ -883,7 +881,7 @@ WHERE id <> ?
 			if err != nil {
 				return err
 			}
-			parsedLanes = [][]int64{primary, backup}
+			parsedLanes = auxSchedulerOwnedLaneSlices(nil, primary, backup)
 		}
 		rules = append(rules, ownedRule{name: name, lanes: parsedLanes})
 	}

@@ -113,6 +113,7 @@ func TestAuxSchedulerLaneRuleRejectsInvalidConfiguration(t *testing.T) {
 		{name: "empty lane", input: AuxSchedulerRuleInput{Name: "bad", Enabled: true, ModelNames: []string{"gpt-5"}, Lanes: [][]int64{{1}, {}}, MaximumAutoLane: 2}},
 		{name: "duplicate account", input: AuxSchedulerRuleInput{Name: "bad", Enabled: true, ModelNames: []string{"gpt-5"}, Lanes: [][]int64{{1, 2}, {2}}, MaximumAutoLane: 2}},
 		{name: "auto lane out of range", input: AuxSchedulerRuleInput{Name: "bad", Enabled: true, ModelNames: []string{"gpt-5"}, Lanes: [][]int64{{1}, {2}}, MaximumAutoLane: 3}},
+		{name: "auto lane zero", input: AuxSchedulerRuleInput{Name: "bad", Enabled: true, ModelNames: []string{"gpt-5"}, Lanes: [][]int64{{1}, {2}}, MaximumAutoLane: 0}},
 		{name: "unsupported model", input: AuxSchedulerRuleInput{Name: "bad", Enabled: true, ModelNames: []string{"claude-3"}, Lanes: [][]int64{{1}, {2}}, MaximumAutoLane: 2}},
 	}
 	for _, tc := range tests {
@@ -223,6 +224,55 @@ func TestAuxSchedulerSavingMigratedRuleWithModelsActivatesWithoutUpstreamWrites(
 	require.Equal(t, "legacy activated", view.Name)
 	require.Empty(t, view.MigrationStatus)
 	require.Equal(t, []string{"gpt-5", "o3"}, view.ModelNames)
+	mu.Lock()
+	require.Equal(t, 0, schedulableWrites)
+	mu.Unlock()
+}
+
+func TestAuxSchedulerLaneRuleNotReconciledByLegacyPathBeforeExecutor(t *testing.T) {
+	ctx := context.Background()
+	store, err := dbOpenMemory(t)
+	require.NoError(t, err)
+	primary := auxModelAccount(1, "one", "gpt-5")
+	primary.TempUnschedulableUntil = timePtr(time.Now().UTC().Add(5 * time.Minute))
+	backup := auxModelAccount(2, "two", "o3")
+	var mu sync.Mutex
+	var schedulableWrites int
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		switch r.URL.Path {
+		case "/api/v1/admin/accounts":
+			writeAuxTestEnvelope(w, map[string]any{
+				"items":     []sub2api.Account{primary, backup},
+				"total":     2,
+				"page":      1,
+				"page_size": 200,
+				"pages":     1,
+			})
+		case "/api/v1/admin/accounts/1":
+			writeAuxTestEnvelope(w, primary)
+		case "/api/v1/admin/accounts/2":
+			writeAuxTestEnvelope(w, backup)
+		case "/api/v1/admin/accounts/2/schedulable":
+			schedulableWrites++
+			writeAuxTestEnvelope(w, backup)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer upstream.Close()
+	svc := New(&config.RuntimeConfig{}, store, sub2api.NewClient(upstream.URL, "admin-key"), nil)
+
+	view, err := svc.CreateAuxSchedulerRule(ctx, AuxSchedulerRuleInput{
+		Name: "protected", Enabled: true, ModelNames: []string{"gpt-5"}, Lanes: [][]int64{{1}, {2}}, MaximumAutoLane: 1,
+	})
+	require.NoError(t, err)
+	require.NotZero(t, view.ID)
+
+	require.NoError(t, svc.ReconcileAuxScheduler(ctx))
+	_, err = svc.CheckAuxSchedulerRule(ctx, view.ID)
+	require.NoError(t, err)
 	mu.Lock()
 	require.Equal(t, 0, schedulableWrites)
 	mu.Unlock()
