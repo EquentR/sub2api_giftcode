@@ -12,16 +12,6 @@ import (
 	"sub2api-giftcode/backend/internal/sub2api"
 )
 
-func newAuxRecoveryService(t *testing.T, state *auxLaneUpstreamState) (*httptest.Server, *Service, func() time.Time) {
-	t.Helper()
-	store, err := dbOpenMemory(t)
-	require.NoError(t, err)
-	upstream := httptest.NewServer(state.serve(t, "/api/v1/admin/accounts"))
-	t.Cleanup(upstream.Close)
-	svc := New(&config.RuntimeConfig{}, store, sub2api.NewClient(upstream.URL, "admin-key"), nil)
-	return upstream, svc, func() time.Time { return time.Time{} }
-}
-
 func TestAuxSchedulerLaneRecoverySelectsMinimalPrefixAndWaitsTwoMinutes(t *testing.T) {
 	ctx := context.Background()
 	store, err := dbOpenMemory(t)
@@ -152,6 +142,34 @@ func TestAuxSchedulerLaneRecoveryClosesHighLanesInOrder(t *testing.T) {
 	state.mu.Unlock()
 }
 
+func TestAuxSchedulerLaneRecoveryConfirmedCapStillShowsAutoLaneBlock(t *testing.T) {
+	ctx := context.Background()
+	store, err := dbOpenMemory(t)
+	require.NoError(t, err)
+	fixedNow := time.Date(2026, 8, 16, 12, 0, 0, 0, time.UTC)
+	wholeDown := auxModelAccount(1, "whole down", "gpt-5")
+	wholeDown.TempUnschedulableUntil = timePtr(fixedNow.Add(5 * time.Minute))
+	unknownMetadata := sub2api.Account{ID: 2, Name: "unknown metadata", Platform: "openai", Type: "apikey", Status: "active"}
+	state := newAuxLaneUpstreamState(wholeDown, unknownMetadata, auxModelAccount(3, "backup", "gpt-5"))
+	state.setSchedulable(1, true)
+	state.setSchedulable(2, true)
+	state.setSchedulable(3, false)
+	upstream := httptest.NewServer(state.serve(t, "/api/v1/admin/accounts"))
+	defer upstream.Close()
+	svc := New(&config.RuntimeConfig{}, store, sub2api.NewClient(upstream.URL, "admin-key"), nil)
+	svc.nowFunc = func() time.Time { return fixedNow }
+	id := insertAuxLaneRuleRaw(t, store, "cap with unknown", true, [][]int64{{1, 2}, {3}}, []string{"gpt-5"}, 1, 1)
+
+	require.NoError(t, svc.ReconcileAuxScheduler(ctx))
+	rule := currentAuxSchedulerRule(t, svc, id)
+	require.Equal(t, "blocked", rule.TransitionStatus)
+	require.Contains(t, rule.BlockedReason, "自动上限")
+	require.Equal(t, []string{"gpt-5"}, rule.MissingModels)
+	state.mu.Lock()
+	require.Empty(t, state.calls)
+	state.mu.Unlock()
+}
+
 func TestAuxSchedulerLaneRecoveryUnknownObservationPausesShrink(t *testing.T) {
 	ctx := context.Background()
 	store, err := dbOpenMemory(t)
@@ -178,14 +196,9 @@ func TestAuxSchedulerLaneRecoveryUnknownObservationPausesShrink(t *testing.T) {
 
 	unknownO3 := sub2api.Account{ID: 2, Name: "o3-unknown", Platform: "openai", Type: "apikey", Status: "active", Schedulable: true}
 	state.replaceAccount(unknownO3)
-	state.mu.Lock()
-	stored := state.accounts[2]
-	state.mu.Unlock()
-	t.Logf("unknown availability=%v account=%+v", auxAccountModelAvailability(stored, "o3", current), stored)
 	current = current.Add(2*time.Minute + time.Second)
 	require.NoError(t, svc.ReconcileAuxScheduler(ctx))
 	rule = currentAuxSchedulerRule(t, svc, id)
-	t.Logf("unknown reconcile missing=%v blocked=%q status=%q", rule.MissingModels, rule.BlockedReason, rule.TransitionStatus)
 	require.Equal(t, "blocked", rule.TransitionStatus)
 	require.Equal(t, 3, rule.ExpectedOpenThroughLane)
 	require.Nil(t, rule.RecoveryCandidateLane)

@@ -1095,19 +1095,6 @@ func (s *Service) reconcileAuxSchedulerLaneCoverage(ctx context.Context, rule *m
 	if len(missing) == 0 {
 		return s.reconcileAuxSchedulerLaneRecovery(ctx, rule, lanes, expected, generation, modelObservations)
 	}
-	if len(missing) > 0 {
-		unknownPresent := false
-		for _, model := range missing {
-			if auxLaneHasModelAvailability(lanes, expected, modelObservations, model, availabilityUnknown) {
-				unknownPresent = true
-				break
-			}
-		}
-		if unknownPresent {
-			reason := "未知观测阻止恢复: " + strings.Join(missing, ", ")
-			return s.recordAuxSchedulerLaneBlocked(ctx, rule.ID, expected, generation, missing, map[string]any{}, reason)
-		}
-	}
 
 	evidence := make(map[string]any, len(rule.UpgradeEvidence)+len(missing))
 	for key, value := range rule.UpgradeEvidence {
@@ -1119,6 +1106,10 @@ func (s *Service) reconcileAuxSchedulerLaneCoverage(ctx context.Context, rule *m
 	confirmed := false
 	wholeUnavailable := auxSchedulerLanesWholeUnavailable(accounts, lanes, expected, s.now())
 	for _, model := range missing {
+		if wholeUnavailable {
+			confirmed = true
+			continue
+		}
 		support := auxSchedulerLanesModelSupport(accounts, lanes, expected, model)
 		if support == supportUnknown {
 			unknownReasons = append(unknownReasons, model)
@@ -1130,10 +1121,6 @@ func (s *Service) reconcileAuxSchedulerLaneCoverage(ctx context.Context, rule *m
 		}
 		if auxLaneHasModelAvailability(lanes, expected, modelObservations, model, availabilityUnknown) {
 			unknownReasons = append(unknownReasons, model)
-			continue
-		}
-		if wholeUnavailable {
-			confirmed = true
 			continue
 		}
 		modelUnavailable := auxLaneHasModelAvailability(lanes, expected, modelObservations, model, availabilityUnavailable)
@@ -1153,6 +1140,10 @@ func (s *Service) reconcileAuxSchedulerLaneCoverage(ctx context.Context, rule *m
 		}
 		unknownReasons = append(unknownReasons, model)
 	}
+	if confirmed && expected >= rule.MaximumAutoLane {
+		reason := "超过自动上限，未打开被禁止的泳道: " + strings.Join(missing, ", ")
+		return s.recordAuxSchedulerLaneBlocked(ctx, rule.ID, expected, generation, missing, evidence, reason)
+	}
 	if len(unknownReasons) > 0 {
 		reason := "未知观测阻止升级: " + strings.Join(unknownReasons, ", ")
 		return s.recordAuxSchedulerLaneBlocked(ctx, rule.ID, expected, generation, missing, evidence, reason)
@@ -1163,10 +1154,6 @@ func (s *Service) reconcileAuxSchedulerLaneCoverage(ctx context.Context, rule *m
 	}
 	if !confirmed {
 		reason := "缺少可确认的升级证据: " + strings.Join(missing, ", ")
-		return s.recordAuxSchedulerLaneBlocked(ctx, rule.ID, expected, generation, missing, evidence, reason)
-	}
-	if expected >= rule.MaximumAutoLane {
-		reason := "超过自动上限，未打开被禁止的泳道: " + strings.Join(missing, ", ")
 		return s.recordAuxSchedulerLaneBlocked(ctx, rule.ID, expected, generation, missing, evidence, reason)
 	}
 	nextExpected := expected + 1
