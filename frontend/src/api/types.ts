@@ -146,9 +146,9 @@ export interface OpenAIAccount {
 
 export interface AuxSchedulerAccountInfo {
   id: number
-  name: string
-  type: string
-  status: string
+  name?: string
+  type?: string
+  status?: string
   schedulable?: boolean
 }
 

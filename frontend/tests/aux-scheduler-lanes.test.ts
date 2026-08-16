@@ -15,6 +15,7 @@ test('aux scheduler frontend exposes lane and migration fields in the API contra
   assert.match(typeSource, /migration_status:\s*''\s*\|\s*'needs_migration'/)
   assert.match(typeSource, /lane_accounts:\s*AuxSchedulerLaneView\[\]/)
   assert.match(typeSource, /interface AuxSchedulerMigrationSource/)
+  assert.match(typeSource, /interface AuxSchedulerAccountInfo\s*\{[\s\S]*?name\?: string[\s\S]*?type\?: string[\s\S]*?status\?: string[\s\S]*?schedulable\?: boolean/)
 })
 
 test('aux scheduler view distinguishes migration, disabled, and active rules', () => {
