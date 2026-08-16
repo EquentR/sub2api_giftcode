@@ -1085,7 +1085,7 @@ func (s *Service) applyAuxSchedulerSchedulableChange(ctx context.Context, change
 	}
 	account, err := s.upstream.GetAccount(ctx, change.accountID)
 	if err != nil {
-		return false, nil
+		return false, fmt.Errorf("回读账号 #%d 失败: %w", change.accountID, err)
 	}
 	if account == nil || account.ID != change.accountID {
 		return false, fmt.Errorf("账号 #%d 回读账号身份不符", change.accountID)

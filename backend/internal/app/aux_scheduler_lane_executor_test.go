@@ -36,6 +36,7 @@ type auxLaneUpstreamState struct {
 	readMode        string
 	readMismatch    bool
 	readFailAccount int64
+	postReadFail    bool
 }
 
 func newAuxLaneUpstreamState(accounts ...sub2api.Account) *auxLaneUpstreamState {
@@ -87,6 +88,10 @@ func (s *auxLaneUpstreamState) serve(t *testing.T, accountsPath string) http.Han
 			readback := pendingReadbacks[id]
 			if readback {
 				delete(pendingReadbacks, id)
+			}
+			if readback && s.postReadFail {
+				http.Error(w, "readback unavailable", http.StatusBadGateway)
+				return
 			}
 			if readback && s.readMode == "missing" {
 				writeAuxTestEnvelope(w, nil)
@@ -380,6 +385,31 @@ func TestAuxSchedulerLaneExecutorReadFailureBeforeUnreadLaneBlocksWrites(t *test
 	require.Equal(t, "failed", rule.TransitionStatus)
 	state.mu.Lock()
 	require.Empty(t, state.calls)
+	state.mu.Unlock()
+}
+
+func TestAuxSchedulerLaneExecutorReadbackFailureAfterWriteIsUncertainWithCause(t *testing.T) {
+	ctx := context.Background()
+	store, err := dbOpenMemory(t)
+	require.NoError(t, err)
+	state := newAuxLaneUpstreamState(auxModelAccount(1, "one", "gpt-5"), auxModelAccount(2, "two", "o3"))
+	state.setSchedulable(1, true)
+	state.setSchedulable(2, false)
+	state.postReadFail = true
+	upstream := httptest.NewServer(state.serve(t, "/api/v1/admin/accounts"))
+	defer upstream.Close()
+	svc := New(&config.RuntimeConfig{}, store, sub2api.NewClient(upstream.URL, "admin-key"), nil)
+	id := insertAuxLaneRuleRaw(t, store, "readback failure", true, [][]int64{{1}, {2}}, []string{"gpt-5"}, 2, 2)
+
+	require.NoError(t, svc.ReconcileAuxScheduler(ctx))
+	rule := currentAuxSchedulerRule(t, svc, id)
+	require.Equal(t, "uncertain", rule.TransitionStatus)
+	require.Contains(t, rule.LastError, "回读账号 #2 失败")
+	require.Contains(t, rule.LastError, "502")
+	state.mu.Lock()
+	require.Len(t, state.calls, 1)
+	require.Equal(t, int64(2), state.calls[0].AccountID)
+	require.False(t, state.calls[0].Verified)
 	state.mu.Unlock()
 }
 
