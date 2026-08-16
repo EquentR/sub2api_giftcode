@@ -95,7 +95,7 @@ func (s *Service) ReconcileAuxScheduler(ctx context.Context) error {
 	}
 	var errs []error
 	for i := range rules {
-		if !rules[i].Enabled || rules[i].MigrationStatus == AuxSchedulerMigrationStatusNeedsMigration || len(rules[i].Lanes) > 0 {
+		if !rules[i].Enabled || rules[i].MigrationStatus == AuxSchedulerMigrationStatusNeedsMigration || len(rules[i].ModelNames) > 0 {
 			continue
 		}
 		if err := s.reconcileAuxSchedulerRule(ctx, &rules[i]); err != nil {
@@ -316,7 +316,7 @@ func (s *Service) CheckAuxSchedulerRule(ctx context.Context, id int64) (*AuxSche
 	if err != nil {
 		return nil, err
 	}
-	if rule.Enabled && rule.MigrationStatus != AuxSchedulerMigrationStatusNeedsMigration && len(rule.Lanes) == 0 {
+	if rule.Enabled && rule.MigrationStatus != AuxSchedulerMigrationStatusNeedsMigration && len(rule.ModelNames) == 0 {
 		if err := s.reconcileAuxSchedulerRule(ctx, rule); err != nil {
 			return nil, err
 		}
@@ -593,8 +593,11 @@ func normalizeAuxSchedulerConfig(input AuxSchedulerRuleInput) auxSchedulerConfig
 			config.PrimaryAccountIDs = input.Lanes[0]
 			config.BackupAccountIDs = input.Lanes[1]
 		}
-	} else if config.MaximumAutoLane <= 0 {
-		config.MaximumAutoLane = 2
+	} else {
+		config.Lanes = [][]int64{}
+		if config.MaximumAutoLane <= 0 {
+			config.MaximumAutoLane = 2
+		}
 	}
 	return config
 }

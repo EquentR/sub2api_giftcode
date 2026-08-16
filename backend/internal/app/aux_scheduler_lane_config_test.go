@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -275,6 +276,70 @@ func TestAuxSchedulerLaneRuleNotReconciledByLegacyPathBeforeExecutor(t *testing.
 	require.NoError(t, err)
 	mu.Lock()
 	require.Equal(t, 0, schedulableWrites)
+	mu.Unlock()
+}
+
+func TestAuxSchedulerLegacyShapeWithPersistedLanesStillReconciles(t *testing.T) {
+	ctx := context.Background()
+	store, err := dbOpenMemory(t)
+	require.NoError(t, err)
+	now := time.Now().UTC().Truncate(time.Second)
+	_, err = store.DB.ExecContext(ctx, `
+INSERT INTO aux_scheduler_rules (
+  name, enabled, primary_account_ids_json, backup_account_ids_json,
+  model_names_json, lanes_json, maximum_auto_lane, migration_status, migration_source_json,
+  state, expected_open_through_lane, observed_open_through_lane, verified_open_through_lane,
+  target_open_through_lane, transition_status, transition_generation,
+  upgrade_evidence_json, missing_models_json,
+  created_at, updated_at
+) VALUES (?, 1, '[1]', '[2]', '[]', '[[1],[2]]', 2, '', '',
+         'idle', 1, 1, 1, 1, 'stable', 0, '{}', '[]', ?, ?)
+`, "legacy shape", formatTime(now), formatTime(now))
+	require.NoError(t, err)
+
+	primary := auxModelAccount(1, "one", "gpt-5")
+	primary.TempUnschedulableUntil = timePtr(time.Now().UTC().Add(5 * time.Minute))
+	backup := auxModelAccount(2, "two", "o3")
+	var mu sync.Mutex
+	var schedulableWrites []bool
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		switch r.URL.Path {
+		case "/api/v1/admin/accounts":
+			writeAuxTestEnvelope(w, map[string]any{
+				"items":     []sub2api.Account{primary, backup},
+				"total":     2,
+				"page":      1,
+				"page_size": 200,
+				"pages":     1,
+			})
+		case "/api/v1/admin/accounts/1":
+			writeAuxTestEnvelope(w, primary)
+		case "/api/v1/admin/accounts/2":
+			writeAuxTestEnvelope(w, backup)
+		case "/api/v1/admin/accounts/2/schedulable":
+			var body struct {
+				Schedulable bool `json:"schedulable"`
+			}
+			require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+			backup.Schedulable = body.Schedulable
+			schedulableWrites = append(schedulableWrites, body.Schedulable)
+			writeAuxTestEnvelope(w, backup)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer upstream.Close()
+	svc := New(&config.RuntimeConfig{}, store, sub2api.NewClient(upstream.URL, "admin-key"), nil)
+
+	require.NoError(t, svc.ReconcileAuxScheduler(ctx))
+	rules, err := svc.ListAuxSchedulerRules(ctx)
+	require.NoError(t, err)
+	require.Len(t, rules, 1)
+	require.Equal(t, AuxSchedulerStateBackupActive, rules[0].State)
+	mu.Lock()
+	require.Equal(t, []bool{true}, schedulableWrites)
 	mu.Unlock()
 }
 
