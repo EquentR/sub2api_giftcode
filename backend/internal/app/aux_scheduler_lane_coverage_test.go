@@ -61,14 +61,16 @@ func TestAuxSchedulerLaneCoverageWholeAccountFailureEscalatesImmediately(t *test
 	ctx := context.Background()
 	store, err := dbOpenMemory(t)
 	require.NoError(t, err)
+	fixedNow := time.Date(2026, 8, 16, 12, 0, 0, 0, time.UTC)
 	account1 := auxModelAccount(1, "down", "gpt-5")
-	account1.TempUnschedulableUntil = timePtr(time.Now().UTC().Add(5 * time.Minute))
+	account1.TempUnschedulableUntil = timePtr(fixedNow.Add(5 * time.Minute))
 	state := newAuxLaneUpstreamState(account1, auxModelAccount(2, "ok", "gpt-5", "o3"))
 	state.setSchedulable(1, true)
 	state.setSchedulable(2, false)
 	upstream := httptest.NewServer(state.serve(t, "/api/v1/admin/accounts"))
 	defer upstream.Close()
 	svc := New(&config.RuntimeConfig{}, store, sub2api.NewClient(upstream.URL, "admin-key"), nil)
+	svc.nowFunc = func() time.Time { return fixedNow }
 	id := insertAuxLaneRuleRaw(t, store, "whole down", true, [][]int64{{1}, {2}}, []string{"gpt-5", "o3"}, 1, 2)
 
 	require.NoError(t, svc.ReconcileAuxScheduler(ctx))
@@ -85,8 +87,9 @@ func TestAuxSchedulerLaneCoverageModelCooldownRequiresTwoObservations(t *testing
 	ctx := context.Background()
 	store, err := dbOpenMemory(t)
 	require.NoError(t, err)
+	fixedNow := time.Date(2026, 8, 16, 12, 0, 0, 0, time.UTC)
 	state := newAuxLaneUpstreamState(
-		auxModelAccountWithExtra(1, "cooling", auxCooldownExtra("gpt-5", time.Now().UTC()), "gpt-5"),
+		auxModelAccountWithExtra(1, "cooling", auxCooldownExtra("gpt-5", fixedNow), "gpt-5"),
 		auxModelAccount(2, "ok", "gpt-5"),
 	)
 	state.setSchedulable(1, true)
@@ -94,6 +97,7 @@ func TestAuxSchedulerLaneCoverageModelCooldownRequiresTwoObservations(t *testing
 	upstream := httptest.NewServer(state.serve(t, "/api/v1/admin/accounts"))
 	defer upstream.Close()
 	svc := New(&config.RuntimeConfig{}, store, sub2api.NewClient(upstream.URL, "admin-key"), nil)
+	svc.nowFunc = func() time.Time { return fixedNow }
 	id := insertAuxLaneRuleRaw(t, store, "cooldown", true, [][]int64{{1}, {2}}, []string{"gpt-5"}, 1, 2)
 
 	require.NoError(t, svc.ReconcileAuxScheduler(ctx))
@@ -235,9 +239,25 @@ func TestAuxSchedulerModelAvailabilityAdapter(t *testing.T) {
 			}(),
 			model:    "gpt-5",
 			expected: availabilityUnavailable,
-		}, {
+		},
+		{
 			name:     "model cooldown unavailable",
 			account:  auxModelAccountWithExtra(1, "cooldown", auxCooldownExtra("gpt-5", now), "gpt-5"),
+			model:    "gpt-5",
+			expected: availabilityUnavailable,
+		},
+		{
+			name: "mapped cooldown unavailable",
+			account: func() sub2api.Account {
+				account := auxModelAccount(1, "mapped", "gpt-5")
+				account.Credentials["model_mapping"] = map[string]any{"gpt-5": "upstream-gpt-5"}
+				account.Extra = map[string]any{
+					"model_rate_limits": map[string]any{
+						"upstream-gpt-5": map[string]any{"rate_limit_reset_at": future.Format(time.RFC3339)},
+					},
+				}
+				return account
+			}(),
 			model:    "gpt-5",
 			expected: availabilityUnavailable,
 		},
@@ -281,6 +301,28 @@ func TestAuxSchedulerModelAvailabilityAdapter(t *testing.T) {
 			require.Equal(t, tc.expected, auxAccountModelAvailability(tc.account, tc.model, now))
 		})
 	}
+}
+
+func TestAuxSchedulerLaneCoverageUnknownSupportMetadataBlocksEscalation(t *testing.T) {
+	ctx := context.Background()
+	store, err := dbOpenMemory(t)
+	require.NoError(t, err)
+	missingMetadata := sub2api.Account{ID: 1, Name: "missing metadata", Platform: "openai", Type: "apikey", Status: "active"}
+	state := newAuxLaneUpstreamState(missingMetadata, auxModelAccount(2, "ok", "gpt-5"))
+	state.setSchedulable(1, true)
+	state.setSchedulable(2, false)
+	upstream := httptest.NewServer(state.serve(t, "/api/v1/admin/accounts"))
+	defer upstream.Close()
+	svc := New(&config.RuntimeConfig{}, store, sub2api.NewClient(upstream.URL, "admin-key"), nil)
+	id := insertAuxLaneRuleRaw(t, store, "missing support", true, [][]int64{{1}, {2}}, []string{"gpt-5"}, 1, 2)
+
+	require.NoError(t, svc.ReconcileAuxScheduler(ctx))
+	rule := currentAuxSchedulerRule(t, svc, id)
+	require.Equal(t, "blocked", rule.TransitionStatus)
+	require.Contains(t, rule.BlockedReason, "未知观测")
+	state.mu.Lock()
+	require.Empty(t, state.calls)
+	state.mu.Unlock()
 }
 
 func TestAuxSchedulerModelCoverageUnion(t *testing.T) {

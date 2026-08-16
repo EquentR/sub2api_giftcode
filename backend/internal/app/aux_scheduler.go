@@ -1103,12 +1103,14 @@ func (s *Service) reconcileAuxSchedulerLaneCoverage(ctx context.Context, rule *m
 	unknownReasons := make([]string, 0, len(missing))
 	waitingReasons := make([]string, 0, len(missing))
 	confirmed := false
-	wholeUnavailable, err := s.auxSchedulerLaneWholeUnavailable(ctx, lanes, expected)
-	if err != nil {
-		return s.recordAuxSchedulerLaneFailure(ctx, rule.ID, expected, expected, generation, err)
-	}
+	wholeUnavailable := auxSchedulerLanesWholeUnavailable(accounts, lanes, expected, s.now())
 	for _, model := range missing {
-		if !auxLaneHasModelSupport(accounts, lanes, expected, model) {
+		support := auxSchedulerLanesModelSupport(accounts, lanes, expected, model)
+		if support == supportUnknown {
+			unknownReasons = append(unknownReasons, model)
+			continue
+		}
+		if support == supportUnsupported {
 			confirmed = true
 			continue
 		}
@@ -1184,23 +1186,34 @@ func (s *Service) reconcileAuxSchedulerLaneCoverage(ctx context.Context, rule *m
 	return s.updateAuxSchedulerLaneCoverageState(ctx, rule.ID, nextMissing, evidence, "", "stable", "", nextGeneration, &now)
 }
 
-func (s *Service) auxSchedulerLaneWholeUnavailable(ctx context.Context, lanes [][]int64, prefix int) (bool, error) {
-	now := s.now()
+func auxSchedulerLanesWholeUnavailable(accounts map[int64]sub2api.Account, lanes [][]int64, prefix int, now time.Time) bool {
 	for laneIndex := 0; laneIndex < prefix && laneIndex < len(lanes); laneIndex++ {
 		for _, id := range lanes[laneIndex] {
-			account, err := s.upstream.GetAccount(ctx, id)
-			if err != nil {
-				return false, fmt.Errorf("加载账号 #%d 失败: %w", id, err)
-			}
-			if account == nil || account.ID != id {
-				return false, fmt.Errorf("账号 #%d 回读身份不符", id)
-			}
-			if auxAccountWholeUnavailable(*account, now) {
-				return true, nil
+			if account, ok := accounts[id]; ok && auxAccountWholeUnavailable(account, now) {
+				return true
 			}
 		}
 	}
-	return false, nil
+	return false
+}
+
+func auxSchedulerLanesModelSupport(accounts map[int64]sub2api.Account, lanes [][]int64, prefix int, model string) auxModelSupportState {
+	knownState := supportUnsupported
+	for laneIndex := 0; laneIndex < prefix && laneIndex < len(lanes); laneIndex++ {
+		for _, id := range lanes[laneIndex] {
+			account, ok := accounts[id]
+			if !ok {
+				continue
+			}
+			switch auxAccountModelSupportState(account, model) {
+			case supportSupported:
+				return supportSupported
+			case supportUnknown:
+				knownState = supportUnknown
+			}
+		}
+	}
+	return knownState
 }
 
 func (s *Service) auxSchedulerLaneModelObservations(ctx context.Context, lanes [][]int64, models []string) (map[int64]map[string]auxModelAvailability, map[int64]sub2api.Account, error) {

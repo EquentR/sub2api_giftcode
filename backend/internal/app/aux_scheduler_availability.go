@@ -31,28 +31,11 @@ func auxAccountModelAvailability(account sub2api.Account, model string, now time
 			return availabilityUnavailable
 		}
 	}
-	supported := false
-	hasMetadata := false
-	credentials := account.Credentials
-	if raw, ok := credentials["upstream_supported_models"].([]any); ok {
-		hasMetadata = true
-		for _, item := range raw {
-			if item == model {
-				supported = true
-				break
-			}
-		}
-	}
-	if mapping, ok := credentials["model_mapping"].(map[string]any); ok {
-		hasMetadata = true
-		if _, ok := mapping[model]; ok {
-			supported = true
-		}
-	}
-	if !hasMetadata {
+	support := auxAccountModelSupportState(account, model)
+	if support == supportUnknown {
 		return availabilityUnknown
 	}
-	if !supported {
+	if support == supportUnsupported {
 		return availabilityUnavailable
 	}
 	rawLimits, hasLimits := account.Extra["model_rate_limits"]
@@ -63,18 +46,81 @@ func auxAccountModelAvailability(account sub2api.Account, model string, now time
 	if !ok {
 		return availabilityUnknown
 	}
-	rawEntry, hasEntry := limits[model]
-	if !hasEntry {
-		return availabilityUsable
-	}
-	resetAt, known := parseModelRateLimitResetAtWithKnown(rawEntry)
-	if !known {
-		return availabilityUnknown
-	}
-	if resetAt != nil && now.Before(*resetAt) {
-		return availabilityUnavailable
+	for _, key := range auxAccountModelRateLimitKeys(account, model) {
+		rawEntry, hasEntry := limits[key]
+		if !hasEntry {
+			continue
+		}
+		resetAt, known := parseModelRateLimitResetAtWithKnown(rawEntry)
+		if !known {
+			return availabilityUnknown
+		}
+		if resetAt != nil && now.Before(*resetAt) {
+			return availabilityUnavailable
+		}
 	}
 	return availabilityUsable
+}
+
+type auxModelSupportState int
+
+const (
+	supportUnknown auxModelSupportState = iota
+	supportSupported
+	supportUnsupported
+)
+
+func auxAccountModelSupportState(account sub2api.Account, model string) auxModelSupportState {
+	credentials := account.Credentials
+	metadataPresent := false
+	metadataValid := false
+	if raw, ok := credentials["upstream_supported_models"]; ok {
+		metadataPresent = true
+		if supported, ok := raw.([]any); ok {
+			metadataValid = true
+			for _, item := range supported {
+				if item == model {
+					return supportSupported
+				}
+			}
+		}
+	}
+	if mapping, ok := credentials["model_mapping"]; ok {
+		metadataPresent = true
+		if parsed, ok := mapping.(map[string]any); ok {
+			metadataValid = true
+			if _, ok := parsed[model]; ok {
+				return supportSupported
+			}
+		}
+	}
+	if !metadataPresent || !metadataValid {
+		return supportUnknown
+	}
+	return supportUnsupported
+}
+
+func auxAccountModelRateLimitKeys(account sub2api.Account, model string) []string {
+	keys := []string{model}
+	if mapping, ok := account.Credentials["model_mapping"].(map[string]any); ok {
+		raw, ok := mapping[model]
+		if !ok {
+			return keys
+		}
+		switch value := raw.(type) {
+		case string:
+			if strings.TrimSpace(value) != "" {
+				keys = append(keys, value)
+			}
+		case []any:
+			for _, item := range value {
+				if text, ok := item.(string); ok && strings.TrimSpace(text) != "" {
+					keys = append(keys, text)
+				}
+			}
+		}
+	}
+	return keys
 }
 
 func parseModelRateLimitResetAtWithKnown(raw any) (*time.Time, bool) {
@@ -157,38 +203,6 @@ func auxLaneHasModelAvailability(lanes [][]int64, prefix int, observations map[i
 			if observations[id][model] == expected {
 				return true
 			}
-		}
-	}
-	return false
-}
-
-func auxLaneHasModelSupport(accounts map[int64]sub2api.Account, lanes [][]int64, prefix int, model string) bool {
-	for laneIndex := 0; laneIndex < prefix && laneIndex < len(lanes); laneIndex++ {
-		for _, id := range lanes[laneIndex] {
-			if account, ok := accounts[id]; ok && auxAccountSupportsModel(account, model) {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-func auxLaneHasModelCapability(lanes [][]int64, prefix int, observations map[int64]map[string]auxModelAvailability, model string) bool {
-	for laneIndex := 0; laneIndex < prefix && laneIndex < len(lanes); laneIndex++ {
-		for _, id := range lanes[laneIndex] {
-			switch observations[id][model] {
-			case availabilityUsable, availabilityUnavailable:
-				return true
-			}
-		}
-	}
-	return false
-}
-
-func auxAccountSupportsModel(account sub2api.Account, model string) bool {
-	for _, supported := range auxAccountSupportedModels(account) {
-		if supported == model {
-			return true
 		}
 	}
 	return false
