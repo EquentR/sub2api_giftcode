@@ -1014,8 +1014,6 @@ func (s *Service) reconcileAuxSchedulerLaneRule(ctx context.Context, rule *model
 		}
 		if laneComplete {
 			observedPrefix = laneIndex + 1
-		} else {
-			break
 		}
 	}
 
