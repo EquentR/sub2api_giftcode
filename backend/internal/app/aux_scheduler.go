@@ -351,6 +351,9 @@ func (s *Service) cleanupAuxSchedulerLaneRule(ctx context.Context, rule *models.
 }
 
 func (s *Service) auxSchedulerLaneUpdateNeedsCleanup(ctx context.Context, existing *models.AuxSchedulerRule, config auxSchedulerConfig) (bool, error) {
+	if existing.TransitionStatus != "stable" {
+		return true, nil
+	}
 	oldLanes := auxSchedulerOwnedLaneSlices(existing.Lanes, existing.PrimaryAccountIDs, existing.BackupAccountIDs)
 	remaining := make(map[int64]struct{})
 	for _, lane := range config.Lanes {

@@ -330,3 +330,52 @@ func TestAuxSchedulerLaneUpdateClosesDriftedRemovedHighAccountAboveExpectedPrefi
 	require.NoError(t, err)
 	require.Equal(t, [][]int64{{5}, {3}}, claim.Lanes)
 }
+
+func TestAuxSchedulerLaneUpdateOnUncertainRuleCannotCommitStableWithoutVerification(t *testing.T) {
+	ctx := context.Background()
+	store, err := dbOpenMemory(t)
+	require.NoError(t, err)
+	state := newAuxLaneUpstreamState(
+		auxModelAccount(1, "base", "gpt-5"),
+		auxModelAccount(2, "high", "gpt-5"),
+	)
+	state.setSchedulable(1, true)
+	state.setSchedulable(2, true)
+	upstream := httptest.NewServer(state.serve(t, "/api/v1/admin/accounts"))
+	defer upstream.Close()
+	svc := New(&config.RuntimeConfig{}, store, sub2api.NewClient(upstream.URL, "admin-key"), nil)
+	id := insertAuxLaneRuleRaw(t, store, "uncertain update", true, [][]int64{{1}, {2}}, []string{"gpt-5"}, 2, 2)
+	_, err = store.DB.ExecContext(ctx, `
+UPDATE aux_scheduler_rules
+SET transition_status = 'uncertain', last_error = 'unverified lane 2 write', expected_open_through_lane = 2,
+    verified_open_through_lane = 1, observed_open_through_lane = 2, target_open_through_lane = 2
+WHERE id = ?
+`, id)
+	require.NoError(t, err)
+
+	state.mu.Lock()
+	state.postReadFail = true
+	state.mu.Unlock()
+	_, err = svc.UpdateAuxSchedulerRule(ctx, id, AuxSchedulerRuleInput{
+		Name: "uncertain update", Enabled: true, ModelNames: []string{"gpt-5"}, Lanes: [][]int64{{1}, {2}}, MaximumAutoLane: 2,
+	})
+	require.Error(t, err)
+	rule := currentAuxSchedulerRule(t, svc, id)
+	require.Equal(t, "uncertain", rule.TransitionStatus)
+	require.Equal(t, "uncertain update", rule.Name)
+	require.Equal(t, [][]int64{{1}, {2}}, rule.Lanes)
+	require.True(t, state.accounts[2].Schedulable)
+
+	state.mu.Lock()
+	state.postReadFail = false
+	state.mu.Unlock()
+	view, err := svc.UpdateAuxSchedulerRule(ctx, id, AuxSchedulerRuleInput{
+		Name: "uncertain update", Enabled: true, ModelNames: []string{"gpt-5"}, Lanes: [][]int64{{1}, {2}}, MaximumAutoLane: 2,
+	})
+	require.NoError(t, err)
+	require.Equal(t, "stable", view.TransitionStatus)
+	require.Equal(t, 1, view.ExpectedOpenThroughLane)
+	state.mu.Lock()
+	require.False(t, state.accounts[2].Schedulable)
+	state.mu.Unlock()
+}
