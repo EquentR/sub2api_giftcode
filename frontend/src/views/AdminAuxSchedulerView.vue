@@ -102,7 +102,7 @@
       </el-table>
     </div>
 
-    <el-dialog v-model="dialogVisible" :title="editing ? '编辑规则' : '新建规则'" width="640px">
+    <el-dialog v-model="dialogVisible" :title="editing ? '编辑规则' : '新建规则'" width="min(640px, calc(100vw - 24px))" class="aux-rule-dialog">
       <el-form label-width="90px" @submit.prevent>
         <el-form-item label="规则名称" required>
           <el-input v-model="form.name" maxlength="100" placeholder="例如：主力 OAuth 冷却备援" />
@@ -378,9 +378,10 @@ function accountText(infos: AuxSchedulerAccountInfo[], ids: number[]) {
 }
 
 function statusTagType(rule: AuxSchedulerRule) {
-  if (rule.migration_status === 'needs_migration' || rule.state === 'backup_active') return 'warning'
+  if (rule.migration_status === 'needs_migration') return 'warning'
   if (!rule.enabled) return 'info'
-  return 'success'
+  if (rule.model_names?.length) return transitionTagType(rule)
+  return rule.state === 'backup_active' ? 'warning' : 'success'
 }
 
 function statusLabel(rule: AuxSchedulerRule) {
@@ -504,6 +505,11 @@ onMounted(loadAll)
   display: flex;
   flex-direction: column;
   gap: 8px;
+}
+
+.aux-rule-dialog {
+  max-height: calc(100vh - 48px);
+  overflow: auto;
 }
 
 .lane-row {
