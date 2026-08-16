@@ -102,6 +102,8 @@ func TestAuxSchedulerLegacyMigrationConvertsToTwoLanesWithoutInferringModels(t *
 	require.Equal(t, 2, rule.MaximumAutoLane)
 	require.Equal(t, createdAt, rule.CreatedAt)
 	require.Equal(t, updatedAt, rule.UpdatedAt)
+	require.Equal(t, AuxSchedulerStateIdle, rule.State)
+	require.Nil(t, rule.ActivatedAt)
 	require.NotNil(t, rule.MigrationSource)
 	require.Equal(t, AuxSchedulerStateBackupActive, rule.MigrationSource.LegacyState)
 	require.Equal(t, []int64{11, 12}, rule.MigrationSource.LegacyPrimaryAccountIDs)

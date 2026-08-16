@@ -131,4 +131,9 @@ INSERT INTO aux_scheduler_rules (
 	}
 	require.NoError(t, json.Unmarshal(checkEnvelope.Data, &checked))
 	require.Equal(t, "needs_migration", checked.MigrationStatus)
+	var liveState struct {
+		State string `json:"state"`
+	}
+	require.NoError(t, json.Unmarshal(checkEnvelope.Data, &liveState))
+	require.Equal(t, "idle", liveState.State)
 }

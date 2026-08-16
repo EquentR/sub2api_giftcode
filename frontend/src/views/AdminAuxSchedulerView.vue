@@ -39,10 +39,7 @@
         <el-table-column prop="name" label="规则名称" min-width="160" />
         <el-table-column label="状态" width="110">
           <template #default="{ row }">
-            <el-tag
-              :type="row.migration_status === 'needs_migration' ? 'warning' : row.state === 'backup_active' ? 'warning' : 'success'"
-              effect="light"
-            >
+            <el-tag :type="statusTagType(row)" effect="light">
               {{ statusLabel(row) }}
             </el-tag>
           </template>
@@ -289,9 +286,15 @@ async function removeRule(rule: AuxSchedulerRule) {
 
 function accountText(infos: AuxSchedulerAccountInfo[], ids: number[]) {
   if (infos.length > 0) {
-    return infos.map((item) => item.name || `#${item.id}`).join(' · ')
+    return infos.map(observedAccountLabel).join(' · ')
   }
   return ids.map((id) => `#${id}`).join(' · ')
+}
+
+function statusTagType(rule: AuxSchedulerRule) {
+  if (rule.migration_status === 'needs_migration' || rule.state === 'backup_active') return 'warning'
+  if (!rule.enabled) return 'info'
+  return 'success'
 }
 
 function statusLabel(rule: AuxSchedulerRule) {
@@ -303,13 +306,21 @@ function statusLabel(rule: AuxSchedulerRule) {
 function laneText(rule: AuxSchedulerRule) {
   if (rule.lane_accounts?.length) {
     return rule.lane_accounts
-      .map((lane) => `泳道 ${lane.number}: ${lane.accounts.map((item) => item.name || `#${item.id}`).join(' · ')}`)
+      .map((lane) => `泳道 ${lane.number}: ${lane.accounts.map(observedAccountLabel).join(' · ')}`)
       .join(' / ')
   }
   const lanes = rule.lanes?.length ? rule.lanes : [rule.primary_account_ids, rule.backup_account_ids]
   return lanes
     .map((ids, index) => `泳道 ${index + 1}: ${ids.map((id) => `#${id}`).join(' · ')}`)
     .join(' / ')
+}
+
+function observedAccountLabel(item: AuxSchedulerAccountInfo) {
+  const status = item.status || 'unknown'
+  const scheduling = item.schedulable === undefined ? '' : item.schedulable ? '可调度' : '不可调度'
+  const parts = [`#${item.id}`, status]
+  if (scheduling) parts.push(scheduling)
+  return `${item.name || `#${item.id}`} (${parts.join(' · ')})`
 }
 
 function accountLabel(account: OpenAIAccount) {

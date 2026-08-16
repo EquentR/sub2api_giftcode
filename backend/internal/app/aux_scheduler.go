@@ -20,6 +20,16 @@ const (
 	AuxSchedulerMigrationStatusNeedsMigration = "needs_migration"
 )
 
+const auxSchedulerRuleColumns = `
+id, name, enabled, primary_account_ids_json, backup_account_ids_json,
+model_names_json, lanes_json, maximum_auto_lane, migration_status, migration_source_json,
+state, expected_open_through_lane, observed_open_through_lane, verified_open_through_lane,
+target_open_through_lane, transition_status, transition_generation,
+upgrade_evidence_json, missing_models_json,
+recovery_candidate_lane, recovery_candidate_since,
+last_observed_at, last_verified_at, blocked_reason, warnings,
+activated_at, last_checked_at, last_error, created_at, updated_at`
+
 type AuxSchedulerRuleInput struct {
 	Name              string  `json:"name"`
 	Enabled           bool    `json:"enabled"`
@@ -260,14 +270,7 @@ func (s *Service) CheckAuxSchedulerRule(ctx context.Context, id int64) (*AuxSche
 
 func (s *Service) listAuxSchedulerRulesRaw(ctx context.Context) ([]models.AuxSchedulerRule, error) {
 	rows, err := s.db().QueryContext(ctx, `
-SELECT id, name, enabled, primary_account_ids_json, backup_account_ids_json,
-       model_names_json, lanes_json, maximum_auto_lane, migration_status, migration_source_json,
-       state, expected_open_through_lane, observed_open_through_lane, verified_open_through_lane,
-       target_open_through_lane, transition_status, transition_generation,
-       upgrade_evidence_json, missing_models_json,
-       recovery_candidate_lane, recovery_candidate_since,
-       last_observed_at, last_verified_at, blocked_reason, warnings,
-       activated_at, last_checked_at, last_error, created_at, updated_at
+SELECT `+auxSchedulerRuleColumns+`
 FROM aux_scheduler_rules
 ORDER BY id
 `)
@@ -292,14 +295,7 @@ ORDER BY id
 
 func (s *Service) getAuxSchedulerRuleRaw(ctx context.Context, id int64) (*models.AuxSchedulerRule, error) {
 	row := s.db().QueryRowContext(ctx, `
-SELECT id, name, enabled, primary_account_ids_json, backup_account_ids_json,
-       model_names_json, lanes_json, maximum_auto_lane, migration_status, migration_source_json,
-       state, expected_open_through_lane, observed_open_through_lane, verified_open_through_lane,
-       target_open_through_lane, transition_status, transition_generation,
-       upgrade_evidence_json, missing_models_json,
-       recovery_candidate_lane, recovery_candidate_since,
-       last_observed_at, last_verified_at, blocked_reason, warnings,
-       activated_at, last_checked_at, last_error, created_at, updated_at
+SELECT `+auxSchedulerRuleColumns+`
 FROM aux_scheduler_rules
 WHERE id = ?
 `, id)
