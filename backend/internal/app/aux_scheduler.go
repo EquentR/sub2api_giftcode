@@ -210,7 +210,14 @@ func (s *Service) UpdateAuxSchedulerRule(ctx context.Context, id int64, input Au
 	activatedAt := existing.ActivatedAt
 	cleanupRequired := false
 	if config.NewShape && existing.MigrationStatus != AuxSchedulerMigrationStatusNeedsMigration && len(existing.ModelNames) > 0 {
-		cleanupRequired = !config.Enabled || auxSchedulerLaneUpdateNeedsCleanup(existing, config)
+		if !config.Enabled {
+			cleanupRequired = true
+		} else {
+			cleanupRequired, err = s.auxSchedulerLaneUpdateNeedsCleanup(ctx, existing, config)
+			if err != nil {
+				return nil, err
+			}
+		}
 		if cleanupRequired {
 			if err := s.cleanupAuxSchedulerLaneRule(ctx, existing); err != nil {
 				return nil, err
@@ -343,28 +350,32 @@ func (s *Service) cleanupAuxSchedulerLaneRule(ctx context.Context, rule *models.
 	return nil
 }
 
-func auxSchedulerLaneUpdateNeedsCleanup(existing *models.AuxSchedulerRule, config auxSchedulerConfig) bool {
-	if existing.TransitionStatus != "stable" {
-		return true
-	}
-	if existing.ExpectedOpenThroughLane <= 1 {
-		return false
-	}
-	newLanes := config.Lanes
+func (s *Service) auxSchedulerLaneUpdateNeedsCleanup(ctx context.Context, existing *models.AuxSchedulerRule, config auxSchedulerConfig) (bool, error) {
+	oldLanes := auxSchedulerOwnedLaneSlices(existing.Lanes, existing.PrimaryAccountIDs, existing.BackupAccountIDs)
 	remaining := make(map[int64]struct{})
-	for _, lane := range newLanes {
+	for _, lane := range config.Lanes {
 		for _, id := range lane {
 			remaining[id] = struct{}{}
 		}
 	}
-	for laneIndex := 1; laneIndex < existing.ExpectedOpenThroughLane && laneIndex < len(existing.Lanes); laneIndex++ {
-		for _, id := range existing.Lanes[laneIndex] {
-			if _, ok := remaining[id]; !ok {
-				return true
+	for laneIndex := 1; laneIndex < len(oldLanes); laneIndex++ {
+		for _, id := range oldLanes[laneIndex] {
+			if _, ok := remaining[id]; ok {
+				continue
+			}
+			account, err := s.upstream.GetAccount(ctx, id)
+			if err != nil {
+				return false, fmt.Errorf("加载账号 #%d 失败: %w", id, err)
+			}
+			if account == nil || account.ID != id {
+				return false, fmt.Errorf("账号 #%d 回读身份不符", id)
+			}
+			if account.Schedulable {
+				return true, nil
 			}
 		}
 	}
-	return false
+	return false, nil
 }
 
 func (s *Service) DeleteAuxSchedulerRule(ctx context.Context, id int64) error {

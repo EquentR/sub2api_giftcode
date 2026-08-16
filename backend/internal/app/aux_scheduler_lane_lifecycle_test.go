@@ -257,3 +257,76 @@ func TestAuxSchedulerLaneUpdateCleanupFailurePreservesOriginalRuleAndOwnership(t
 	require.NoError(t, err)
 	require.Equal(t, [][]int64{{4}, {2}}, claim.Lanes)
 }
+
+func TestAuxSchedulerLaneUpdateClosesDriftedRemovedHighAccountWhenExpectedIsOne(t *testing.T) {
+	ctx := context.Background()
+	store, err := dbOpenMemory(t)
+	require.NoError(t, err)
+	state := newAuxLaneUpstreamState(
+		auxModelAccount(1, "base", "gpt-5"),
+		auxModelAccount(2, "drifted high", "gpt-5"),
+		auxModelAccount(3, "new high", "gpt-5"),
+		auxModelAccount(4, "claim high", "gpt-5"),
+	)
+	state.setSchedulable(1, true)
+	state.setSchedulable(2, true)
+	state.setSchedulable(3, false)
+	upstream := httptest.NewServer(state.serve(t, "/api/v1/admin/accounts"))
+	defer upstream.Close()
+	svc := New(&config.RuntimeConfig{}, store, sub2api.NewClient(upstream.URL, "admin-key"), nil)
+	id := insertAuxLaneRuleRaw(t, store, "drift remove", true, [][]int64{{1}, {2}}, []string{"gpt-5"}, 1, 2)
+
+	view, err := svc.UpdateAuxSchedulerRule(ctx, id, AuxSchedulerRuleInput{
+		Name: "drift remove", Enabled: true, ModelNames: []string{"gpt-5"}, Lanes: [][]int64{{1}, {3}}, MaximumAutoLane: 2,
+	})
+	require.NoError(t, err)
+	require.Equal(t, [][]int64{{1}, {3}}, view.Lanes)
+	state.mu.Lock()
+	require.Len(t, state.calls, 1)
+	require.Equal(t, int64(2), state.calls[0].AccountID)
+	require.False(t, state.calls[0].Value)
+	require.True(t, state.calls[0].Verified)
+	require.False(t, state.accounts[2].Schedulable)
+	state.mu.Unlock()
+
+	claim, err := svc.CreateAuxSchedulerRule(ctx, AuxSchedulerRuleInput{
+		Name: "claim drifted", Enabled: true, ModelNames: []string{"gpt-5"}, Lanes: [][]int64{{4}, {2}}, MaximumAutoLane: 2,
+	})
+	require.NoError(t, err)
+	require.Equal(t, [][]int64{{4}, {2}}, claim.Lanes)
+}
+
+func TestAuxSchedulerLaneUpdateClosesDriftedRemovedHighAccountAboveExpectedPrefix(t *testing.T) {
+	ctx := context.Background()
+	store, err := dbOpenMemory(t)
+	require.NoError(t, err)
+	state := newAuxLaneUpstreamState(
+		auxModelAccount(1, "base", "gpt-5"),
+		auxModelAccount(2, "lane two", "gpt-5"),
+		auxModelAccount(3, "drifted lane three", "gpt-5"),
+		auxModelAccount(4, "new lane three", "gpt-5"),
+		auxModelAccount(5, "claim high", "gpt-5"),
+	)
+	for _, id := range []int64{1, 2, 3} {
+		state.setSchedulable(id, true)
+	}
+	upstream := httptest.NewServer(state.serve(t, "/api/v1/admin/accounts"))
+	defer upstream.Close()
+	svc := New(&config.RuntimeConfig{}, store, sub2api.NewClient(upstream.URL, "admin-key"), nil)
+	id := insertAuxLaneRuleRaw(t, store, "drift lane three", true, [][]int64{{1}, {2}, {3}}, []string{"gpt-5"}, 2, 3)
+
+	view, err := svc.UpdateAuxSchedulerRule(ctx, id, AuxSchedulerRuleInput{
+		Name: "drift lane three", Enabled: true, ModelNames: []string{"gpt-5"}, Lanes: [][]int64{{1}, {2}, {4}}, MaximumAutoLane: 3,
+	})
+	require.NoError(t, err)
+	require.Equal(t, [][]int64{{1}, {2}, {4}}, view.Lanes)
+	state.mu.Lock()
+	require.False(t, state.accounts[3].Schedulable)
+	state.mu.Unlock()
+
+	claim, err := svc.CreateAuxSchedulerRule(ctx, AuxSchedulerRuleInput{
+		Name: "claim lane three", Enabled: true, ModelNames: []string{"gpt-5"}, Lanes: [][]int64{{5}, {3}}, MaximumAutoLane: 2,
+	})
+	require.NoError(t, err)
+	require.Equal(t, [][]int64{{5}, {3}}, claim.Lanes)
+}
