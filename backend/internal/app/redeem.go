@@ -105,10 +105,13 @@ func (s *Service) SyncRedeemCodes(ctx context.Context) (int, error) {
 		if matched == nil {
 			continue
 		}
-		if err := s.updateRedeemCodeFromUpstream(ctx, local.ID, matched, now); err != nil {
+		changed, err := s.updateRedeemCodeFromUpstream(ctx, local, matched, now)
+		if err != nil {
 			return updated, err
 		}
-		updated++
+		if changed {
+			updated++
+		}
 	}
 	_ = s.setSyncState(ctx, "redeem_codes_last_sync_at", formatTime(now), now)
 	if updated > 0 {
@@ -732,12 +735,20 @@ JOIN redeem_requests r ON r.id = c.request_id
 	return out, rows.Err()
 }
 
-func (s *Service) updateRedeemCodeFromUpstream(ctx context.Context, id int64, remote *sub2api.RedeemCode, syncedAt time.Time) error {
-	_, err := s.db().ExecContext(ctx, `
+func (s *Service) updateRedeemCodeFromUpstream(ctx context.Context, local models.RedeemCode, remote *sub2api.RedeemCode, updatedAt time.Time) (bool, error) {
+	if redeemCodeMatchesUpstream(local, remote) {
+		return false, nil
+	}
+	result, err := s.db().ExecContext(ctx, `
 UPDATE redeem_codes
 SET code_type = ?, value = ?, status = ?, used_by_upstream_user_id = ?, used_at = ?, expires_at = ?,
-    sub2api_code_id = ?, sub2api_group_id = ?, validity_days = ?, last_synced_at = ?, updated_at = ?
+    sub2api_code_id = ?, sub2api_group_id = ?, validity_days = ?, updated_at = ?
 WHERE id = ?
+  AND (
+    code_type IS NOT ? OR value IS NOT ? OR status IS NOT ? OR used_by_upstream_user_id IS NOT ?
+    OR used_at IS NOT ? OR expires_at IS NOT ? OR sub2api_code_id IS NOT ? OR sub2api_group_id IS NOT ?
+    OR validity_days IS NOT ?
+  )
 `,
 		remote.Type,
 		remote.Value,
@@ -748,11 +759,59 @@ WHERE id = ?
 		remote.ID,
 		remote.GroupID,
 		remote.ValidityDays,
-		formatTime(syncedAt),
-		formatTime(syncedAt),
-		id,
+		formatTime(updatedAt),
+		local.ID,
+		remote.Type,
+		remote.Value,
+		normalizeUpstreamCodeStatus(remote.Status),
+		remote.UsedBy,
+		formatNullableTime(remote.UsedAt),
+		formatNullableTime(remote.ExpiresAt),
+		remote.ID,
+		remote.GroupID,
+		remote.ValidityDays,
 	)
-	return err
+	if err != nil {
+		return false, err
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return rows > 0, nil
+}
+
+func redeemCodeMatchesUpstream(local models.RedeemCode, remote *sub2api.RedeemCode) bool {
+	if remote == nil {
+		return false
+	}
+	return local.CodeType == remote.Type &&
+		local.Value == remote.Value &&
+		local.Status == normalizeUpstreamCodeStatus(remote.Status) &&
+		equalNullableInt64(local.UsedByUpstreamUserID, remote.UsedBy) &&
+		equalNullableTime(local.UsedAt, remote.UsedAt) &&
+		equalNullableTime(local.ExpiresAt, remote.ExpiresAt) &&
+		equalNullableInt64(local.Sub2APICodeID, int64Pointer(remote.ID)) &&
+		equalNullableInt64(local.Sub2APIGroupID, remote.GroupID) &&
+		local.ValidityDays == remote.ValidityDays
+}
+
+func equalNullableInt64(left, right *int64) bool {
+	if left == nil || right == nil {
+		return left == right
+	}
+	return *left == *right
+}
+
+func equalNullableTime(left, right *time.Time) bool {
+	if left == nil || right == nil {
+		return left == right
+	}
+	return left.Equal(*right)
+}
+
+func int64Pointer(value int64) *int64 {
+	return &value
 }
 
 func scanRedeemRequestRow(scanner interface {
