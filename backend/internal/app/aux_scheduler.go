@@ -1033,7 +1033,10 @@ func (s *Service) reconcileAuxSchedulerLaneRule(ctx context.Context, rule *model
 		}
 	}
 	if len(opens) == 0 && len(closes) == 0 {
-		return s.recordAuxSchedulerLaneStable(ctx, rule.ID, expected, observedPrefix, expected, expected, rule.TransitionGeneration, "")
+		if err := s.recordAuxSchedulerLaneStable(ctx, rule.ID, expected, observedPrefix, expected, expected, rule.TransitionGeneration, ""); err != nil {
+			return err
+		}
+		return s.reconcileAuxSchedulerLaneCoverage(ctx, rule, lanes, expected, rule.TransitionGeneration, "")
 	}
 	sort.SliceStable(closes, func(i, j int) bool {
 		return closes[i].laneIndex > closes[j].laneIndex
@@ -1076,7 +1079,191 @@ func (s *Service) reconcileAuxSchedulerLaneRule(ctx context.Context, rule *model
 	if len(corrected) > 0 {
 		warnings = "人工漂移已修复: " + strings.Join(corrected, ", ")
 	}
-	return s.recordAuxSchedulerLaneStable(ctx, rule.ID, expected, expected, expected, expected, generation, warnings)
+	if err := s.recordAuxSchedulerLaneStable(ctx, rule.ID, expected, expected, expected, expected, generation, warnings); err != nil {
+		return err
+	}
+	return s.reconcileAuxSchedulerLaneCoverage(ctx, rule, lanes, expected, generation, warnings)
+}
+
+func (s *Service) reconcileAuxSchedulerLaneCoverage(ctx context.Context, rule *models.AuxSchedulerRule, lanes [][]int64, expected int, generation int64, warnings string) error {
+	modelObservations, accounts, err := s.auxSchedulerLaneModelObservations(ctx, lanes, rule.ModelNames)
+	if err != nil {
+		return s.recordAuxSchedulerLaneFailure(ctx, rule.ID, expected, expected, generation, err)
+	}
+	missing := auxMissingModelsForPrefix(lanes, modelObservations, rule.ModelNames, expected)
+	if len(missing) == 0 {
+		now := s.now()
+		return s.updateAuxSchedulerLaneCoverageState(ctx, rule.ID, []string{}, map[string]any{}, "", "stable", "", generation, &now)
+	}
+
+	evidence := make(map[string]any, len(rule.UpgradeEvidence)+len(missing))
+	for key, value := range rule.UpgradeEvidence {
+		evidence[key] = value
+	}
+	unknownReasons := make([]string, 0, len(missing))
+	waitingReasons := make([]string, 0, len(missing))
+	confirmed := false
+	wholeUnavailable, err := s.auxSchedulerLaneWholeUnavailable(ctx, lanes, expected)
+	if err != nil {
+		return s.recordAuxSchedulerLaneFailure(ctx, rule.ID, expected, expected, generation, err)
+	}
+	for _, model := range missing {
+		if !auxLaneHasModelSupport(accounts, lanes, expected, model) {
+			confirmed = true
+			continue
+		}
+		if auxLaneHasModelAvailability(lanes, expected, modelObservations, model, availabilityUnknown) {
+			unknownReasons = append(unknownReasons, model)
+			continue
+		}
+		if wholeUnavailable {
+			confirmed = true
+			continue
+		}
+		modelUnavailable := auxLaneHasModelAvailability(lanes, expected, modelObservations, model, availabilityUnavailable)
+		if modelUnavailable {
+			key := model + "_consecutive_unavailable"
+			count := 1
+			if raw, ok := evidence[key].(float64); ok {
+				count = int(raw) + 1
+			}
+			evidence[key] = float64(count)
+			if count < 2 {
+				waitingReasons = append(waitingReasons, model)
+			} else {
+				confirmed = true
+			}
+			continue
+		}
+		unknownReasons = append(unknownReasons, model)
+	}
+	if len(unknownReasons) > 0 {
+		reason := "未知观测阻止升级: " + strings.Join(unknownReasons, ", ")
+		return s.recordAuxSchedulerLaneBlocked(ctx, rule.ID, expected, generation, missing, evidence, reason)
+	}
+	if len(waitingReasons) > 0 {
+		reason := "等待第二次观测: " + strings.Join(waitingReasons, ", ")
+		return s.recordAuxSchedulerLaneBlocked(ctx, rule.ID, expected, generation, missing, evidence, reason)
+	}
+	if !confirmed {
+		reason := "缺少可确认的升级证据: " + strings.Join(missing, ", ")
+		return s.recordAuxSchedulerLaneBlocked(ctx, rule.ID, expected, generation, missing, evidence, reason)
+	}
+	if expected >= rule.MaximumAutoLane {
+		reason := "超过自动上限，未打开被禁止的泳道: " + strings.Join(missing, ", ")
+		return s.recordAuxSchedulerLaneBlocked(ctx, rule.ID, expected, generation, missing, evidence, reason)
+	}
+	nextExpected := expected + 1
+	nextGeneration := generation + 1
+	if err := s.updateAuxSchedulerLaneRuntime(ctx, rule.ID, nextExpected, expected, expected, nextExpected, "applying", warnings, "", nextGeneration, nil); err != nil {
+		return err
+	}
+	corrected := make([]string, 0, len(lanes[nextExpected-1]))
+	for _, id := range lanes[nextExpected-1] {
+		change := auxSchedulerLaneChange{laneIndex: nextExpected, accountID: id, desired: true}
+		verified, err := s.applyAuxSchedulerSchedulableChange(ctx, change)
+		if err != nil {
+			if isAuxSchedulerUncertainChangeError(ctx, err) {
+				return s.recordAuxSchedulerLaneUncertain(ctx, rule.ID, nextExpected, expected, nextGeneration, err)
+			}
+			return s.recordAuxSchedulerLaneFailure(ctx, rule.ID, nextExpected, expected, nextGeneration, err)
+		}
+		if !verified {
+			return s.recordAuxSchedulerLaneUncertain(ctx, rule.ID, nextExpected, expected, nextGeneration, errors.New("账号切换后回读验证失败"))
+		}
+		corrected = append(corrected, fmt.Sprintf("#%d", id))
+	}
+	if len(corrected) > 0 && warnings == "" {
+		warnings = "逐级升级已开启: " + strings.Join(corrected, ", ")
+	}
+	nextMissing := auxMissingModelsForPrefix(lanes, modelObservations, rule.ModelNames, nextExpected)
+	if err := s.recordAuxSchedulerLaneStable(ctx, rule.ID, nextExpected, nextExpected, nextExpected, nextExpected, nextGeneration, warnings); err != nil {
+		return err
+	}
+	now := s.now()
+	return s.updateAuxSchedulerLaneCoverageState(ctx, rule.ID, nextMissing, evidence, "", "stable", "", nextGeneration, &now)
+}
+
+func (s *Service) auxSchedulerLaneWholeUnavailable(ctx context.Context, lanes [][]int64, prefix int) (bool, error) {
+	now := s.now()
+	for laneIndex := 0; laneIndex < prefix && laneIndex < len(lanes); laneIndex++ {
+		for _, id := range lanes[laneIndex] {
+			account, err := s.upstream.GetAccount(ctx, id)
+			if err != nil {
+				return false, fmt.Errorf("加载账号 #%d 失败: %w", id, err)
+			}
+			if account == nil || account.ID != id {
+				return false, fmt.Errorf("账号 #%d 回读身份不符", id)
+			}
+			if auxAccountWholeUnavailable(*account, now) {
+				return true, nil
+			}
+		}
+	}
+	return false, nil
+}
+
+func (s *Service) auxSchedulerLaneModelObservations(ctx context.Context, lanes [][]int64, models []string) (map[int64]map[string]auxModelAvailability, map[int64]sub2api.Account, error) {
+	now := s.now()
+	out := make(map[int64]map[string]auxModelAvailability)
+	accounts := make(map[int64]sub2api.Account)
+	for _, lane := range lanes {
+		for _, id := range lane {
+			account, err := s.upstream.GetAccount(ctx, id)
+			if err != nil {
+				return nil, nil, fmt.Errorf("加载账号 #%d 失败: %w", id, err)
+			}
+			if account == nil || account.ID != id {
+				return nil, nil, fmt.Errorf("账号 #%d 回读身份不符", id)
+			}
+			accounts[id] = *account
+			availability := make(map[string]auxModelAvailability, len(models))
+			for _, model := range models {
+				availability[model] = auxAccountModelAvailability(*account, model, now)
+			}
+			out[id] = availability
+		}
+	}
+	return out, accounts, nil
+}
+
+func (s *Service) recordAuxSchedulerLaneBlocked(ctx context.Context, id int64, expected int, generation int64, missing []string, evidence map[string]any, reason string) error {
+	now := s.now()
+	return s.updateAuxSchedulerLaneCoverageState(ctx, id, missing, evidence, reason, "blocked", "", generation, &now)
+}
+
+func (s *Service) updateAuxSchedulerLaneCoverageState(ctx context.Context, id int64, missing []string, evidence map[string]any, blockedReason, status, lastError string, generation int64, lastVerifiedAt *time.Time) error {
+	if missing == nil {
+		missing = []string{}
+	}
+	if evidence == nil {
+		evidence = map[string]any{}
+	}
+	missingJSON, err := json.Marshal(missing)
+	if err != nil {
+		return err
+	}
+	evidenceJSON, err := json.Marshal(evidence)
+	if err != nil {
+		return err
+	}
+	now := s.now()
+	_, err = s.db().ExecContext(ctx, `
+UPDATE aux_scheduler_rules
+SET missing_models_json = ?,
+    upgrade_evidence_json = ?,
+    blocked_reason = ?,
+    transition_status = ?,
+    transition_generation = ?,
+    last_error = ?,
+    last_observed_at = ?,
+    last_verified_at = ?,
+    last_checked_at = ?,
+    updated_at = ?
+WHERE id = ?
+`, string(missingJSON), string(evidenceJSON), blockedReason, status, generation, lastError,
+		formatTime(now), formatNullableTime(lastVerifiedAt), formatTime(now), formatTime(now), id)
+	return err
 }
 
 func (s *Service) applyAuxSchedulerSchedulableChange(ctx context.Context, change auxSchedulerLaneChange) (bool, error) {

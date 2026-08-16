@@ -1,0 +1,295 @@
+package app
+
+import (
+	"context"
+	"net/http/httptest"
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/require"
+
+	"sub2api-giftcode/backend/internal/config"
+	"sub2api-giftcode/backend/internal/sub2api"
+)
+
+func auxModelAccountWithExtra(id int64, name string, extra map[string]any, models ...string) sub2api.Account {
+	account := auxModelAccount(id, name, models...)
+	account.Extra = extra
+	return account
+}
+
+func auxCooldownExtra(model string, now time.Time) map[string]any {
+	return map[string]any{
+		"model_rate_limits": map[string]any{
+			model: map[string]any{
+				"rate_limit_reset_at": now.Add(5 * time.Minute).Format(time.RFC3339),
+			},
+		},
+	}
+}
+
+func TestAuxSchedulerLaneCoverageEscalatesUntilUnionCoversModels(t *testing.T) {
+	ctx := context.Background()
+	store, err := dbOpenMemory(t)
+	require.NoError(t, err)
+	state := newAuxLaneUpstreamState(
+		auxModelAccount(1, "gpt", "gpt-5"),
+		auxModelAccount(2, "o3", "o3"),
+		auxModelAccount(3, "both", "gpt-5", "o3"),
+	)
+	state.setSchedulable(1, true)
+	state.setSchedulable(2, false)
+	state.setSchedulable(3, false)
+	upstream := httptest.NewServer(state.serve(t, "/api/v1/admin/accounts"))
+	defer upstream.Close()
+	svc := New(&config.RuntimeConfig{}, store, sub2api.NewClient(upstream.URL, "admin-key"), nil)
+	id := insertAuxLaneRuleRaw(t, store, "union", true, [][]int64{{1}, {2}, {3}}, []string{"gpt-5", "o3"}, 1, 3)
+
+	require.NoError(t, svc.ReconcileAuxScheduler(ctx))
+	rule := currentAuxSchedulerRule(t, svc, id)
+	require.Equal(t, 2, rule.ExpectedOpenThroughLane)
+	require.Equal(t, "stable", rule.TransitionStatus)
+	require.Empty(t, rule.MissingModels)
+	state.mu.Lock()
+	require.Len(t, state.calls, 1)
+	require.Equal(t, int64(2), state.calls[0].AccountID)
+	require.True(t, state.calls[0].Value)
+	state.mu.Unlock()
+}
+
+func TestAuxSchedulerLaneCoverageWholeAccountFailureEscalatesImmediately(t *testing.T) {
+	ctx := context.Background()
+	store, err := dbOpenMemory(t)
+	require.NoError(t, err)
+	account1 := auxModelAccount(1, "down", "gpt-5")
+	account1.TempUnschedulableUntil = timePtr(time.Now().UTC().Add(5 * time.Minute))
+	state := newAuxLaneUpstreamState(account1, auxModelAccount(2, "ok", "gpt-5", "o3"))
+	state.setSchedulable(1, true)
+	state.setSchedulable(2, false)
+	upstream := httptest.NewServer(state.serve(t, "/api/v1/admin/accounts"))
+	defer upstream.Close()
+	svc := New(&config.RuntimeConfig{}, store, sub2api.NewClient(upstream.URL, "admin-key"), nil)
+	id := insertAuxLaneRuleRaw(t, store, "whole down", true, [][]int64{{1}, {2}}, []string{"gpt-5", "o3"}, 1, 2)
+
+	require.NoError(t, svc.ReconcileAuxScheduler(ctx))
+	rule := currentAuxSchedulerRule(t, svc, id)
+	require.Equal(t, 2, rule.ExpectedOpenThroughLane)
+	state.mu.Lock()
+	require.Len(t, state.calls, 1)
+	require.Equal(t, int64(2), state.calls[0].AccountID)
+	require.True(t, state.calls[0].Value)
+	state.mu.Unlock()
+}
+
+func TestAuxSchedulerLaneCoverageModelCooldownRequiresTwoObservations(t *testing.T) {
+	ctx := context.Background()
+	store, err := dbOpenMemory(t)
+	require.NoError(t, err)
+	state := newAuxLaneUpstreamState(
+		auxModelAccountWithExtra(1, "cooling", auxCooldownExtra("gpt-5", time.Now().UTC()), "gpt-5"),
+		auxModelAccount(2, "ok", "gpt-5"),
+	)
+	state.setSchedulable(1, true)
+	state.setSchedulable(2, false)
+	upstream := httptest.NewServer(state.serve(t, "/api/v1/admin/accounts"))
+	defer upstream.Close()
+	svc := New(&config.RuntimeConfig{}, store, sub2api.NewClient(upstream.URL, "admin-key"), nil)
+	id := insertAuxLaneRuleRaw(t, store, "cooldown", true, [][]int64{{1}, {2}}, []string{"gpt-5"}, 1, 2)
+
+	require.NoError(t, svc.ReconcileAuxScheduler(ctx))
+	rule := currentAuxSchedulerRule(t, svc, id)
+	require.Equal(t, "blocked", rule.TransitionStatus)
+	require.Equal(t, []string{"gpt-5"}, rule.MissingModels)
+	require.Contains(t, rule.BlockedReason, "第二次观测")
+	require.Equal(t, float64(1), rule.UpgradeEvidence["gpt-5_consecutive_unavailable"])
+	state.mu.Lock()
+	require.Empty(t, state.calls)
+	state.mu.Unlock()
+
+	require.NoError(t, svc.ReconcileAuxScheduler(ctx))
+	rule = currentAuxSchedulerRule(t, svc, id)
+	require.Equal(t, 2, rule.ExpectedOpenThroughLane)
+	state.mu.Lock()
+	require.Len(t, state.calls, 1)
+	require.Equal(t, int64(2), state.calls[0].AccountID)
+	require.True(t, state.calls[0].Value)
+	state.mu.Unlock()
+}
+
+func TestAuxSchedulerLaneCoverageUnknownObservationBlocksEscalation(t *testing.T) {
+	ctx := context.Background()
+	store, err := dbOpenMemory(t)
+	require.NoError(t, err)
+	malformed := map[string]any{"model_rate_limits": "not-a-map"}
+	state := newAuxLaneUpstreamState(
+		auxModelAccountWithExtra(1, "malformed", malformed, "gpt-5"),
+		auxModelAccount(2, "ok", "gpt-5"),
+	)
+	state.setSchedulable(1, true)
+	state.setSchedulable(2, false)
+	upstream := httptest.NewServer(state.serve(t, "/api/v1/admin/accounts"))
+	defer upstream.Close()
+	svc := New(&config.RuntimeConfig{}, store, sub2api.NewClient(upstream.URL, "admin-key"), nil)
+	id := insertAuxLaneRuleRaw(t, store, "unknown", true, [][]int64{{1}, {2}}, []string{"gpt-5"}, 1, 2)
+
+	require.NoError(t, svc.ReconcileAuxScheduler(ctx))
+	rule := currentAuxSchedulerRule(t, svc, id)
+	require.Equal(t, "blocked", rule.TransitionStatus)
+	require.Contains(t, rule.BlockedReason, "未知")
+	require.Equal(t, []string{"gpt-5"}, rule.MissingModels)
+	state.mu.Lock()
+	require.Empty(t, state.calls)
+	state.mu.Unlock()
+}
+
+func TestAuxSchedulerLaneCoverageMaximumAutoLaneBlocksWithoutWrites(t *testing.T) {
+	ctx := context.Background()
+	store, err := dbOpenMemory(t)
+	require.NoError(t, err)
+	account1 := auxModelAccount(1, "down", "gpt-5")
+	account1.TempUnschedulableUntil = timePtr(time.Now().UTC().Add(5 * time.Minute))
+	state := newAuxLaneUpstreamState(account1, auxModelAccount(2, "ok", "gpt-5"))
+	state.setSchedulable(1, true)
+	state.setSchedulable(2, false)
+	upstream := httptest.NewServer(state.serve(t, "/api/v1/admin/accounts"))
+	defer upstream.Close()
+	svc := New(&config.RuntimeConfig{}, store, sub2api.NewClient(upstream.URL, "admin-key"), nil)
+	id := insertAuxLaneRuleRaw(t, store, "max cap", true, [][]int64{{1}, {2}}, []string{"gpt-5"}, 1, 1)
+
+	require.NoError(t, svc.ReconcileAuxScheduler(ctx))
+	rule := currentAuxSchedulerRule(t, svc, id)
+	require.Equal(t, "blocked", rule.TransitionStatus)
+	require.Contains(t, rule.BlockedReason, "自动上限")
+	require.Equal(t, []string{"gpt-5"}, rule.MissingModels)
+	state.mu.Lock()
+	require.Empty(t, state.calls)
+	state.mu.Unlock()
+}
+
+func TestAuxSchedulerLaneCoverageOpensOnlyOneLanePerReconcile(t *testing.T) {
+	ctx := context.Background()
+	store, err := dbOpenMemory(t)
+	require.NoError(t, err)
+	account1 := auxModelAccount(1, "down-a", "gpt-5")
+	account1.TempUnschedulableUntil = timePtr(time.Now().UTC().Add(5 * time.Minute))
+	account2 := auxModelAccount(2, "down-b", "gpt-5")
+	account2.TempUnschedulableUntil = timePtr(time.Now().UTC().Add(5 * time.Minute))
+	state := newAuxLaneUpstreamState(account1, account2, auxModelAccount(3, "ok", "gpt-5"))
+	state.setSchedulable(1, true)
+	state.setSchedulable(2, false)
+	state.setSchedulable(3, false)
+	upstream := httptest.NewServer(state.serve(t, "/api/v1/admin/accounts"))
+	defer upstream.Close()
+	svc := New(&config.RuntimeConfig{}, store, sub2api.NewClient(upstream.URL, "admin-key"), nil)
+	id := insertAuxLaneRuleRaw(t, store, "one lane", true, [][]int64{{1}, {2}, {3}}, []string{"gpt-5"}, 1, 3)
+
+	require.NoError(t, svc.ReconcileAuxScheduler(ctx))
+	rule := currentAuxSchedulerRule(t, svc, id)
+	require.Equal(t, 2, rule.ExpectedOpenThroughLane)
+	state.mu.Lock()
+	require.Len(t, state.calls, 1)
+	require.Equal(t, int64(2), state.calls[0].AccountID)
+	state.mu.Unlock()
+
+	require.NoError(t, svc.ReconcileAuxScheduler(ctx))
+	rule = currentAuxSchedulerRule(t, svc, id)
+	require.Equal(t, 3, rule.ExpectedOpenThroughLane)
+	state.mu.Lock()
+	require.Len(t, state.calls, 2)
+	require.Equal(t, int64(3), state.calls[1].AccountID)
+	state.mu.Unlock()
+}
+
+func TestAuxSchedulerModelAvailabilityAdapter(t *testing.T) {
+	now := time.Now().UTC()
+	future := now.Add(5 * time.Minute)
+	stale := now.Add(-time.Minute)
+	tests := []struct {
+		name     string
+		account  sub2api.Account
+		model    string
+		expected auxModelAvailability
+	}{
+		{
+			name:     "active supported usable",
+			account:  auxModelAccount(1, "ok", "gpt-5"),
+			model:    "gpt-5",
+			expected: availabilityUsable,
+		},
+		{
+			name: "account error unavailable",
+			account: func() sub2api.Account {
+				account := auxModelAccount(1, "error", "gpt-5")
+				account.Status = "error"
+				return account
+			}(),
+			model:    "gpt-5",
+			expected: availabilityUnavailable,
+		},
+		{
+			name: "temp unschedulable unavailable",
+			account: func() sub2api.Account {
+				account := auxModelAccount(1, "temp", "gpt-5")
+				account.TempUnschedulableUntil = &future
+				return account
+			}(),
+			model:    "gpt-5",
+			expected: availabilityUnavailable,
+		}, {
+			name:     "model cooldown unavailable",
+			account:  auxModelAccountWithExtra(1, "cooldown", auxCooldownExtra("gpt-5", now), "gpt-5"),
+			model:    "gpt-5",
+			expected: availabilityUnavailable,
+		},
+		{
+			name: "stale cooldown usable",
+			account: auxModelAccountWithExtra(1, "stale", map[string]any{
+				"model_rate_limits": map[string]any{
+					"gpt-5": map[string]any{"rate_limit_reset_at": stale.Format(time.RFC3339)},
+				},
+			}, "gpt-5"),
+			model:    "gpt-5",
+			expected: availabilityUsable,
+		},
+		{
+			name: "malformed limits unknown",
+			account: auxModelAccountWithExtra(1, "bad", map[string]any{
+				"model_rate_limits": "bad",
+			}, "gpt-5"),
+			model:    "gpt-5",
+			expected: availabilityUnknown,
+		},
+		{
+			name: "unknown account status unknown",
+			account: func() sub2api.Account {
+				account := auxModelAccount(1, "unknown", "gpt-5")
+				account.Status = "suspended"
+				return account
+			}(),
+			model:    "gpt-5",
+			expected: availabilityUnknown,
+		},
+		{
+			name:     "missing model metadata unknown",
+			account:  sub2api.Account{ID: 1, Name: "none", Platform: "openai", Type: "apikey", Status: "active"},
+			model:    "gpt-5",
+			expected: availabilityUnknown,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			require.Equal(t, tc.expected, auxAccountModelAvailability(tc.account, tc.model, now))
+		})
+	}
+}
+
+func TestAuxSchedulerModelCoverageUnion(t *testing.T) {
+	observations := map[int64]map[string]auxModelAvailability{
+		1: {"gpt-5": availabilityUsable, "o3": availabilityUnavailable},
+		2: {"gpt-5": availabilityUnavailable, "o3": availabilityUsable},
+	}
+	lanes := [][]int64{{1}, {2}}
+	missing := auxMissingModelsForPrefix(lanes, observations, []string{"gpt-5", "o3"}, 1)
+	require.Equal(t, []string{"o3"}, missing)
+	require.Empty(t, auxMissingModelsForPrefix(lanes, observations, []string{"gpt-5", "o3"}, 2))
+}
