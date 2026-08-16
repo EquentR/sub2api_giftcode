@@ -97,32 +97,46 @@
         <el-form-item label="启用">
           <el-switch v-model="form.enabled" />
         </el-form-item>
-        <el-form-item label="主力账号" required>
+        <el-form-item label="模型集合" required>
           <el-select
-            v-model="form.primary_account_ids"
+            v-model="form.model_names"
             multiple
             filterable
+            allow-create
+            default-first-option
             collapse-tags
-            placeholder="选择主力 OpenAI 账号"
+            placeholder="选择本规则需要保护的模型"
             style="width: 100%"
           >
-            <el-option v-for="account in backupOptions" :key="account.id" :label="accountLabel(account)" :value="account.id" />
+            <el-option v-for="model in modelOptions" :key="model" :label="model" :value="model" />
           </el-select>
         </el-form-item>
-        <el-form-item label="备用账号" required>
-          <el-select
-            v-model="form.backup_account_ids"
-            multiple
-            filterable
-            collapse-tags
-            placeholder="选择备用 OpenAI 账号"
-            style="width: 100%"
-          >
-            <el-option v-for="account in accountOptions" :key="account.id" :label="accountLabel(account)" :value="account.id" />
-          </el-select>
+        <el-form-item label="自动泳道上限" required>
+          <el-input-number v-model="form.maximum_auto_lane" :min="1" :max="Math.max(2, form.lanes.length)" />
+        </el-form-item>
+        <el-form-item label="泳道列表" required>
+          <div class="lane-editor">
+            <div v-for="(lane, index) in form.lanes" :key="index" class="lane-row">
+              <div class="lane-index">泳道 {{ index + 1 }}</div>
+              <el-select
+                v-model="form.lanes[index]"
+                multiple
+                filterable
+                collapse-tags
+                placeholder="选择该泳道账号"
+                style="width: 100%"
+              >
+                <el-option v-for="account in accountOptions" :key="account.id" :label="accountLabel(account)" :value="account.id" />
+              </el-select>
+              <el-button text type="primary" :disabled="index === 0" @click="moveLaneUp(index)">上移</el-button>
+              <el-button text type="primary" :disabled="index === form.lanes.length - 1" @click="moveLaneDown(index)">下移</el-button>
+              <el-button text type="danger" @click="removeLane(index)">删除泳道</el-button>
+            </div>
+            <el-button type="primary" plain :icon="Plus" @click="addLane">添加泳道</el-button>
+          </div>
         </el-form-item>
         <div class="muted form-hint">
-          任一主力账号出现临时不可调度或模型冷却时，该规则内所有备用账号会启用调度；备用账号为 active 或 error 时可选，error 不会启用并会在错误信息列提示。备用账号不能被其他规则复用。
+          泳道按成本从低到高排列，开启时从泳道 1 逐级累积；累积开启不等于严格成本隔离，Sub2API 仍可能在已开启泳道间路由流量。
         </div>
       </el-form>
       <template #footer>
@@ -157,8 +171,9 @@ const editing = ref<AuxSchedulerRule | null>(null)
 const form = reactive({
   name: '',
   enabled: true,
-  primary_account_ids: [] as number[],
-  backup_account_ids: [] as number[],
+  model_names: [] as string[],
+  lanes: [[]] as number[][],
+  maximum_auto_lane: 2,
 })
 
 const accountOptions = computed(() => {
@@ -166,9 +181,24 @@ const accountOptions = computed(() => {
   return accounts.value.filter((account) => type(account.type) === 'oauth' || type(account.type) === 'apikey')
 })
 
-const backupOptions = computed(() => {
-  const status = (value: string) => value?.toLowerCase?.() ?? ''
-  return accountOptions.value.filter((account) => status(account.status) === 'active' || status(account.status) === 'error')
+const modelOptions = computed(() => {
+  const seen = new Map<string, string>()
+  for (const account of accounts.value) {
+    const credentials = account.credentials ?? {}
+    const mapping = credentials.model_mapping
+    if (mapping && typeof mapping === 'object') {
+      for (const model of Object.keys(mapping)) {
+        if (model && !seen.has(model)) seen.set(model, model)
+      }
+    }
+    const supported = credentials.upstream_supported_models
+    if (Array.isArray(supported)) {
+      for (const model of supported) {
+        if (typeof model === 'string' && model && !seen.has(model)) seen.set(model, model)
+      }
+    }
+  }
+  return [...seen.values()].sort()
 })
 
 async function loadAll() {
@@ -192,8 +222,9 @@ function openCreate() {
   editing.value = null
   form.name = ''
   form.enabled = true
-  form.primary_account_ids = []
-  form.backup_account_ids = []
+  form.model_names = []
+  form.lanes = [[]]
+  form.maximum_auto_lane = 2
   dialogVisible.value = true
 }
 
@@ -201,9 +232,36 @@ function openEdit(rule: AuxSchedulerRule) {
   editing.value = rule
   form.name = rule.name
   form.enabled = rule.enabled
-  form.primary_account_ids = [...rule.primary_account_ids]
-  form.backup_account_ids = [...rule.backup_account_ids]
+  form.model_names = [...(rule.model_names ?? [])]
+  const lanes = rule.lanes?.length ? rule.lanes : [rule.primary_account_ids, rule.backup_account_ids]
+  form.lanes = lanes.map((lane) => [...lane])
+  form.maximum_auto_lane = rule.maximum_auto_lane || lanes.length
   dialogVisible.value = true
+}
+
+function addLane() {
+  form.lanes.push([])
+}
+
+function removeLane(index: number) {
+  if (form.lanes.length <= 2) {
+    ElMessage.warning('至少需要两个泳道')
+    return
+  }
+  form.lanes.splice(index, 1)
+  if (form.maximum_auto_lane > form.lanes.length) form.maximum_auto_lane = form.lanes.length
+}
+
+function moveLaneUp(index: number) {
+  if (index <= 0) return
+  const lanes = form.lanes
+  ;[lanes[index - 1], lanes[index]] = [lanes[index], lanes[index - 1]]
+}
+
+function moveLaneDown(index: number) {
+  if (index >= form.lanes.length - 1) return
+  const lanes = form.lanes
+  ;[lanes[index], lanes[index + 1]] = [lanes[index + 1], lanes[index]]
 }
 
 async function save() {
@@ -211,12 +269,25 @@ async function save() {
     ElMessage.warning('请填写规则名称')
     return
   }
-  if (form.primary_account_ids.length === 0 || form.backup_account_ids.length === 0) {
-    ElMessage.warning('主力账号和备用账号都不能为空')
+  if (form.model_names.length === 0) {
+    ElMessage.warning('请选择至少一个模型')
     return
   }
-  if (form.primary_account_ids.some((id) => form.backup_account_ids.includes(id))) {
-    ElMessage.warning('同一账号不能同时作为主力与备用')
+  if (form.lanes.length < 2) {
+    ElMessage.warning('至少需要两个泳道')
+    return
+  }
+  if (form.lanes.some((lane) => lane.length === 0)) {
+    ElMessage.warning('每个泳道至少需要一个账号')
+    return
+  }
+  const flat = form.lanes.flat()
+  if (new Set(flat).size !== flat.length) {
+    ElMessage.warning('同一账号不能在多个泳道中重复')
+    return
+  }
+  if (form.maximum_auto_lane < 1 || form.maximum_auto_lane > form.lanes.length) {
+    ElMessage.warning('自动泳道上限必须在有效范围内')
     return
   }
   saving.value = true
@@ -224,8 +295,9 @@ async function save() {
     const payload = {
       name: form.name.trim(),
       enabled: form.enabled,
-      primary_account_ids: form.primary_account_ids,
-      backup_account_ids: form.backup_account_ids,
+      model_names: form.model_names,
+      lanes: form.lanes.map((lane) => [...lane]),
+      maximum_auto_lane: form.maximum_auto_lane,
     }
     if (editing.value) {
       await updateAuxSchedulerRule(editing.value.id, payload)
@@ -247,8 +319,9 @@ async function toggleEnabled(rule: AuxSchedulerRule, enabled: boolean) {
     await updateAuxSchedulerRule(rule.id, {
       name: rule.name,
       enabled,
-      primary_account_ids: rule.primary_account_ids,
-      backup_account_ids: rule.backup_account_ids,
+      model_names: [...(rule.model_names ?? [])],
+      lanes: (rule.lanes?.length ? rule.lanes : [rule.primary_account_ids, rule.backup_account_ids]).map((lane) => [...lane]),
+      maximum_auto_lane: rule.maximum_auto_lane || (rule.lanes?.length ?? 2),
     })
     ElMessage.success(enabled ? '规则已启用' : '规则已停用')
     await loadAll()
@@ -362,6 +435,41 @@ onMounted(loadAll)
 
 .model-lane-text {
   line-height: 1.7;
+}
+
+.lane-editor {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.lane-row {
+  display: grid;
+  grid-template-columns: 76px minmax(0, 1fr) auto auto auto;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+}
+
+.lane-index {
+  color: #374151;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+@media (max-width: 760px) {
+  .lane-row {
+    grid-template-columns: minmax(0, 1fr);
+    row-gap: 4px;
+    padding: 8px;
+    border: 1px solid #e5e7eb;
+    border-radius: 6px;
+  }
+
+  .lane-editor > .el-button {
+    align-self: flex-start;
+  }
 }
 
 .error-text {

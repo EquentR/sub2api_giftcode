@@ -36,3 +36,28 @@ test('aux scheduler view distinguishes migration, disabled, and active rules', (
   assert.match(source, /model_names/)
   assert.match(source, /未配置模型集合/)
 })
+
+test('aux scheduler view provides ordered lane editing and cost disclosure', () => {
+  const source = readSource('../src/views/AdminAuxSchedulerView.vue')
+  assert.match(source, /form\.model_names/)
+  assert.match(source, /form\.lanes/)
+  assert.match(source, /form\.maximum_auto_lane/)
+  assert.match(source, /添加泳道/)
+  assert.match(source, /删除泳道/)
+  assert.match(source, />上移<\/el-button>/)
+  assert.match(source, />下移<\/el-button>/)
+  assert.match(source, /累积开启不等于严格成本隔离/)
+  assert.match(source, /model_names:\s*form\.model_names/)
+  assert.match(source, /lanes:\s*form\.lanes/)
+  assert.match(source, /maximum_auto_lane:\s*form\.maximum_auto_lane/)
+})
+
+test('aux scheduler admin API serializes the new lane contract', () => {
+  const apiSource = readSource('../src/api/admin.ts')
+  const typeSource = readSource('../src/api/types.ts')
+  assert.match(apiSource, /model_names:\s*string\[\]/)
+  assert.match(apiSource, /lanes:\s*number\[\]\[\]/)
+  assert.match(apiSource, /maximum_auto_lane:\s*number/)
+  assert.match(typeSource, /maximum_auto_lane:\s*number/)
+  assert.match(typeSource, /lanes:\s*number\[\]\[\]/)
+})

@@ -32,6 +32,9 @@ func (h *Handlers) CreateAuxSchedulerRule(c *gin.Context) {
 	rule, err := h.service.CreateAuxSchedulerRule(c.Request.Context(), app.AuxSchedulerRuleInput{
 		Name:              req.Name,
 		Enabled:           req.Enabled,
+		ModelNames:        req.ModelNames,
+		Lanes:             req.Lanes,
+		MaximumAutoLane:   req.MaximumAutoLane,
 		PrimaryAccountIDs: req.PrimaryAccountIDs,
 		BackupAccountIDs:  req.BackupAccountIDs,
 	})
@@ -56,6 +59,9 @@ func (h *Handlers) UpdateAuxSchedulerRule(c *gin.Context) {
 	rule, err := h.service.UpdateAuxSchedulerRule(c.Request.Context(), id, app.AuxSchedulerRuleInput{
 		Name:              req.Name,
 		Enabled:           req.Enabled,
+		ModelNames:        req.ModelNames,
+		Lanes:             req.Lanes,
+		MaximumAutoLane:   req.MaximumAutoLane,
 		PrimaryAccountIDs: req.PrimaryAccountIDs,
 		BackupAccountIDs:  req.BackupAccountIDs,
 	})

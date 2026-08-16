@@ -31,10 +31,13 @@ last_observed_at, last_verified_at, blocked_reason, warnings,
 activated_at, last_checked_at, last_error, created_at, updated_at`
 
 type AuxSchedulerRuleInput struct {
-	Name              string  `json:"name"`
-	Enabled           bool    `json:"enabled"`
-	PrimaryAccountIDs []int64 `json:"primary_account_ids"`
-	BackupAccountIDs  []int64 `json:"backup_account_ids"`
+	Name              string    `json:"name"`
+	Enabled           bool      `json:"enabled"`
+	ModelNames        []string  `json:"model_names"`
+	Lanes             [][]int64 `json:"lanes"`
+	MaximumAutoLane   int       `json:"maximum_auto_lane"`
+	PrimaryAccountIDs []int64   `json:"primary_account_ids"`
+	BackupAccountIDs  []int64   `json:"backup_account_ids"`
 }
 
 type AuxSchedulerAccountInfo struct {
@@ -114,24 +117,39 @@ func (s *Service) CreateAuxSchedulerRule(ctx context.Context, input AuxScheduler
 	s.auxMu.Lock()
 	defer s.auxMu.Unlock()
 
-	warnings, err := s.validateAuxSchedulerInput(ctx, input, 0)
+	config := normalizeAuxSchedulerConfig(input)
+	warnings, err := s.validateAuxSchedulerInput(ctx, input, config, 0)
 	if err != nil {
 		return nil, err
 	}
 	now := s.now()
-	primaryJSON, err := json.Marshal(deduplicateInt64s(input.PrimaryAccountIDs))
+	tx, err := s.db().BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
 	}
-	backupJSON, err := json.Marshal(deduplicateInt64s(input.BackupAccountIDs))
+	defer func() { _ = tx.Rollback() }()
+	if config.Enabled {
+		if err := s.assertAuxSchedulerOwnershipInTx(ctx, tx, config.Lanes, 0); err != nil {
+			return nil, err
+		}
+	}
+	modelJSON, err := json.Marshal(config.ModelNames)
 	if err != nil {
 		return nil, err
 	}
-	lanesJSON, err := json.Marshal([][]int64{deduplicateInt64s(input.PrimaryAccountIDs), deduplicateInt64s(input.BackupAccountIDs)})
+	lanesJSON, err := json.Marshal(config.Lanes)
 	if err != nil {
 		return nil, err
 	}
-	result, err := s.db().ExecContext(ctx, `
+	primaryJSON, err := json.Marshal(config.PrimaryAccountIDs)
+	if err != nil {
+		return nil, err
+	}
+	backupJSON, err := json.Marshal(config.BackupAccountIDs)
+	if err != nil {
+		return nil, err
+	}
+	result, err := tx.ExecContext(ctx, `
 INSERT INTO aux_scheduler_rules (
   name, enabled, primary_account_ids_json, backup_account_ids_json,
   model_names_json, lanes_json, maximum_auto_lane, migration_status, migration_source_json,
@@ -139,9 +157,9 @@ INSERT INTO aux_scheduler_rules (
   target_open_through_lane, transition_status, transition_generation,
   upgrade_evidence_json, missing_models_json,
   created_at, updated_at
-) VALUES (?, ?, ?, ?, '[]', ?, 2, '', '', ?, 1, 1, 1, 1, 'stable', 0, '{}', '[]', ?, ?)
-`, strings.TrimSpace(input.Name), boolToInt(input.Enabled), string(primaryJSON), string(backupJSON),
-		string(lanesJSON),
+) VALUES (?, ?, ?, ?, ?, ?, ?, '', '', ?, 1, 1, 1, 1, 'stable', 0, '{}', '[]', ?, ?)
+`, strings.TrimSpace(config.Name), boolToInt(config.Enabled), string(primaryJSON), string(backupJSON),
+		string(modelJSON), string(lanesJSON), config.MaximumAutoLane,
 		AuxSchedulerStateIdle, formatTime(now), formatTime(now))
 	if err != nil {
 		return nil, err
@@ -151,7 +169,7 @@ INSERT INTO aux_scheduler_rules (
 		return nil, err
 	}
 	if len(warnings) > 0 {
-		_, err = s.db().ExecContext(ctx, `
+		_, err = tx.ExecContext(ctx, `
 UPDATE aux_scheduler_rules
 SET last_error = ?, updated_at = ?
 WHERE id = ?
@@ -159,6 +177,9 @@ WHERE id = ?
 		if err != nil {
 			return nil, err
 		}
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
 	}
 	return s.getAuxSchedulerRuleView(ctx, id)
 }
@@ -171,14 +192,15 @@ func (s *Service) UpdateAuxSchedulerRule(ctx context.Context, id int64, input Au
 	if err != nil {
 		return nil, err
 	}
-	warnings, err := s.validateAuxSchedulerInput(ctx, input, id)
+	config := normalizeAuxSchedulerConfig(input)
+	warnings, err := s.validateAuxSchedulerInput(ctx, input, config, id)
 	if err != nil {
 		return nil, err
 	}
 
 	state := existing.State
 	activatedAt := existing.ActivatedAt
-	if existing.State == AuxSchedulerStateBackupActive && existing.MigrationStatus != AuxSchedulerMigrationStatusNeedsMigration {
+	if existing.State == AuxSchedulerStateBackupActive && existing.MigrationStatus != AuxSchedulerMigrationStatusNeedsMigration && !config.NewShape {
 		nextBackupIDs := deduplicateInt64s(input.BackupAccountIDs)
 		if input.Enabled {
 			removed := differenceInt64s(existing.BackupAccountIDs, nextBackupIDs)
@@ -199,27 +221,61 @@ func (s *Service) UpdateAuxSchedulerRule(ctx context.Context, id int64, input Au
 			activatedAt = nil
 		}
 	}
-	primaryJSON, err := json.Marshal(deduplicateInt64s(input.PrimaryAccountIDs))
+	now := s.now()
+	tx, err := s.db().BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
 	}
-	backupJSON, err := json.Marshal(deduplicateInt64s(input.BackupAccountIDs))
+	defer func() { _ = tx.Rollback() }()
+	if config.Enabled {
+		if err := s.assertAuxSchedulerOwnershipInTx(ctx, tx, config.Lanes, id); err != nil {
+			return nil, err
+		}
+	}
+	migrationStatus := existing.MigrationStatus
+	modelJSON, err := json.Marshal(config.ModelNames)
 	if err != nil {
 		return nil, err
 	}
-	lanesJSON, err := json.Marshal([][]int64{deduplicateInt64s(input.PrimaryAccountIDs), deduplicateInt64s(input.BackupAccountIDs)})
+	lanesJSON, err := json.Marshal(config.Lanes)
 	if err != nil {
 		return nil, err
 	}
-	_, err = s.db().ExecContext(ctx, `
+	primaryJSON, err := json.Marshal(config.PrimaryAccountIDs)
+	if err != nil {
+		return nil, err
+	}
+	backupJSON, err := json.Marshal(config.BackupAccountIDs)
+	if err != nil {
+		return nil, err
+	}
+	sourceJSON := ""
+	if !config.NewShape {
+		if existing.MigrationSource != nil {
+			raw, marshalErr := json.Marshal(existing.MigrationSource)
+			if marshalErr != nil {
+				return nil, marshalErr
+			}
+			sourceJSON = string(raw)
+		}
+	} else {
+		migrationStatus = ""
+	}
+	_, err = tx.ExecContext(ctx, `
 UPDATE aux_scheduler_rules
 SET name = ?, enabled = ?, primary_account_ids_json = ?, backup_account_ids_json = ?,
-    lanes_json = ?, state = ?, activated_at = ?, last_error = ?, updated_at = ?
+    model_names_json = ?, lanes_json = ?, maximum_auto_lane = ?,
+    migration_status = ?, migration_source_json = ?,
+    state = ?, activated_at = ?, last_error = ?, updated_at = ?
 WHERE id = ?
-`, strings.TrimSpace(input.Name), boolToInt(input.Enabled), string(primaryJSON), string(backupJSON),
-		string(lanesJSON),
-		state, formatNullableTime(activatedAt), strings.Join(warnings, "; "), formatTime(s.now()), id)
+`, strings.TrimSpace(config.Name), boolToInt(config.Enabled), string(primaryJSON), string(backupJSON),
+		string(modelJSON), string(lanesJSON), config.MaximumAutoLane,
+		migrationStatus, sourceJSON,
+		state, formatNullableTime(activatedAt), strings.Join(warnings, "; "), formatTime(now), id)
 	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
 	return s.getAuxSchedulerRuleView(ctx, id)
@@ -510,12 +566,60 @@ func parseAuxMigrationSourceJSON(raw string) (*models.AuxSchedulerMigrationSourc
 	return &out, nil
 }
 
-func (s *Service) validateAuxSchedulerInput(ctx context.Context, input AuxSchedulerRuleInput, excludeRuleID int64) ([]string, error) {
+type auxSchedulerConfig struct {
+	NewShape          bool
+	Name              string
+	Enabled           bool
+	ModelNames        []string
+	Lanes             [][]int64
+	MaximumAutoLane   int
+	PrimaryAccountIDs []int64
+	BackupAccountIDs  []int64
+}
+
+func normalizeAuxSchedulerConfig(input AuxSchedulerRuleInput) auxSchedulerConfig {
+	config := auxSchedulerConfig{
+		Name:              strings.TrimSpace(input.Name),
+		Enabled:           input.Enabled,
+		ModelNames:        normalizeAuxModelNames(input.ModelNames),
+		Lanes:             input.Lanes,
+		MaximumAutoLane:   input.MaximumAutoLane,
+		PrimaryAccountIDs: input.PrimaryAccountIDs,
+		BackupAccountIDs:  input.BackupAccountIDs,
+	}
+	if len(input.Lanes) > 0 {
+		config.NewShape = true
+		if len(input.Lanes) >= 2 {
+			config.PrimaryAccountIDs = input.Lanes[0]
+			config.BackupAccountIDs = input.Lanes[1]
+		}
+		if config.MaximumAutoLane <= 0 {
+			config.MaximumAutoLane = len(input.Lanes)
+		}
+	}
+	return config
+}
+
+func normalizeAuxModelNames(models []string) []string {
+	seen := make(map[string]struct{}, len(models))
+	out := make([]string, 0, len(models))
+	for _, model := range models {
+		model = strings.TrimSpace(model)
+		if model == "" {
+			continue
+		}
+		if _, ok := seen[model]; ok {
+			continue
+		}
+		seen[model] = struct{}{}
+		out = append(out, model)
+	}
+	return out
+}
+
+func (s *Service) validateAuxSchedulerInput(ctx context.Context, input AuxSchedulerRuleInput, config auxSchedulerConfig, excludeRuleID int64) ([]string, error) {
 	if strings.TrimSpace(input.Name) == "" {
 		return nil, fmt.Errorf("%w: 规则名称不能为空", ErrBadRequest)
-	}
-	if len(input.PrimaryAccountIDs) == 0 || len(input.BackupAccountIDs) == 0 {
-		return nil, fmt.Errorf("%w: 必须同时配置主力账号和备用账号", ErrBadRequest)
 	}
 	if err := s.requireUpstreamClient(); err != nil {
 		return nil, err
@@ -528,14 +632,21 @@ func (s *Service) validateAuxSchedulerInput(ctx context.Context, input AuxSchedu
 	for i := range accounts {
 		byID[accounts[i].ID] = accounts[i]
 	}
-	backupOwners, primaryOwners, err := s.auxSchedulerAccountOwners(ctx, excludeRuleID)
-	if err != nil {
-		return nil, err
+	if !config.NewShape {
+		return s.validateLegacyAuxSchedulerInput(ctx, input, config, byID, excludeRuleID)
 	}
-	primary := deduplicateInt64s(input.PrimaryAccountIDs)
-	backup := deduplicateInt64s(input.BackupAccountIDs)
+	return s.validateLaneAuxSchedulerInput(ctx, config, byID, excludeRuleID)
+}
+
+func (s *Service) validateLegacyAuxSchedulerInput(ctx context.Context, input AuxSchedulerRuleInput, config auxSchedulerConfig, byID map[int64]sub2api.Account, excludeRuleID int64) ([]string, error) {
+	primary := deduplicateInt64s(config.PrimaryAccountIDs)
+	backup := deduplicateInt64s(config.BackupAccountIDs)
 	if len(primary) == 0 || len(backup) == 0 {
 		return nil, fmt.Errorf("%w: 必须同时配置主力账号和备用账号", ErrBadRequest)
+	}
+	owners, err := s.auxSchedulerAccountOwners(ctx, excludeRuleID)
+	if err != nil {
+		return nil, err
 	}
 	primarySet := make(map[int64]struct{}, len(primary))
 	warnings := make([]string, 0, len(backup))
@@ -544,7 +655,7 @@ func (s *Service) validateAuxSchedulerInput(ctx context.Context, input AuxSchedu
 		if err := validateAuxSchedulerAccount(id, byID); err != nil {
 			return nil, err
 		}
-		if owner := backupOwners[id]; owner != "" {
+		if owner := owners.backup[id]; owner != "" {
 			return nil, fmt.Errorf("%w: 账号 %s 已在规则 %s 中作为备用账号使用", ErrBadRequest, auxAccountLabel(byID[id].Name, id), owner)
 		}
 	}
@@ -552,10 +663,10 @@ func (s *Service) validateAuxSchedulerInput(ctx context.Context, input AuxSchedu
 		if _, ok := primarySet[id]; ok {
 			return nil, fmt.Errorf("%w: 账号 %s 不能同时作为主力账号和备用账号", ErrBadRequest, auxAccountLabel(byID[id].Name, id))
 		}
-		if owner := backupOwners[id]; owner != "" {
+		if owner := owners.backup[id]; owner != "" {
 			return nil, fmt.Errorf("%w: 备用账号 %s 已被规则 %s 使用", ErrBadRequest, auxAccountLabel(byID[id].Name, id), owner)
 		}
-		if owner := primaryOwners[id]; owner != "" {
+		if owner := owners.primary[id]; owner != "" {
 			return nil, fmt.Errorf("%w: 账号 %s 已在规则 %s 中作为主力账号使用", ErrBadRequest, auxAccountLabel(byID[id].Name, id), owner)
 		}
 		warning, err := validateAuxSchedulerBackupAccount(id, byID)
@@ -569,25 +680,222 @@ func (s *Service) validateAuxSchedulerInput(ctx context.Context, input AuxSchedu
 	return warnings, nil
 }
 
-func (s *Service) auxSchedulerAccountOwners(ctx context.Context, excludeRuleID int64) (map[int64]string, map[int64]string, error) {
+func (s *Service) validateLaneAuxSchedulerInput(ctx context.Context, config auxSchedulerConfig, byID map[int64]sub2api.Account, excludeRuleID int64) ([]string, error) {
+	if len(config.ModelNames) == 0 {
+		return nil, fmt.Errorf("%w: 必须配置非空模型集合", ErrBadRequest)
+	}
+	lanes, err := validateAuxSchedulerLanes(config.Lanes)
+	if err != nil {
+		return nil, err
+	}
+	if config.MaximumAutoLane < 1 || config.MaximumAutoLane > len(lanes) {
+		return nil, fmt.Errorf("%w: maximum_auto_lane 必须在 1 到 %d 之间", ErrBadRequest, len(lanes))
+	}
+	supported := make(map[string]struct{})
+	for _, lane := range lanes {
+		for _, id := range lane {
+			if err := validateAuxSchedulerAccount(id, byID); err != nil {
+				return nil, err
+			}
+			for _, model := range auxAccountSupportedModels(byID[id]) {
+				supported[model] = struct{}{}
+			}
+		}
+	}
+	for _, model := range config.ModelNames {
+		if _, ok := supported[model]; !ok {
+			return nil, fmt.Errorf("%w: 模型 %q 在规则账号中没有被支持", ErrBadRequest, model)
+		}
+	}
+	if config.Enabled {
+		if owner, err := s.auxSchedulerLaneOwner(ctx, lanes, excludeRuleID); err != nil {
+			return nil, err
+		} else if owner != "" {
+			return nil, fmt.Errorf("%w: 账号已在规则 %s 中使用", ErrBadRequest, owner)
+		}
+	}
+	return nil, nil
+}
+
+func validateAuxSchedulerLanes(lanes [][]int64) ([][]int64, error) {
+	if len(lanes) < 2 {
+		return nil, fmt.Errorf("%w: 至少需要两个泳道", ErrBadRequest)
+	}
+	seen := make(map[int64]struct{})
+	out := make([][]int64, 0, len(lanes))
+	for _, lane := range lanes {
+		if len(lane) == 0 {
+			return nil, fmt.Errorf("%w: 泳道不能为空", ErrBadRequest)
+		}
+		cleaned := make([]int64, 0, len(lane))
+		for _, id := range lane {
+			if id <= 0 {
+				return nil, fmt.Errorf("%w: 泳道账号 ID 必须为正数", ErrBadRequest)
+			}
+			if _, ok := seen[id]; ok {
+				return nil, fmt.Errorf("%w: 同一账号不能在多个泳道中重复", ErrBadRequest)
+			}
+			seen[id] = struct{}{}
+			cleaned = append(cleaned, id)
+		}
+		out = append(out, cleaned)
+	}
+	return out, nil
+}
+
+func auxAccountSupportedModels(account sub2api.Account) []string {
+	seen := make(map[string]struct{})
+	out := make([]string, 0)
+	credentials := account.Credentials
+	if raw, ok := credentials["upstream_supported_models"].([]any); ok {
+		for _, item := range raw {
+			model, ok := item.(string)
+			model = strings.TrimSpace(model)
+			if ok && model != "" {
+				if _, exists := seen[model]; !exists {
+					seen[model] = struct{}{}
+					out = append(out, model)
+				}
+			}
+		}
+	}
+	if mapping, ok := credentials["model_mapping"].(map[string]any); ok {
+		for model := range mapping {
+			model = strings.TrimSpace(model)
+			if model != "" {
+				if _, exists := seen[model]; !exists {
+					seen[model] = struct{}{}
+					out = append(out, model)
+				}
+			}
+		}
+	}
+	return out
+}
+
+type auxSchedulerOwnerMaps struct {
+	primary map[int64]string
+	backup  map[int64]string
+}
+
+func (s *Service) auxSchedulerAccountOwners(ctx context.Context, excludeRuleID int64) (*auxSchedulerOwnerMaps, error) {
 	rules, err := s.listAuxSchedulerRulesRaw(ctx)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
-	backupOwners := make(map[int64]string)
-	primaryOwners := make(map[int64]string)
+	owners := &auxSchedulerOwnerMaps{
+		primary: make(map[int64]string),
+		backup:  make(map[int64]string),
+	}
 	for i := range rules {
-		if rules[i].ID == excludeRuleID {
+		if rules[i].ID == excludeRuleID || !rules[i].Enabled || rules[i].MigrationStatus == AuxSchedulerMigrationStatusNeedsMigration {
 			continue
 		}
-		for _, backupID := range rules[i].BackupAccountIDs {
-			backupOwners[backupID] = rules[i].Name
+		lanes := rules[i].Lanes
+		if len(lanes) == 0 {
+			lanes = [][]int64{rules[i].PrimaryAccountIDs, rules[i].BackupAccountIDs}
 		}
-		for _, primaryID := range rules[i].PrimaryAccountIDs {
-			primaryOwners[primaryID] = rules[i].Name
+		for index, lane := range lanes {
+			target := owners.primary
+			if index > 0 {
+				target = owners.backup
+			}
+			for _, id := range lane {
+				target[id] = rules[i].Name
+			}
 		}
 	}
-	return backupOwners, primaryOwners, nil
+	return owners, nil
+}
+
+func (s *Service) auxSchedulerLaneOwner(ctx context.Context, lanes [][]int64, excludeRuleID int64) (string, error) {
+	rules, err := s.listAuxSchedulerRulesRaw(ctx)
+	if err != nil {
+		return "", err
+	}
+	for i := range rules {
+		if rules[i].ID == excludeRuleID || !rules[i].Enabled || rules[i].MigrationStatus == AuxSchedulerMigrationStatusNeedsMigration {
+			continue
+		}
+		existingLanes := rules[i].Lanes
+		if len(existingLanes) == 0 {
+			existingLanes = [][]int64{rules[i].PrimaryAccountIDs, rules[i].BackupAccountIDs}
+		}
+		if anyAuxLanesOverlap(lanes, existingLanes) {
+			return rules[i].Name, nil
+		}
+	}
+	return "", nil
+}
+
+func anyAuxLanesOverlap(a, b [][]int64) bool {
+	seen := make(map[int64]struct{})
+	for _, lane := range a {
+		for _, id := range lane {
+			seen[id] = struct{}{}
+		}
+	}
+	for _, lane := range b {
+		for _, id := range lane {
+			if _, ok := seen[id]; ok {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func (s *Service) assertAuxSchedulerOwnershipInTx(ctx context.Context, tx *sql.Tx, lanes [][]int64, excludeRuleID int64) error {
+	rows, err := tx.QueryContext(ctx, `
+SELECT id, name, enabled, migration_status, lanes_json, primary_account_ids_json, backup_account_ids_json
+FROM aux_scheduler_rules
+WHERE id <> ?
+`, excludeRuleID)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	type ownedRule struct {
+		name  string
+		lanes [][]int64
+	}
+	rules := make([]ownedRule, 0)
+	for rows.Next() {
+		var id int64
+		var name, migrationStatus, lanesJSON, primaryJSON, backupJSON string
+		var enabled int
+		if err := rows.Scan(&id, &name, &enabled, &migrationStatus, &lanesJSON, &primaryJSON, &backupJSON); err != nil {
+			return err
+		}
+		if enabled == 0 || migrationStatus == AuxSchedulerMigrationStatusNeedsMigration {
+			continue
+		}
+		parsedLanes, err := parseInt64SlicesJSON(lanesJSON)
+		if err != nil {
+			return err
+		}
+		if len(parsedLanes) == 0 {
+			primary, err := parseInt64JSON(primaryJSON)
+			if err != nil {
+				return err
+			}
+			backup, err := parseInt64JSON(backupJSON)
+			if err != nil {
+				return err
+			}
+			parsedLanes = [][]int64{primary, backup}
+		}
+		rules = append(rules, ownedRule{name: name, lanes: parsedLanes})
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, rule := range rules {
+		if anyAuxLanesOverlap(lanes, rule.lanes) {
+			return fmt.Errorf("%w: 账号已在规则 %s 中使用", ErrBadRequest, rule.name)
+		}
+	}
+	return nil
 }
 
 func validateAuxSchedulerAccount(id int64, accounts map[int64]sub2api.Account) error {

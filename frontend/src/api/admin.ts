@@ -220,6 +220,14 @@ export function updateOpenAIAccountUserAgent(id: number, userAgent: string) {
   })
 }
 
+export type AuxSchedulerRulePayload = {
+  name: string
+  enabled: boolean
+  model_names: string[]
+  lanes: number[][]
+  maximum_auto_lane: number
+}
+
 export function listAuxSchedulerRules() {
   return request<AuxSchedulerRule[] | null>({
     method: 'GET',
@@ -227,12 +235,7 @@ export function listAuxSchedulerRules() {
   }).then(asArray)
 }
 
-export function createAuxSchedulerRule(payload: {
-  name: string
-  enabled: boolean
-  primary_account_ids: number[]
-  backup_account_ids: number[]
-}) {
+export function createAuxSchedulerRule(payload: AuxSchedulerRulePayload) {
   return request<AuxSchedulerRule>({
     method: 'POST',
     url: '/admin/aux-scheduler/rules',
@@ -240,12 +243,7 @@ export function createAuxSchedulerRule(payload: {
   })
 }
 
-export function updateAuxSchedulerRule(id: number, payload: {
-  name: string
-  enabled: boolean
-  primary_account_ids: number[]
-  backup_account_ids: number[]
-}) {
+export function updateAuxSchedulerRule(id: number, payload: AuxSchedulerRulePayload) {
   return request<AuxSchedulerRule>({
     method: 'PUT',
     url: `/admin/aux-scheduler/rules/${id}`,
