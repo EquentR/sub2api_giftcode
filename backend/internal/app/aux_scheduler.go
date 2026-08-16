@@ -641,6 +641,9 @@ func (s *Service) validateAuxSchedulerInput(ctx context.Context, input AuxSchedu
 }
 
 func (s *Service) validateLegacyAuxSchedulerInput(ctx context.Context, input AuxSchedulerRuleInput, config auxSchedulerConfig, byID map[int64]sub2api.Account, excludeRuleID int64) ([]string, error) {
+	if len(config.ModelNames) > 0 {
+		return nil, fmt.Errorf("%w: 旧版主力/备用规则不能直接携带 model_names，请使用 lanes 泳道契约", ErrBadRequest)
+	}
 	primary := deduplicateInt64s(config.PrimaryAccountIDs)
 	backup := deduplicateInt64s(config.BackupAccountIDs)
 	if len(primary) == 0 || len(backup) == 0 {
