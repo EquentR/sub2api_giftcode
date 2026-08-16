@@ -33,18 +33,49 @@ func auxModelAccount(id int64, name string, models ...string) sub2api.Account {
 
 func newAuxLaneUpstream(t *testing.T, accounts ...sub2api.Account) *httptest.Server {
 	t.Helper()
+	byID := make(map[int64]sub2api.Account, len(accounts))
+	for _, account := range accounts {
+		byID[account.ID] = account
+	}
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/v1/admin/accounts" {
+		switch {
+		case r.URL.Path == "/api/v1/admin/accounts":
+			items := make([]sub2api.Account, 0, len(byID))
+			for _, account := range byID {
+				items = append(items, account)
+			}
+			writeAuxTestEnvelope(w, map[string]any{
+				"items": items, "total": len(items), "page": 1, "page_size": 200, "pages": 1,
+			})
+		case r.Method == http.MethodGet:
+			id, ok := accountIDFromPath(r.URL.Path)
+			if !ok {
+				http.NotFound(w, r)
+				return
+			}
+			account, ok := byID[id]
+			if !ok {
+				http.NotFound(w, r)
+				return
+			}
+			writeAuxTestEnvelope(w, account)
+		case r.Method == http.MethodPost:
+			id, ok := accountIDFromPath(r.URL.Path)
+			if !ok {
+				http.NotFound(w, r)
+				return
+			}
+			var body struct {
+				Schedulable bool `json:"schedulable"`
+			}
+			require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+			account := byID[id]
+			account.Schedulable = body.Schedulable
+			byID[id] = account
+			writeAuxTestEnvelope(w, account)
+		default:
 			http.NotFound(w, r)
-			return
 		}
-		writeAuxTestEnvelope(w, map[string]any{
-			"items":     accounts,
-			"total":     len(accounts),
-			"page":      1,
-			"page_size": 200,
-			"pages":     1,
-		})
 	}))
 }
 

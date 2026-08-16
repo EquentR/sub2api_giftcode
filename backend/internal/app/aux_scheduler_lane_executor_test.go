@@ -138,6 +138,11 @@ func (s *auxLaneUpstreamState) serve(t *testing.T, accountsPath string) http.Han
 				http.NotFound(w, r)
 				return
 			}
+			if s.postReadFail {
+				pendingReadbacks[id] = true
+				writeAuxTestEnvelope(w, account)
+				return
+			}
 			account.Schedulable = body.Schedulable
 			s.accounts[id] = account
 			pendingReadbacks[id] = true

@@ -64,7 +64,33 @@ func TestAuxSchedulerLaneRuleAuthenticatedCRUDAndUpstreamFailureVisibility(t *te
 				"page_size": 200,
 				"pages":     1,
 			})
+		case "/api/v1/admin/accounts/1":
+			if accountsUnavailable {
+				http.Error(w, "account unavailable", http.StatusBadGateway)
+				return
+			}
+			account := httpAuxModelAccount(1, "one", "gpt-5")
+			account.Schedulable = true
+			writeTestEnvelope(w, account)
+		case "/api/v1/admin/accounts/2":
+			if accountsUnavailable {
+				http.Error(w, "account unavailable", http.StatusBadGateway)
+				return
+			}
+			account := httpAuxModelAccount(2, "two", "o3")
+			account.Schedulable = false
+			writeTestEnvelope(w, account)
 		default:
+			if accountsUnavailable && strings.HasPrefix(r.URL.Path, "/api/v1/admin/accounts/") {
+				http.Error(w, "account unavailable", http.StatusBadGateway)
+				return
+			}
+			if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/schedulable") {
+				account := httpAuxModelAccount(2, "two", "o3")
+				account.Schedulable = false
+				writeTestEnvelope(w, account)
+				return
+			}
 			http.NotFound(w, r)
 		}
 	}))
@@ -152,6 +178,15 @@ func TestAuxSchedulerLaneRuleAuthenticatedCRUDAndUpstreamFailureVisibility(t *te
 	deleteReq := httptest.NewRequest(http.MethodDelete, "/api/admin/aux-scheduler/rules/1", nil)
 	deleteReq.Header.Set("Authorization", "Bearer "+token)
 	deleteResponse := httptest.NewRecorder()
+	r.ServeHTTP(deleteResponse, deleteReq)
+	require.Equal(t, http.StatusInternalServerError, deleteResponse.Code)
+
+	mu.Lock()
+	accountsUnavailable = false
+	mu.Unlock()
+	deleteReq = httptest.NewRequest(http.MethodDelete, "/api/admin/aux-scheduler/rules/1", nil)
+	deleteReq.Header.Set("Authorization", "Bearer "+token)
+	deleteResponse = httptest.NewRecorder()
 	r.ServeHTTP(deleteResponse, deleteReq)
 	require.Equal(t, http.StatusOK, deleteResponse.Code)
 

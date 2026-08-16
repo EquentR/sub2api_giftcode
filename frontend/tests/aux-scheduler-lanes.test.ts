@@ -61,3 +61,12 @@ test('aux scheduler admin API serializes the new lane contract', () => {
   assert.match(typeSource, /maximum_auto_lane:\s*number/)
   assert.match(typeSource, /lanes:\s*number\[\]\[\]/)
 })
+
+test('aux scheduler view keeps lifecycle feedback during cleanup and failure', () => {
+  const source = readSource('../src/views/AdminAuxSchedulerView.vue')
+  assert.match(source, /saving\.value = true/)
+  assert.match(source, /catch \(error: any\)/)
+  assert.match(source, /ElMessage\.error\(error\?\.message \?\? '保存失败'\)/)
+  assert.match(source, /ElMessage\.error\(error\?\.message \?\? '删除失败'\)/)
+  assert.match(source, /await loadAll\(\)/)
+})
