@@ -104,6 +104,7 @@ func (s *auxLaneUpstreamState) serve(t *testing.T, accountsPath string) http.Han
 			}
 			if readback && (s.readMode == "mismatch" || s.readMismatch) {
 				account.Schedulable = !account.Schedulable
+				s.accounts[id] = account
 				writeAuxTestEnvelope(w, account)
 				return
 			}

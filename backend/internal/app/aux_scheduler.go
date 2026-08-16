@@ -19,6 +19,7 @@ const (
 	AuxSchedulerStateIdle                     = "idle"
 	AuxSchedulerStateBackupActive             = "backup_active"
 	AuxSchedulerMigrationStatusNeedsMigration = "needs_migration"
+	AuxSchedulerRecoveryStabilityWindow       = 2 * time.Minute
 )
 
 const auxSchedulerRuleColumns = `
@@ -1092,8 +1093,20 @@ func (s *Service) reconcileAuxSchedulerLaneCoverage(ctx context.Context, rule *m
 	}
 	missing := auxMissingModelsForPrefix(lanes, modelObservations, rule.ModelNames, expected)
 	if len(missing) == 0 {
-		now := s.now()
-		return s.updateAuxSchedulerLaneCoverageState(ctx, rule.ID, []string{}, map[string]any{}, "", "stable", "", generation, &now)
+		return s.reconcileAuxSchedulerLaneRecovery(ctx, rule, lanes, expected, generation, modelObservations)
+	}
+	if len(missing) > 0 {
+		unknownPresent := false
+		for _, model := range missing {
+			if auxLaneHasModelAvailability(lanes, expected, modelObservations, model, availabilityUnknown) {
+				unknownPresent = true
+				break
+			}
+		}
+		if unknownPresent {
+			reason := "未知观测阻止恢复: " + strings.Join(missing, ", ")
+			return s.recordAuxSchedulerLaneBlocked(ctx, rule.ID, expected, generation, missing, map[string]any{}, reason)
+		}
 	}
 
 	evidence := make(map[string]any, len(rule.UpgradeEvidence)+len(missing))
@@ -1241,7 +1254,115 @@ func (s *Service) auxSchedulerLaneModelObservations(ctx context.Context, lanes [
 	return out, accounts, nil
 }
 
+func (s *Service) reconcileAuxSchedulerLaneRecovery(ctx context.Context, rule *models.AuxSchedulerRule, lanes [][]int64, expected int, generation int64, observations map[int64]map[string]auxModelAvailability) error {
+	for prefix := 1; prefix < expected; prefix++ {
+		missing := auxMissingModelsForPrefix(lanes, observations, rule.ModelNames, prefix)
+		for _, model := range missing {
+			if auxLaneHasModelAvailability(lanes, prefix, observations, model, availabilityUnknown) {
+				reason := "未知观测阻止恢复: " + model
+				return s.recordAuxSchedulerLaneBlocked(ctx, rule.ID, expected, generation, missing, map[string]any{}, reason)
+			}
+		}
+	}
+	candidate := expected
+	for prefix := 1; prefix < expected; prefix++ {
+		if len(auxMissingModelsForPrefix(lanes, observations, rule.ModelNames, prefix)) == 0 {
+			candidate = prefix
+			break
+		}
+	}
+	now := s.now()
+	if candidate == expected {
+		if err := s.setAuxSchedulerLaneRecovery(ctx, rule.ID, nil, nil); err != nil {
+			return err
+		}
+		return s.updateAuxSchedulerLaneCoverageState(ctx, rule.ID, []string{}, map[string]any{}, "", "stable", "", generation, &now)
+	}
+	restart := rule.RecoveryCandidateLane == nil || rule.RecoveryCandidateSince == nil || *rule.RecoveryCandidateLane != candidate
+	if restart {
+		if err := s.setAuxSchedulerLaneRecovery(ctx, rule.ID, &candidate, &now); err != nil {
+			return err
+		}
+		return s.updateAuxSchedulerLaneCoverageState(ctx, rule.ID, []string{}, map[string]any{}, "", "stable", "", generation, &now)
+	}
+	if now.Sub(*rule.RecoveryCandidateSince) < AuxSchedulerRecoveryStabilityWindow {
+		return s.updateAuxSchedulerLaneCoverageState(ctx, rule.ID, []string{}, map[string]any{}, "", "stable", "", generation, &now)
+	}
+	return s.shrinkAuxSchedulerLanePrefix(ctx, rule.ID, expected, candidate, generation)
+}
+
+func (s *Service) shrinkAuxSchedulerLanePrefix(ctx context.Context, id int64, currentExpected, candidate int, generation int64) error {
+	nextGeneration := generation + 1
+	if err := s.updateAuxSchedulerLaneRuntime(ctx, id, candidate, currentExpected, currentExpected, candidate, "applying", "", "", nextGeneration, nil); err != nil {
+		return err
+	}
+	if err := s.setAuxSchedulerLaneRecovery(ctx, id, nil, nil); err != nil {
+		return err
+	}
+	var closes []auxSchedulerLaneChange
+	lanes, err := s.auxSchedulerLanesByRuleID(ctx, id)
+	if err != nil {
+		return s.recordAuxSchedulerLaneFailure(ctx, id, candidate, currentExpected, nextGeneration, err)
+	}
+	for laneIndex := currentExpected - 1; laneIndex >= candidate; laneIndex-- {
+		for _, accountID := range lanes[laneIndex] {
+			closes = append(closes, auxSchedulerLaneChange{laneIndex: laneIndex + 1, accountID: accountID, desired: false})
+		}
+	}
+	closed := make([]string, 0, len(closes))
+	for _, change := range closes {
+		verified, err := s.applyAuxSchedulerSchedulableChange(ctx, change)
+		if err != nil {
+			if isAuxSchedulerUncertainChangeError(ctx, err) {
+				return s.recordAuxSchedulerLaneUncertain(ctx, id, candidate, currentExpected, nextGeneration, err)
+			}
+			return s.recordAuxSchedulerLaneFailure(ctx, id, candidate, currentExpected, nextGeneration, err)
+		}
+		if !verified {
+			return s.recordAuxSchedulerLaneUncertain(ctx, id, candidate, currentExpected, nextGeneration, errors.New("账号切换后回读验证失败"))
+		}
+		closed = append(closed, fmt.Sprintf("#%d", change.accountID))
+	}
+	warnings := ""
+	if len(closed) > 0 {
+		warnings = "恢复收缩已关闭: " + strings.Join(closed, ", ")
+	}
+	if err := s.recordAuxSchedulerLaneStable(ctx, id, candidate, candidate, candidate, candidate, nextGeneration, warnings); err != nil {
+		return err
+	}
+	now := s.now()
+	return s.updateAuxSchedulerLaneCoverageState(ctx, id, []string{}, map[string]any{}, "", "stable", "", nextGeneration, &now)
+}
+
+func (s *Service) auxSchedulerLanesByRuleID(ctx context.Context, id int64) ([][]int64, error) {
+	rule, err := s.getAuxSchedulerRuleRaw(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	return auxSchedulerOwnedLaneSlices(rule.Lanes, rule.PrimaryAccountIDs, rule.BackupAccountIDs), nil
+}
+
+func (s *Service) setAuxSchedulerLaneRecovery(ctx context.Context, id int64, candidate *int, since *time.Time) error {
+	var candidateValue any
+	var sinceValue any
+	if candidate != nil {
+		candidateValue = *candidate
+	}
+	if since != nil {
+		sinceValue = formatTime(*since)
+	}
+	_, err := s.db().ExecContext(ctx, `
+UPDATE aux_scheduler_rules
+SET recovery_candidate_lane = ?, recovery_candidate_since = ?, updated_at = ?
+WHERE id = ?
+`, candidateValue, sinceValue, formatTime(s.now()), id)
+	return err
+}
+
 func (s *Service) recordAuxSchedulerLaneBlocked(ctx context.Context, id int64, expected int, generation int64, missing []string, evidence map[string]any, reason string) error {
+	if err := s.setAuxSchedulerLaneRecovery(ctx, id, nil, nil); err != nil {
+		return err
+	}
 	now := s.now()
 	return s.updateAuxSchedulerLaneCoverageState(ctx, id, missing, evidence, reason, "blocked", "", generation, &now)
 }
