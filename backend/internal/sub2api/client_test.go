@@ -825,6 +825,49 @@ func TestClientSubscriptionProgressClassifiesAuthoritativeReadFailure(t *testing
 	require.True(t, strings.Contains(err.Error(), "progress unavailable"))
 }
 
+func TestClientSetOpenAIAccountSchedulableSendsSchedulableFlag(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, http.MethodPost, r.Method)
+		require.Equal(t, "/api/v1/admin/accounts/42/schedulable", r.URL.Path)
+		require.Equal(t, "admin-key", r.Header.Get("x-api-key"))
+		var body map[string]bool
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+		require.Equal(t, map[string]bool{"schedulable": true}, body)
+		writeEnvelope(w, Account{ID: 42, Platform: "openai", Status: "active", Schedulable: true})
+	}))
+	defer server.Close()
+
+	account, err := NewClient(server.URL, "admin-key").SetOpenAIAccountSchedulable(context.Background(), 42, true)
+	require.NoError(t, err)
+	require.Equal(t, int64(42), account.ID)
+	require.True(t, account.Schedulable)
+}
+
+func TestClientGetAccountReturnsMatchingAccount(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, http.MethodGet, r.Method)
+		require.Equal(t, "/api/v1/admin/accounts/42", r.URL.Path)
+		writeEnvelope(w, Account{ID: 42, Platform: "openai", Status: "active", Schedulable: true})
+	}))
+	defer server.Close()
+
+	account, err := NewClient(server.URL, "admin-key").GetAccount(context.Background(), 42)
+	require.NoError(t, err)
+	require.Equal(t, int64(42), account.ID)
+	require.True(t, account.Schedulable)
+}
+
+func TestClientGetAccountEmptySuccessDataReturnsZeroAccount(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(envelope{Code: 0, Message: "success"})
+	}))
+	defer server.Close()
+
+	account, err := NewClient(server.URL, "admin-key").GetAccount(context.Background(), 42)
+	require.NoError(t, err)
+	require.Zero(t, account.ID)
+}
+
 type roundTripperFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripperFunc) RoundTrip(req *http.Request) (*http.Response, error) {

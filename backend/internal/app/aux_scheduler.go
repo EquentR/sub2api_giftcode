@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"sort"
 	"strings"
 	"time"
 
@@ -95,7 +96,13 @@ func (s *Service) ReconcileAuxScheduler(ctx context.Context) error {
 	}
 	var errs []error
 	for i := range rules {
-		if !rules[i].Enabled || rules[i].MigrationStatus == AuxSchedulerMigrationStatusNeedsMigration || len(rules[i].ModelNames) > 0 {
+		if !rules[i].Enabled || rules[i].MigrationStatus == AuxSchedulerMigrationStatusNeedsMigration {
+			continue
+		}
+		if len(rules[i].ModelNames) > 0 {
+			if err := s.reconcileAuxSchedulerLaneRule(ctx, &rules[i]); err != nil {
+				errs = append(errs, fmt.Errorf("辅助调度器泳道规则 %d: %w", rules[i].ID, err))
+			}
 			continue
 		}
 		if err := s.reconcileAuxSchedulerRule(ctx, &rules[i]); err != nil {
@@ -316,8 +323,12 @@ func (s *Service) CheckAuxSchedulerRule(ctx context.Context, id int64) (*AuxSche
 	if err != nil {
 		return nil, err
 	}
-	if rule.Enabled && rule.MigrationStatus != AuxSchedulerMigrationStatusNeedsMigration && len(rule.ModelNames) == 0 {
-		if err := s.reconcileAuxSchedulerRule(ctx, rule); err != nil {
+	if rule.Enabled && rule.MigrationStatus != AuxSchedulerMigrationStatusNeedsMigration {
+		if len(rule.ModelNames) > 0 {
+			if err := s.reconcileAuxSchedulerLaneRule(ctx, rule); err != nil {
+				return nil, err
+			}
+		} else if err := s.reconcileAuxSchedulerRule(ctx, rule); err != nil {
 			return nil, err
 		}
 	}
@@ -967,6 +978,182 @@ func differenceInt64s(base, exclude []int64) []int64 {
 		}
 	}
 	return out
+}
+
+type auxSchedulerLaneChange struct {
+	laneIndex int
+	accountID int64
+	desired   bool
+}
+
+func (s *Service) reconcileAuxSchedulerLaneRule(ctx context.Context, rule *models.AuxSchedulerRule) error {
+	lanes := auxSchedulerOwnedLaneSlices(rule.Lanes, rule.PrimaryAccountIDs, rule.BackupAccountIDs)
+	expected := rule.ExpectedOpenThroughLane
+	if expected < 1 {
+		expected = 1
+	}
+	if expected > len(lanes) {
+		expected = len(lanes)
+	}
+	observations := make(map[int64]bool, len(lanes))
+	observedPrefix := 0
+	for laneIndex, lane := range lanes {
+		laneComplete := true
+		for _, id := range lane {
+			account, err := s.upstream.GetAccount(ctx, id)
+			if err != nil {
+				return s.recordAuxSchedulerLaneFailure(ctx, rule.ID, expected, observedPrefix, rule.TransitionGeneration+1, fmt.Errorf("加载账号 #%d 失败: %w", id, err))
+			}
+			if account == nil || account.ID != id {
+				return s.recordAuxSchedulerLaneFailure(ctx, rule.ID, expected, observedPrefix, rule.TransitionGeneration+1, fmt.Errorf("账号 #%d 回读身份不符", id))
+			}
+			observations[id] = account.Schedulable
+			if !account.Schedulable {
+				laneComplete = false
+			}
+		}
+		if laneComplete {
+			observedPrefix = laneIndex + 1
+		} else {
+			break
+		}
+	}
+
+	var opens, closes []auxSchedulerLaneChange
+	for laneIndex, lane := range lanes {
+		desired := laneIndex < expected
+		for _, id := range lane {
+			if observations[id] == desired {
+				continue
+			}
+			change := auxSchedulerLaneChange{laneIndex: laneIndex + 1, accountID: id, desired: desired}
+			if desired {
+				opens = append(opens, change)
+			} else {
+				closes = append(closes, change)
+			}
+		}
+	}
+	if len(opens) == 0 && len(closes) == 0 {
+		return s.recordAuxSchedulerLaneStable(ctx, rule.ID, expected, observedPrefix, expected, expected, rule.TransitionGeneration, "")
+	}
+	sort.SliceStable(closes, func(i, j int) bool {
+		return closes[i].laneIndex > closes[j].laneIndex
+	})
+
+	generation := rule.TransitionGeneration + 1
+	if err := s.updateAuxSchedulerLaneRuntime(ctx, rule.ID, expected, observedPrefix, observedPrefix, expected, "applying", "", "", generation, nil); err != nil {
+		return err
+	}
+	corrected := make([]string, 0, len(opens)+len(closes))
+	for _, change := range opens {
+		verified, err := s.applyAuxSchedulerSchedulableChange(ctx, change)
+		if err != nil {
+			if isAuxSchedulerUncertainChangeError(ctx, err) {
+				return s.recordAuxSchedulerLaneUncertain(ctx, rule.ID, expected, observedPrefix, generation, err)
+			}
+			return s.recordAuxSchedulerLaneFailure(ctx, rule.ID, expected, observedPrefix, generation, err)
+		}
+		if !verified {
+			return s.recordAuxSchedulerLaneUncertain(ctx, rule.ID, expected, observedPrefix, generation, errors.New("账号切换后回读验证失败"))
+		}
+		observations[change.accountID] = change.desired
+		corrected = append(corrected, fmt.Sprintf("#%d", change.accountID))
+	}
+	for _, change := range closes {
+		verified, err := s.applyAuxSchedulerSchedulableChange(ctx, change)
+		if err != nil {
+			if isAuxSchedulerUncertainChangeError(ctx, err) {
+				return s.recordAuxSchedulerLaneUncertain(ctx, rule.ID, expected, observedPrefix, generation, err)
+			}
+			return s.recordAuxSchedulerLaneFailure(ctx, rule.ID, expected, observedPrefix, generation, err)
+		}
+		if !verified {
+			return s.recordAuxSchedulerLaneUncertain(ctx, rule.ID, expected, observedPrefix, generation, errors.New("账号切换后回读验证失败"))
+		}
+		observations[change.accountID] = change.desired
+		corrected = append(corrected, fmt.Sprintf("#%d", change.accountID))
+	}
+	warnings := ""
+	if len(corrected) > 0 {
+		warnings = "人工漂移已修复: " + strings.Join(corrected, ", ")
+	}
+	return s.recordAuxSchedulerLaneStable(ctx, rule.ID, expected, expected, expected, expected, generation, warnings)
+}
+
+func (s *Service) applyAuxSchedulerSchedulableChange(ctx context.Context, change auxSchedulerLaneChange) (bool, error) {
+	if _, err := s.upstream.SetOpenAIAccountSchedulable(ctx, change.accountID, change.desired); err != nil {
+		return false, err
+	}
+	account, err := s.upstream.GetAccount(ctx, change.accountID)
+	if err != nil {
+		return false, nil
+	}
+	if account == nil || account.ID != change.accountID {
+		return false, fmt.Errorf("账号 #%d 回读账号身份不符", change.accountID)
+	}
+	if account.Schedulable != change.desired {
+		return false, fmt.Errorf("账号 #%d 回读最终值不符", change.accountID)
+	}
+	return true, nil
+}
+
+func isAuxSchedulerTimeoutError(ctx context.Context, err error) bool {
+	return errors.Is(err, context.DeadlineExceeded) || (ctx != nil && errors.Is(ctx.Err(), context.DeadlineExceeded))
+}
+
+func isAuxSchedulerUncertainChangeError(ctx context.Context, err error) bool {
+	if err == nil {
+		return false
+	}
+	if isAuxSchedulerTimeoutError(ctx, err) {
+		return true
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "回读")
+}
+
+func (s *Service) recordAuxSchedulerLaneStable(ctx context.Context, id int64, expected, observed, verified, target int, generation int64, warnings string) error {
+	now := s.now()
+	return s.updateAuxSchedulerLaneRuntime(ctx, id, expected, observed, verified, target, "stable", warnings, "", generation, &now)
+}
+
+func (s *Service) recordAuxSchedulerLaneUncertain(ctx context.Context, id int64, expected, observed int, generation int64, cause error) error {
+	message := ""
+	if cause != nil {
+		message = cause.Error()
+	}
+	return s.updateAuxSchedulerLaneRuntime(ctx, id, expected, observed, observed, expected, "uncertain", "", message, generation, nil)
+}
+
+func (s *Service) recordAuxSchedulerLaneFailure(ctx context.Context, id int64, expected, observed int, generation int64, cause error) error {
+	message := ""
+	if cause != nil {
+		message = cause.Error()
+	}
+	return s.updateAuxSchedulerLaneRuntime(ctx, id, expected, observed, observed, expected, "failed", "", message, generation, nil)
+}
+
+func (s *Service) updateAuxSchedulerLaneRuntime(ctx context.Context, id int64, expected, observed, verified, target int, status, warnings, lastError string, generation int64, lastVerifiedAt *time.Time) error {
+	now := s.now()
+	_, err := s.db().ExecContext(ctx, `
+UPDATE aux_scheduler_rules
+SET expected_open_through_lane = ?,
+    observed_open_through_lane = ?,
+    verified_open_through_lane = ?,
+    target_open_through_lane = ?,
+    transition_status = ?,
+    transition_generation = ?,
+    warnings = ?,
+    last_error = ?,
+    last_observed_at = ?,
+    last_verified_at = ?,
+    last_checked_at = ?,
+    updated_at = ?
+WHERE id = ?
+`, expected, observed, verified, target, status, generation, warnings, lastError,
+		formatTime(now), formatNullableTime(lastVerifiedAt), formatTime(now), formatTime(now), id)
+	return err
 }
 
 func (s *Service) reconcileAuxSchedulerRule(ctx context.Context, rule *models.AuxSchedulerRule) error {
