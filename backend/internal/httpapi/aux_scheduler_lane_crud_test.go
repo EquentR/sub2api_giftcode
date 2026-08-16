@@ -316,6 +316,22 @@ func TestAuxSchedulerLaneRuleRejectsLegacyWriteContractThroughAuthenticatedRoute
 	}`)
 	require.Equal(t, http.StatusBadRequest, mixedCreate.Code)
 
+	missingName := post(`{
+	  "name":"   ","enabled":true,"model_names":["gpt-5","o3"],"lanes":[[1],[2]],"maximum_auto_lane":2
+	}`)
+	require.Equal(t, http.StatusBadRequest, missingName.Code)
+	emptyList := httptest.NewRequest(http.MethodGet, "/api/admin/aux-scheduler/rules", nil)
+	emptyList.Header.Set("Authorization", "Bearer "+token)
+	emptyListResponse := httptest.NewRecorder()
+	r.ServeHTTP(emptyListResponse, emptyList)
+	var emptyEnvelope struct {
+		Data json.RawMessage `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(emptyListResponse.Body.Bytes(), &emptyEnvelope))
+	var emptyRules []map[string]any
+	require.NoError(t, json.Unmarshal(emptyEnvelope.Data, &emptyRules))
+	require.Empty(t, emptyRules)
+
 	createReq := httptest.NewRequest(http.MethodPost, "/api/admin/aux-scheduler/rules", strings.NewReader(`{
 	  "name":"new rule","enabled":true,"model_names":["gpt-5","o3"],"lanes":[[1],[2]],"maximum_auto_lane":2
 	}`))

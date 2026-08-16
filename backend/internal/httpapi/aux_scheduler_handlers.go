@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 
@@ -43,6 +44,9 @@ func bindAuxSchedulerRuleRequest(c *gin.Context) (*AuxSchedulerRuleRequest, erro
 	var req AuxSchedulerRuleRequest
 	if err := json.Unmarshal(raw, &req); err != nil {
 		return nil, err
+	}
+	if strings.TrimSpace(req.Name) == "" {
+		return nil, fmt.Errorf("规则名称不能为空")
 	}
 	return &req, nil
 }

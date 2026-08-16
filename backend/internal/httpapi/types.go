@@ -94,7 +94,7 @@ type OpenAIAccountUserAgentRequest struct {
 }
 
 type AuxSchedulerRuleRequest struct {
-	Name            string    `json:"name" binding:"required"`
+	Name            string    `json:"name"`
 	Enabled         bool      `json:"enabled"`
 	ModelNames      []string  `json:"model_names"`
 	Lanes           [][]int64 `json:"lanes"`
