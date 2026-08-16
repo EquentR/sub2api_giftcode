@@ -148,6 +148,25 @@ func TestAuxSchedulerLaneRuleAuthenticatedCRUDAndUpstreamFailureVisibility(t *te
 	require.Equal(t, "lane rule v2", rules[0].Name)
 	require.NotEmpty(t, rules[0].UpstreamError)
 	require.Len(t, rules[0].LaneAccounts[0].Accounts, 1)
+
+	deleteReq := httptest.NewRequest(http.MethodDelete, "/api/admin/aux-scheduler/rules/1", nil)
+	deleteReq.Header.Set("Authorization", "Bearer "+token)
+	deleteResponse := httptest.NewRecorder()
+	r.ServeHTTP(deleteResponse, deleteReq)
+	require.Equal(t, http.StatusOK, deleteResponse.Code)
+
+	afterDeleteReq := httptest.NewRequest(http.MethodGet, "/api/admin/aux-scheduler/rules", nil)
+	afterDeleteReq.Header.Set("Authorization", "Bearer "+token)
+	afterDeleteResponse := httptest.NewRecorder()
+	r.ServeHTTP(afterDeleteResponse, afterDeleteReq)
+	require.Equal(t, http.StatusOK, afterDeleteResponse.Code)
+	var afterDeleteEnvelope struct {
+		Data json.RawMessage `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(afterDeleteResponse.Body.Bytes(), &afterDeleteEnvelope))
+	var remaining []map[string]any
+	require.NoError(t, json.Unmarshal(afterDeleteEnvelope.Data, &remaining))
+	require.Empty(t, remaining)
 }
 
 func TestAuxSchedulerLaneRuleConflictThroughAuthenticatedRoute(t *testing.T) {

@@ -593,6 +593,8 @@ func normalizeAuxSchedulerConfig(input AuxSchedulerRuleInput) auxSchedulerConfig
 			config.PrimaryAccountIDs = input.Lanes[0]
 			config.BackupAccountIDs = input.Lanes[1]
 		}
+	} else if config.MaximumAutoLane <= 0 {
+		config.MaximumAutoLane = 2
 	}
 	return config
 }
