@@ -28,78 +28,84 @@
         title="存在旧版主/备用规则：请先选择模型集合并保存有效配置，否则不会自动调度"
       />
 
-      <el-table
-        v-loading="loading"
-        :data="rules"
-        stripe
-        size="small"
-        empty-text="暂无辅助调度规则"
-        style="width: 100%"
-      >
-        <el-table-column prop="name" label="规则名称" min-width="160" />
-        <el-table-column label="状态" width="110">
-          <template #default="{ row }">
-            <el-tag :type="statusTagType(row)" effect="light">
-              {{ statusLabel(row) }}
-            </el-tag>
-          </template>
-        </el-table-column>
-        <el-table-column label="模型 / 泳道" min-width="260">
-          <template #default="{ row }">
-            <div class="model-lane-text">
-              <div v-if="row.model_names?.length" class="muted">{{ row.model_names.join(' · ') }}</div>
-              <div v-else class="muted">未配置模型集合</div>
-              <div class="account-tags">{{ laneText(row) }}</div>
+      <div v-loading="loading" class="rule-cards-container">
+        <el-empty v-if="!loading && rules.length === 0" description="暂无辅助调度规则" />
+
+        <div v-for="rule in rules" :key="rule.id" class="rule-card" :class="{ 'rule-card--disabled': !rule.enabled }">
+          <!-- Card Header -->
+          <div class="rule-card__header">
+            <div class="rule-card__title-row">
+              <span class="rule-card__name">{{ rule.name }}</span>
+              <el-tag :type="statusTagType(rule)" effect="light" size="small">{{ statusLabel(rule) }}</el-tag>
+              <el-tag :type="transitionTagType(rule)" effect="plain" size="small">{{ transitionStatusLabel(rule) }}</el-tag>
             </div>
-          </template>
-        </el-table-column>
-        <el-table-column label="期望 / 观测" min-width="220">
-          <template #default="{ row }">
-            <div class="runtime-prefix">
-              <div>期望泳道 {{ row.expected_open_through_lane ?? 1 }} · 已验证 {{ row.verified_open_through_lane ?? 1 }}</div>
-              <div class="muted">上游观测 {{ row.observed_open_through_lane ?? 1 }}</div>
+            <div class="rule-card__actions">
+              <el-switch :model-value="rule.enabled" size="small" @change="(value: boolean | string | number) => toggleEnabled(rule, value === true)" />
+              <el-button text type="primary" :icon="Edit" size="small" @click="openEdit(rule)">编辑</el-button>
+              <el-button text type="primary" :icon="Search" size="small" @click="checkRule(rule)">检查</el-button>
+              <el-button text type="danger" :icon="Delete" size="small" @click="removeRule(rule)">删除</el-button>
             </div>
-          </template>
-        </el-table-column>
-        <el-table-column label="运行状态" min-width="260">
-          <template #default="{ row }">
-            <div class="runtime-state">
-              <el-tag :type="transitionTagType(row)" effect="light" size="small">{{ transitionStatusLabel(row) }}</el-tag>
-              <div v-if="row.missing_models?.length" class="runtime-warning">缺失模型: {{ row.missing_models.join(' · ') }}</div>
-              <div v-if="row.blocked_reason" class="runtime-warning">{{ row.blocked_reason }}</div>
-              <div v-if="row.recovery_candidate_lane != null" class="muted">
-                可收缩至泳道 {{ row.recovery_candidate_lane }} · 自 {{ formatTime(row.recovery_candidate_since) }}
+          </div>
+
+          <!-- Models -->
+          <div class="rule-card__models">
+            <span class="rule-card__label">模型集合</span>
+            <div v-if="rule.model_names?.length" class="rule-card__model-tags">
+              <el-tag v-for="model in rule.model_names" :key="model" size="small" effect="plain" type="info">{{ model }}</el-tag>
+            </div>
+            <span v-else class="muted">未配置</span>
+          </div>
+
+          <!-- Swimlane Visualization -->
+          <div class="rule-card__swimlanes">
+            <div class="swimlane-header">
+              <span class="rule-card__label">泳道</span>
+              <span class="muted swimlane-meta">
+                期望 {{ rule.expected_open_through_lane ?? 1 }} · 已验证 {{ rule.verified_open_through_lane ?? 1 }} · 上游观测 {{ rule.observed_open_through_lane ?? 1 }}
+                · 自动上限 {{ rule.maximum_auto_lane }}
+              </span>
+            </div>
+            <div class="swimlane-track">
+              <div
+                v-for="(lane, laneIndex) in resolveLanes(rule)"
+                :key="laneIndex"
+                class="swimlane-card"
+                :class="{
+                  'swimlane-card--active': laneIndex < (rule.verified_open_through_lane ?? 1),
+                  'swimlane-card--pending': laneIndex >= (rule.verified_open_through_lane ?? 1) && laneIndex < (rule.expected_open_through_lane ?? 1),
+                }"
+              >
+                <div class="swimlane-card__number">泳道 {{ laneIndex + 1 }}</div>
+                <div class="swimlane-card__accounts">
+                  <div v-for="account in lane.accounts" :key="account.id" class="swimlane-account-chip" :class="'swimlane-account-chip--' + (account.status || 'unknown')">
+                    <span class="swimlane-account-chip__dot" />
+                    <span class="swimlane-account-chip__name">{{ account.name || `#${account.id}` }}</span>
+                    <span class="swimlane-account-chip__status">{{ account.schedulable === true ? '可调度' : account.schedulable === false ? '不可调度' : '' }}</span>
+                  </div>
+                </div>
               </div>
-              <div v-if="row.upgrade_evidence && Object.keys(row.upgrade_evidence).length" class="muted">
-                证据: {{ evidenceText(row.upgrade_evidence) }}
-              </div>
             </div>
-          </template>
-        </el-table-column>
-        <el-table-column label="启用" width="80">
-          <template #default="{ row }">
-            <el-switch :model-value="row.enabled" @change="(value: boolean | string | number) => toggleEnabled(row, value === true)" />
-          </template>
-        </el-table-column>
-        <el-table-column label="上次检查" min-width="160">
-          <template #default="{ row }">{{ formatTime(row.last_checked_at) }}</template>
-        </el-table-column>
-        <el-table-column label="最近错误" min-width="180">
-          <template #default="{ row }">
-            <el-tooltip v-if="row.last_error" :content="row.last_error" placement="top">
-              <span class="error-text">{{ row.last_error }}</span>
-            </el-tooltip>
-            <span v-else class="muted">-</span>
-          </template>
-        </el-table-column>
-        <el-table-column label="操作" width="200" fixed="right">
-          <template #default="{ row }">
-            <el-button text type="primary" :icon="Edit" @click="openEdit(row)">编辑</el-button>
-            <el-button text type="primary" :icon="Search" @click="checkRule(row)">检查</el-button>
-            <el-button text type="danger" :icon="Delete" @click="removeRule(row)">删除</el-button>
-          </template>
-        </el-table-column>
-      </el-table>
+          </div>
+
+          <!-- Footer: runtime info -->
+          <div class="rule-card__footer">
+            <div v-if="rule.missing_models?.length" class="runtime-warning">缺失模型: {{ rule.missing_models.join(' · ') }}</div>
+            <div v-if="rule.blocked_reason" class="runtime-warning">{{ rule.blocked_reason }}</div>
+            <div v-if="rule.recovery_candidate_lane != null" class="muted">
+              可收缩至泳道 {{ rule.recovery_candidate_lane }} · 自 {{ formatTime(rule.recovery_candidate_since) }}
+            </div>
+            <div v-if="rule.upgrade_evidence && Object.keys(rule.upgrade_evidence).length" class="muted">
+              证据: {{ evidenceText(rule.upgrade_evidence) }}
+            </div>
+            <div class="rule-card__meta">
+              <span class="muted">上次检查: {{ formatTime(rule.last_checked_at) }}</span>
+              <el-tooltip v-if="rule.last_error" :content="rule.last_error" placement="top">
+                <span class="error-text">错误: {{ rule.last_error }}</span>
+              </el-tooltip>
+            </div>
+          </div>
+        </div>
+      </div>
     </div>
 
     <el-dialog v-model="dialogVisible" :title="editing ? '编辑规则' : '新建规则'" width="min(640px, calc(100vw - 24px))" class="aux-rule-dialog">
@@ -370,13 +376,6 @@ async function removeRule(rule: AuxSchedulerRule) {
   }
 }
 
-function accountText(infos: AuxSchedulerAccountInfo[], ids: number[]) {
-  if (infos.length > 0) {
-    return infos.map(observedAccountLabel).join(' · ')
-  }
-  return ids.map((id) => `#${id}`).join(' · ')
-}
-
 function statusTagType(rule: AuxSchedulerRule) {
   if (rule.migration_status === 'needs_migration') return 'warning'
   if (!rule.enabled) return 'info'
@@ -428,23 +427,15 @@ function evidenceText(evidence: Record<string, unknown>) {
     .join(' · ')
 }
 
-function laneText(rule: AuxSchedulerRule) {
+function resolveLanes(rule: AuxSchedulerRule): { number: number; accounts: AuxSchedulerAccountInfo[] }[] {
   if (rule.lane_accounts?.length) {
-    return rule.lane_accounts
-      .map((lane) => `泳道 ${lane.number}: ${lane.accounts.map(observedAccountLabel).join(' · ')}`)
-      .join(' / ')
+    return rule.lane_accounts.map((lane) => ({ number: lane.number, accounts: lane.accounts }))
   }
   const lanes = rule.lanes?.length ? rule.lanes : [[]]
-  return lanes
-    .map((ids, index) => `泳道 ${index + 1}: ${ids.map((id) => `#${id}`).join(' · ')}`)
-    .join(' / ')
-}
-
-function observedAccountLabel(item: AuxSchedulerAccountInfo) {
-  const status = item.status || 'unknown'
-  const scheduling = item.schedulable === true ? '可调度' : item.schedulable === false ? '不可调度' : '未观测'
-  const label = item.name || `#${item.id}`
-  return `${label} (${status} · ${scheduling})`
+  return lanes.map((ids, index) => ({
+    number: index + 1,
+    accounts: ids.map((id) => ({ id, name: `#${id}` })),
+  }))
 }
 
 function accountLabel(account: OpenAIAccount) {
@@ -479,20 +470,213 @@ onMounted(loadAll)
   margin-bottom: 12px;
 }
 
-.account-tags {
-  color: #374151;
-  line-height: 1.7;
-  word-break: break-all;
+/* Rule Cards */
+.rule-cards-container {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-height: 100px;
 }
 
-.model-lane-text {
+.rule-card {
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  background: #fafbfc;
+  padding: 16px 20px;
+  transition: box-shadow 0.2s, border-color 0.2s;
+}
+
+.rule-card:hover {
+  border-color: #c6d0dc;
+  box-shadow: 0 2px 8px rgb(0 0 0 / 0.04);
+}
+
+.rule-card--disabled {
+  opacity: 0.6;
+}
+
+.rule-card__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.rule-card__title-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.rule-card__name {
+  font-size: 15px;
+  font-weight: 600;
+  color: #1f2937;
+}
+
+.rule-card__actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.rule-card__models {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+  flex-wrap: wrap;
+}
+
+.rule-card__model-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.rule-card__label {
+  font-size: 12px;
+  font-weight: 600;
+  color: #6b7280;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  flex-shrink: 0;
+}
+
+/* Swimlane Visualization */
+.rule-card__swimlanes {
+  margin-bottom: 12px;
+}
+
+.swimlane-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.swimlane-meta {
+  font-size: 12px;
+}
+
+.swimlane-track {
+  display: flex;
+  gap: 10px;
+  overflow-x: auto;
+  padding: 4px 0;
+}
+
+.swimlane-card {
+  min-width: 160px;
+  max-width: 240px;
+  flex: 1 0 160px;
+  border: 1.5px solid #e5e7eb;
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: #fff;
+  transition: border-color 0.2s, background 0.2s;
+}
+
+.swimlane-card--active {
+  border-color: #10b981;
+  background: #ecfdf5;
+}
+
+.swimlane-card--pending {
+  border-color: #f59e0b;
+  background: #fffbeb;
+}
+
+.swimlane-card__number {
+  font-size: 11px;
+  font-weight: 700;
+  color: #6b7280;
+  margin-bottom: 6px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.swimlane-card--active .swimlane-card__number {
+  color: #059669;
+}
+
+.swimlane-card--pending .swimlane-card__number {
+  color: #d97706;
+}
+
+.swimlane-card__accounts {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.swimlane-account-chip {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 8px;
+  border-radius: 4px;
+  background: #f3f4f6;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.swimlane-account-chip--active {
+  background: #d1fae5;
+}
+
+.swimlane-account-chip--error,
+.swimlane-account-chip--disabled {
+  background: #fee2e2;
+}
+
+.swimlane-account-chip__dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #9ca3af;
+  flex-shrink: 0;
+}
+
+.swimlane-account-chip--active .swimlane-account-chip__dot {
+  background: #10b981;
+}
+
+.swimlane-account-chip--error .swimlane-account-chip__dot,
+.swimlane-account-chip--disabled .swimlane-account-chip__dot {
+  background: #ef4444;
+}
+
+.swimlane-account-chip__name {
+  font-weight: 500;
+  color: #374151;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.swimlane-account-chip__status {
+  color: #6b7280;
+  font-size: 11px;
+  margin-left: auto;
+  white-space: nowrap;
+}
+
+/* Footer */
+.rule-card__footer {
+  border-top: 1px solid #f3f4f6;
+  padding-top: 8px;
   line-height: 1.7;
 }
 
-.runtime-prefix,
-.runtime-state {
-  line-height: 1.7;
-  color: #374151;
+.rule-card__meta {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
 }
 
 .runtime-warning {
@@ -500,6 +684,7 @@ onMounted(loadAll)
   word-break: break-word;
 }
 
+/* Dialog Lane Editor */
 .lane-editor {
   width: 100%;
   display: flex;
@@ -527,6 +712,24 @@ onMounted(loadAll)
 }
 
 @media (max-width: 760px) {
+  .rule-card__header {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .rule-card__actions {
+    width: 100%;
+    flex-wrap: wrap;
+  }
+
+  .swimlane-track {
+    flex-direction: column;
+  }
+
+  .swimlane-card {
+    max-width: none;
+  }
+
   .lane-row {
     grid-template-columns: minmax(0, 1fr);
     row-gap: 4px;
@@ -537,6 +740,15 @@ onMounted(loadAll)
 
   .lane-editor > .el-button {
     align-self: flex-start;
+  }
+
+  .toolbar-actions {
+    justify-content: flex-start;
+    width: 100%;
+  }
+
+  .form-hint {
+    padding-left: 0;
   }
 }
 
@@ -553,16 +765,5 @@ onMounted(loadAll)
 .form-hint {
   margin-top: -6px;
   padding-left: 90px;
-}
-
-@media (max-width: 760px) {
-  .toolbar-actions {
-    justify-content: flex-start;
-    width: 100%;
-  }
-
-  .form-hint {
-    padding-left: 0;
-  }
 }
 </style>
