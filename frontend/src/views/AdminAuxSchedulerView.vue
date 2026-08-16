@@ -246,7 +246,7 @@ function openEdit(rule: AuxSchedulerRule) {
   form.name = rule.name
   form.enabled = rule.enabled
   form.model_names = [...(rule.model_names ?? [])]
-  const lanes = rule.lanes?.length ? rule.lanes : [rule.primary_account_ids, rule.backup_account_ids]
+  const lanes = rule.lanes?.length ? rule.lanes : [[]]
   form.lanes = lanes.map((lane) => [...lane])
   form.maximum_auto_lane = rule.maximum_auto_lane || lanes.length
   dialogVisible.value = true
@@ -333,7 +333,7 @@ async function toggleEnabled(rule: AuxSchedulerRule, enabled: boolean) {
       name: rule.name,
       enabled,
       model_names: [...(rule.model_names ?? [])],
-      lanes: (rule.lanes?.length ? rule.lanes : [rule.primary_account_ids, rule.backup_account_ids]).map((lane) => [...lane]),
+      lanes: (rule.lanes?.length ? rule.lanes : [[]]).map((lane) => [...lane]),
       maximum_auto_lane: rule.maximum_auto_lane || (rule.lanes?.length ?? 2),
     })
     ElMessage.success(enabled ? '规则已启用' : '规则已停用')
@@ -434,7 +434,7 @@ function laneText(rule: AuxSchedulerRule) {
       .map((lane) => `泳道 ${lane.number}: ${lane.accounts.map(observedAccountLabel).join(' · ')}`)
       .join(' / ')
   }
-  const lanes = rule.lanes?.length ? rule.lanes : [rule.primary_account_ids, rule.backup_account_ids]
+  const lanes = rule.lanes?.length ? rule.lanes : [[]]
   return lanes
     .map((ids, index) => `泳道 ${index + 1}: ${ids.map((id) => `#${id}`).join(' · ')}`)
     .join(' / ')

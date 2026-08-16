@@ -33,13 +33,11 @@ last_observed_at, last_verified_at, blocked_reason, warnings,
 activated_at, last_checked_at, last_error, created_at, updated_at`
 
 type AuxSchedulerRuleInput struct {
-	Name              string    `json:"name"`
-	Enabled           bool      `json:"enabled"`
-	ModelNames        []string  `json:"model_names"`
-	Lanes             [][]int64 `json:"lanes"`
-	MaximumAutoLane   int       `json:"maximum_auto_lane"`
-	PrimaryAccountIDs []int64   `json:"primary_account_ids"`
-	BackupAccountIDs  []int64   `json:"backup_account_ids"`
+	Name            string    `json:"name"`
+	Enabled         bool      `json:"enabled"`
+	ModelNames      []string  `json:"model_names"`
+	Lanes           [][]int64 `json:"lanes"`
+	MaximumAutoLane int       `json:"maximum_auto_lane"`
 }
 
 type AuxSchedulerAccountInfo struct {
@@ -57,10 +55,8 @@ type AuxSchedulerLaneView struct {
 
 type AuxSchedulerRuleView struct {
 	models.AuxSchedulerRule
-	LaneAccounts    []AuxSchedulerLaneView    `json:"lane_accounts"`
-	PrimaryAccounts []AuxSchedulerAccountInfo `json:"primary_accounts,omitempty"`
-	BackupAccounts  []AuxSchedulerAccountInfo `json:"backup_accounts,omitempty"`
-	UpstreamError   string                    `json:"upstream_error,omitempty"`
+	LaneAccounts  []AuxSchedulerLaneView `json:"lane_accounts"`
+	UpstreamError string                 `json:"upstream_error,omitempty"`
 }
 
 func (s *Service) RunAuxSchedulerLoop(ctx context.Context, interval time.Duration) {
@@ -209,7 +205,7 @@ func (s *Service) UpdateAuxSchedulerRule(ctx context.Context, id int64, input Au
 	state := existing.State
 	activatedAt := existing.ActivatedAt
 	cleanupRequired := false
-	if config.NewShape && existing.MigrationStatus != AuxSchedulerMigrationStatusNeedsMigration && len(existing.ModelNames) > 0 {
+	if existing.MigrationStatus != AuxSchedulerMigrationStatusNeedsMigration && len(existing.ModelNames) > 0 {
 		if !config.Enabled {
 			cleanupRequired = true
 		} else {
@@ -224,27 +220,6 @@ func (s *Service) UpdateAuxSchedulerRule(ctx context.Context, id int64, input Au
 			}
 		}
 	}
-	if existing.State == AuxSchedulerStateBackupActive && existing.MigrationStatus != AuxSchedulerMigrationStatusNeedsMigration && !config.NewShape {
-		nextBackupIDs := deduplicateInt64s(input.BackupAccountIDs)
-		if input.Enabled {
-			removed := differenceInt64s(existing.BackupAccountIDs, nextBackupIDs)
-			if err := s.deactivateAuxSchedulerBackupIDs(ctx, removed); err != nil {
-				return nil, err
-			}
-			added := differenceInt64s(nextBackupIDs, existing.BackupAccountIDs)
-			activationWarnings, err := s.activateAuxSchedulerBackupIDs(ctx, added)
-			if err != nil {
-				return nil, err
-			}
-			warnings = append(warnings, activationWarnings...)
-		} else {
-			if err := s.deactivateAuxSchedulerBackupIDs(ctx, existing.BackupAccountIDs); err != nil {
-				return nil, err
-			}
-			state = AuxSchedulerStateIdle
-			activatedAt = nil
-		}
-	}
 	now := s.now()
 	tx, err := s.db().BeginTx(ctx, nil)
 	if err != nil {
@@ -256,7 +231,6 @@ func (s *Service) UpdateAuxSchedulerRule(ctx context.Context, id int64, input Au
 			return nil, err
 		}
 	}
-	migrationStatus := existing.MigrationStatus
 	modelJSON, err := json.Marshal(config.ModelNames)
 	if err != nil {
 		return nil, err
@@ -273,32 +247,18 @@ func (s *Service) UpdateAuxSchedulerRule(ctx context.Context, id int64, input Au
 	if err != nil {
 		return nil, err
 	}
-	sourceJSON := ""
-	if !config.NewShape {
-		if existing.MigrationSource != nil {
-			raw, marshalErr := json.Marshal(existing.MigrationSource)
-			if marshalErr != nil {
-				return nil, marshalErr
-			}
-			sourceJSON = string(raw)
-		}
-	} else {
-		migrationStatus = ""
-	}
 	newExpected := existing.ExpectedOpenThroughLane
-	if config.NewShape {
-		if !config.Enabled || cleanupRequired {
-			newExpected = 1
-		}
-		if newExpected > len(config.Lanes) {
-			newExpected = len(config.Lanes)
-		}
+	if !config.Enabled || cleanupRequired {
+		newExpected = 1
+	}
+	if newExpected > len(config.Lanes) {
+		newExpected = len(config.Lanes)
 	}
 	_, err = tx.ExecContext(ctx, `
 UPDATE aux_scheduler_rules
 SET name = ?, enabled = ?, primary_account_ids_json = ?, backup_account_ids_json = ?,
     model_names_json = ?, lanes_json = ?, maximum_auto_lane = ?,
-    migration_status = ?, migration_source_json = ?,
+    migration_status = '', migration_source_json = '',
     state = ?, activated_at = ?, last_error = ?, updated_at = ?,
     expected_open_through_lane = ?, observed_open_through_lane = ?, verified_open_through_lane = ?,
     target_open_through_lane = ?, transition_status = 'stable', transition_generation = ?,
@@ -307,7 +267,6 @@ SET name = ?, enabled = ?, primary_account_ids_json = ?, backup_account_ids_json
 WHERE id = ?
 `, strings.TrimSpace(config.Name), boolToInt(config.Enabled), string(primaryJSON), string(backupJSON),
 		string(modelJSON), string(lanesJSON), config.MaximumAutoLane,
-		migrationStatus, sourceJSON,
 		state, formatNullableTime(activatedAt), strings.Join(warnings, "; "), formatTime(now),
 		newExpected, newExpected, newExpected, newExpected, existing.TransitionGeneration+1, id)
 	if err != nil {
@@ -501,8 +460,6 @@ func (s *Service) enrichAuxSchedulerRules(ctx context.Context, rules []models.Au
 	for _, rule := range rules {
 		view := AuxSchedulerRuleView{AuxSchedulerRule: rule, UpstreamError: upstreamError}
 		view.LaneAccounts = auxSchedulerLaneViews(rule, accounts)
-		view.PrimaryAccounts = auxAccountInfos(rule.PrimaryAccountIDs, accounts)
-		view.BackupAccounts = auxAccountInfos(rule.BackupAccountIDs, accounts)
 		views = append(views, view)
 	}
 	return views, nil
@@ -675,7 +632,6 @@ func parseAuxMigrationSourceJSON(raw string) (*models.AuxSchedulerMigrationSourc
 }
 
 type auxSchedulerConfig struct {
-	NewShape          bool
 	Name              string
 	Enabled           bool
 	ModelNames        []string
@@ -687,25 +643,15 @@ type auxSchedulerConfig struct {
 
 func normalizeAuxSchedulerConfig(input AuxSchedulerRuleInput) auxSchedulerConfig {
 	config := auxSchedulerConfig{
-		Name:              strings.TrimSpace(input.Name),
-		Enabled:           input.Enabled,
-		ModelNames:        normalizeAuxModelNames(input.ModelNames),
-		Lanes:             input.Lanes,
-		MaximumAutoLane:   input.MaximumAutoLane,
-		PrimaryAccountIDs: input.PrimaryAccountIDs,
-		BackupAccountIDs:  input.BackupAccountIDs,
+		Name:            strings.TrimSpace(input.Name),
+		Enabled:         input.Enabled,
+		ModelNames:      normalizeAuxModelNames(input.ModelNames),
+		Lanes:           input.Lanes,
+		MaximumAutoLane: input.MaximumAutoLane,
 	}
-	if len(input.Lanes) > 0 {
-		config.NewShape = true
-		if len(input.Lanes) >= 2 {
-			config.PrimaryAccountIDs = input.Lanes[0]
-			config.BackupAccountIDs = input.Lanes[1]
-		}
-	} else {
-		config.Lanes = [][]int64{}
-		if config.MaximumAutoLane <= 0 {
-			config.MaximumAutoLane = 2
-		}
+	if len(input.Lanes) >= 2 {
+		config.PrimaryAccountIDs = input.Lanes[0]
+		config.BackupAccountIDs = input.Lanes[1]
 	}
 	return config
 }
@@ -742,55 +688,7 @@ func (s *Service) validateAuxSchedulerInput(ctx context.Context, input AuxSchedu
 	for i := range accounts {
 		byID[accounts[i].ID] = accounts[i]
 	}
-	if !config.NewShape {
-		return s.validateLegacyAuxSchedulerInput(ctx, input, config, byID, excludeRuleID)
-	}
 	return s.validateLaneAuxSchedulerInput(ctx, config, byID, excludeRuleID)
-}
-
-func (s *Service) validateLegacyAuxSchedulerInput(ctx context.Context, input AuxSchedulerRuleInput, config auxSchedulerConfig, byID map[int64]sub2api.Account, excludeRuleID int64) ([]string, error) {
-	if len(config.ModelNames) > 0 {
-		return nil, fmt.Errorf("%w: 旧版主力/备用规则不能直接携带 model_names，请使用 lanes 泳道契约", ErrBadRequest)
-	}
-	primary := deduplicateInt64s(config.PrimaryAccountIDs)
-	backup := deduplicateInt64s(config.BackupAccountIDs)
-	if len(primary) == 0 || len(backup) == 0 {
-		return nil, fmt.Errorf("%w: 必须同时配置主力账号和备用账号", ErrBadRequest)
-	}
-	owners, err := s.auxSchedulerAccountOwners(ctx, excludeRuleID)
-	if err != nil {
-		return nil, err
-	}
-	primarySet := make(map[int64]struct{}, len(primary))
-	warnings := make([]string, 0, len(backup))
-	for _, id := range primary {
-		primarySet[id] = struct{}{}
-		if err := validateAuxSchedulerAccount(id, byID); err != nil {
-			return nil, err
-		}
-		if owner := owners.backup[id]; owner != "" {
-			return nil, fmt.Errorf("%w: 账号 %s 已在规则 %s 中作为备用账号使用", ErrBadRequest, auxAccountLabel(byID[id].Name, id), owner)
-		}
-	}
-	for _, id := range backup {
-		if _, ok := primarySet[id]; ok {
-			return nil, fmt.Errorf("%w: 账号 %s 不能同时作为主力账号和备用账号", ErrBadRequest, auxAccountLabel(byID[id].Name, id))
-		}
-		if owner := owners.backup[id]; owner != "" {
-			return nil, fmt.Errorf("%w: 备用账号 %s 已被规则 %s 使用", ErrBadRequest, auxAccountLabel(byID[id].Name, id), owner)
-		}
-		if owner := owners.primary[id]; owner != "" {
-			return nil, fmt.Errorf("%w: 账号 %s 已在规则 %s 中作为主力账号使用", ErrBadRequest, auxAccountLabel(byID[id].Name, id), owner)
-		}
-		warning, err := validateAuxSchedulerBackupAccount(id, byID)
-		if err != nil {
-			return nil, err
-		}
-		if warning != "" {
-			warnings = append(warnings, warning)
-		}
-	}
-	return warnings, nil
 }
 
 func (s *Service) validateLaneAuxSchedulerInput(ctx context.Context, config auxSchedulerConfig, byID map[int64]sub2api.Account, excludeRuleID int64) ([]string, error) {

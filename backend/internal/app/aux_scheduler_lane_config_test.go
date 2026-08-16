@@ -147,7 +147,6 @@ func TestAuxSchedulerLaneRuleRejectsInvalidConfiguration(t *testing.T) {
 		{name: "auto lane out of range", input: AuxSchedulerRuleInput{Name: "bad", Enabled: true, ModelNames: []string{"gpt-5"}, Lanes: [][]int64{{1}, {2}}, MaximumAutoLane: 3}},
 		{name: "auto lane zero", input: AuxSchedulerRuleInput{Name: "bad", Enabled: true, ModelNames: []string{"gpt-5"}, Lanes: [][]int64{{1}, {2}}, MaximumAutoLane: 0}},
 		{name: "unsupported model", input: AuxSchedulerRuleInput{Name: "bad", Enabled: true, ModelNames: []string{"claude-3"}, Lanes: [][]int64{{1}, {2}}, MaximumAutoLane: 2}},
-		{name: "legacy shape with models", input: AuxSchedulerRuleInput{Name: "bad", Enabled: true, ModelNames: []string{"gpt-5"}, PrimaryAccountIDs: []int64{1}, BackupAccountIDs: []int64{2}}},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

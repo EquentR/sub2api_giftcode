@@ -94,13 +94,11 @@ type OpenAIAccountUserAgentRequest struct {
 }
 
 type AuxSchedulerRuleRequest struct {
-	Name              string    `json:"name" binding:"required"`
-	Enabled           bool      `json:"enabled"`
-	ModelNames        []string  `json:"model_names"`
-	Lanes             [][]int64 `json:"lanes"`
-	MaximumAutoLane   int       `json:"maximum_auto_lane"`
-	PrimaryAccountIDs []int64   `json:"primary_account_ids"`
-	BackupAccountIDs  []int64   `json:"backup_account_ids"`
+	Name            string    `json:"name" binding:"required"`
+	Enabled         bool      `json:"enabled"`
+	ModelNames      []string  `json:"model_names"`
+	Lanes           [][]int64 `json:"lanes"`
+	MaximumAutoLane int       `json:"maximum_auto_lane"`
 }
 
 type CompensationBatchCreateRequest struct {

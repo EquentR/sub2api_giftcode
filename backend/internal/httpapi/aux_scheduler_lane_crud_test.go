@@ -252,6 +252,98 @@ func TestAuxSchedulerLaneRuleAuthenticatedCRUDAndUpstreamFailureVisibility(t *te
 	require.Empty(t, remaining)
 }
 
+func TestAuxSchedulerLaneRuleRejectsLegacyWriteContractThroughAuthenticatedRoute(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	store, err := db.Open("sqlite", ":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+	require.NoError(t, store.Migrate(context.Background()))
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/auth/me":
+			writeTestEnvelope(w, sub2api.User{ID: 1, Email: "admin@example.com", Username: "admin", Role: "admin", Status: "active"})
+		case "/api/v1/admin/accounts":
+			writeTestEnvelope(w, map[string]any{
+				"items": []sub2api.Account{
+					httpAuxModelAccount(1, "one", "gpt-5"),
+					httpAuxModelAccount(2, "two", "o3"),
+				},
+				"total":     2,
+				"page":      1,
+				"page_size": 200,
+				"pages":     1,
+			})
+		case "/api/v1/admin/accounts/1":
+			account := httpAuxModelAccount(1, "one", "gpt-5")
+			account.Schedulable = true
+			writeTestEnvelope(w, account)
+		case "/api/v1/admin/accounts/2":
+			account := httpAuxModelAccount(2, "two", "o3")
+			account.Schedulable = false
+			writeTestEnvelope(w, account)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer upstream.Close()
+
+	cfg := &config.RuntimeConfig{Config: config.Config{}}
+	cfg.Session.CookieSecret = "test-secret"
+	svc := app.New(cfg, store, sub2api.NewClient(upstream.URL, "admin-key"), mail.New(mail.Config{}))
+	sessionUser, err := svc.LoginWithAccessToken(context.Background(), "admin-token", nil)
+	require.NoError(t, err)
+	token, err := sessionTokenFor(cfg.Session.CookieSecret, sessionUser.Session.ID)
+	require.NoError(t, err)
+	r := NewRouter(cfg, svc)
+
+	post := func(body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/api/admin/aux-scheduler/rules", strings.NewReader(body))
+		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("Content-Type", "application/json")
+		recorder := httptest.NewRecorder()
+		r.ServeHTTP(recorder, req)
+		return recorder
+	}
+	legacyCreate := post(`{
+	  "name":"legacy write","enabled":true,"primary_account_ids":[1],"backup_account_ids":[2]
+	}`)
+	require.Equal(t, http.StatusBadRequest, legacyCreate.Code)
+
+	createReq := httptest.NewRequest(http.MethodPost, "/api/admin/aux-scheduler/rules", strings.NewReader(`{
+	  "name":"new rule","enabled":true,"model_names":["gpt-5","o3"],"lanes":[[1],[2]],"maximum_auto_lane":2
+	}`))
+	createReq.Header.Set("Authorization", "Bearer "+token)
+	createReq.Header.Set("Content-Type", "application/json")
+	createResponse := httptest.NewRecorder()
+	r.ServeHTTP(createResponse, createReq)
+	require.Equal(t, http.StatusCreated, createResponse.Code)
+
+	legacyUpdate := httptest.NewRequest(http.MethodPut, "/api/admin/aux-scheduler/rules/1", strings.NewReader(`{
+	  "name":"legacy update","enabled":true,"primary_account_ids":[1],"backup_account_ids":[2]
+	}`))
+	legacyUpdate.Header.Set("Authorization", "Bearer "+token)
+	legacyUpdate.Header.Set("Content-Type", "application/json")
+	legacyUpdateResponse := httptest.NewRecorder()
+	r.ServeHTTP(legacyUpdateResponse, legacyUpdate)
+	require.Equal(t, http.StatusBadRequest, legacyUpdateResponse.Code)
+
+	listReq := httptest.NewRequest(http.MethodGet, "/api/admin/aux-scheduler/rules", nil)
+	listReq.Header.Set("Authorization", "Bearer "+token)
+	listResponse := httptest.NewRecorder()
+	r.ServeHTTP(listResponse, listReq)
+	var listEnvelope struct {
+		Data json.RawMessage `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(listResponse.Body.Bytes(), &listEnvelope))
+	var rules []struct {
+		Name string `json:"name"`
+	}
+	require.NoError(t, json.Unmarshal(listEnvelope.Data, &rules))
+	require.Len(t, rules, 1)
+	require.Equal(t, "new rule", rules[0].Name)
+}
+
 func TestAuxSchedulerLaneRuleConflictThroughAuthenticatedRoute(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	store, err := db.Open("sqlite", ":memory:")

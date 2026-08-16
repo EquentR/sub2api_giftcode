@@ -168,8 +168,6 @@ export interface AuxSchedulerRule {
   id: number
   name: string
   enabled: boolean
-  primary_account_ids: number[]
-  backup_account_ids: number[]
   model_names: string[]
   lanes: number[][]
   maximum_auto_lane: number
@@ -196,8 +194,6 @@ export interface AuxSchedulerRule {
   created_at: string
   updated_at: string
   lane_accounts: AuxSchedulerLaneView[]
-  primary_accounts?: AuxSchedulerAccountInfo[]
-  backup_accounts?: AuxSchedulerAccountInfo[]
   upstream_error?: string
 }
 

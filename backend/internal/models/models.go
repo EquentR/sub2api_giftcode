@@ -323,8 +323,8 @@ type AuxSchedulerRule struct {
 	ID                      int64                        `json:"id"`
 	Name                    string                       `json:"name"`
 	Enabled                 bool                         `json:"enabled"`
-	PrimaryAccountIDs       []int64                      `json:"primary_account_ids"`
-	BackupAccountIDs        []int64                      `json:"backup_account_ids"`
+	PrimaryAccountIDs       []int64                      `json:"-"`
+	BackupAccountIDs        []int64                      `json:"-"`
 	ModelNames              []string                     `json:"model_names"`
 	Lanes                   [][]int64                    `json:"lanes"`
 	MaximumAutoLane         int                          `json:"maximum_auto_lane"`
