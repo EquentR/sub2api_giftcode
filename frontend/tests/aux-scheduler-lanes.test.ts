@@ -29,6 +29,7 @@ test('aux scheduler view distinguishes migration, disabled, and active rules', (
   assert.match(source, /item\.status \|\| 'unknown'/)
   assert.match(source, /'可调度'/)
   assert.match(source, /'不可调度'/)
+  assert.match(source, /'未观测'/)
   assert.match(source, /否则不会自动调度/)
   assert.match(source, /lane_accounts/)
   assert.match(source, /model_names/)

@@ -104,7 +104,7 @@ INSERT INTO aux_scheduler_rules (
 			Accounts []struct {
 				ID          int64  `json:"id"`
 				Name        string `json:"name"`
-				Schedulable bool   `json:"schedulable"`
+				Schedulable *bool  `json:"schedulable"`
 			} `json:"accounts"`
 		} `json:"lane_accounts"`
 	}
@@ -114,7 +114,8 @@ INSERT INTO aux_scheduler_rules (
 	require.Equal(t, [][]int64{{1}, {2}}, rules[0].Lanes)
 	require.Empty(t, rules[0].ModelNames)
 	require.Len(t, rules[0].LaneAccounts, 2)
-	require.True(t, rules[0].LaneAccounts[1].Accounts[0].Schedulable)
+	require.NotNil(t, rules[0].LaneAccounts[1].Accounts[0].Schedulable)
+	require.True(t, *rules[0].LaneAccounts[1].Accounts[0].Schedulable)
 
 	checkReq := httptest.NewRequest(http.MethodPost, "/api/admin/aux-scheduler/rules/1/check", nil)
 	checkReq.Header.Set("Authorization", "Bearer "+token)

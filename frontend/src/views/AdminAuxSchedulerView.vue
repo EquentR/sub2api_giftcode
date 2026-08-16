@@ -317,10 +317,9 @@ function laneText(rule: AuxSchedulerRule) {
 
 function observedAccountLabel(item: AuxSchedulerAccountInfo) {
   const status = item.status || 'unknown'
-  const scheduling = item.schedulable === undefined ? '' : item.schedulable ? '可调度' : '不可调度'
-  const parts = [`#${item.id}`, status]
-  if (scheduling) parts.push(scheduling)
-  return `${item.name || `#${item.id}`} (${parts.join(' · ')})`
+  const scheduling = item.schedulable === true ? '可调度' : item.schedulable === false ? '不可调度' : '未观测'
+  const label = item.name || `#${item.id}`
+  return `${label} (${status} · ${scheduling})`
 }
 
 function accountLabel(account: OpenAIAccount) {

@@ -39,10 +39,10 @@ type AuxSchedulerRuleInput struct {
 
 type AuxSchedulerAccountInfo struct {
 	ID          int64  `json:"id"`
-	Name        string `json:"name"`
-	Type        string `json:"type"`
-	Status      string `json:"status"`
-	Schedulable bool   `json:"schedulable"`
+	Name        string `json:"name,omitempty"`
+	Type        string `json:"type,omitempty"`
+	Status      string `json:"status,omitempty"`
+	Schedulable *bool  `json:"schedulable,omitempty"`
 }
 
 type AuxSchedulerLaneView struct {
@@ -367,7 +367,8 @@ func auxAccountInfos(ids []int64, accounts map[int64]sub2api.Account) []AuxSched
 			info.Name = account.Name
 			info.Type = account.Type
 			info.Status = account.Status
-			info.Schedulable = account.Schedulable
+			value := account.Schedulable
+			info.Schedulable = &value
 		}
 		out = append(out, info)
 	}

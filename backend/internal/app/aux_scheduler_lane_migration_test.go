@@ -111,8 +111,10 @@ func TestAuxSchedulerLegacyMigrationConvertsToTwoLanesWithoutInferringModels(t *
 	require.Len(t, rule.LaneAccounts, 2)
 	require.Equal(t, "primary-a", rule.LaneAccounts[0].Accounts[0].Name)
 	require.Equal(t, "backup-b", rule.LaneAccounts[1].Accounts[1].Name)
-	require.True(t, rule.LaneAccounts[1].Accounts[0].Schedulable)
-	require.False(t, rule.LaneAccounts[1].Accounts[1].Schedulable)
+	require.NotNil(t, rule.LaneAccounts[1].Accounts[0].Schedulable)
+	require.True(t, *rule.LaneAccounts[1].Accounts[0].Schedulable)
+	require.NotNil(t, rule.LaneAccounts[1].Accounts[1].Schedulable)
+	require.False(t, *rule.LaneAccounts[1].Accounts[1].Schedulable)
 }
 
 func TestAuxSchedulerLegacyMigrationNeverWritesSchedulableDuringReconcileOrCheck(t *testing.T) {
@@ -158,7 +160,8 @@ func TestAuxSchedulerLegacyMigrationNeverWritesSchedulableDuringReconcileOrCheck
 	view, err := svc.CheckAuxSchedulerRule(ctx, id)
 	require.NoError(t, err)
 	require.Equal(t, "needs_migration", view.MigrationStatus)
-	require.True(t, view.LaneAccounts[1].Accounts[0].Schedulable)
+	require.NotNil(t, view.LaneAccounts[1].Accounts[0].Schedulable)
+	require.True(t, *view.LaneAccounts[1].Accounts[0].Schedulable)
 	mu.Lock()
 	require.Equal(t, 0, schedulableWrites)
 	mu.Unlock()
@@ -211,4 +214,8 @@ func TestAuxSchedulerLegacyRuleRemainsVisibleWhenUpstreamAccountListFails(t *tes
 	require.NotEmpty(t, rules[0].UpstreamError)
 	require.Len(t, rules[0].LaneAccounts, 2)
 	require.Equal(t, int64(1), rules[0].LaneAccounts[0].Accounts[0].ID)
+	require.Nil(t, rules[0].LaneAccounts[0].Accounts[0].Schedulable)
+	raw, err := json.Marshal(rules[0])
+	require.NoError(t, err)
+	require.NotContains(t, string(raw), `"schedulable"`)
 }
