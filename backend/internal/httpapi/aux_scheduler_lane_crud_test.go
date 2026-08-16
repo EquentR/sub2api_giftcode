@@ -310,6 +310,12 @@ func TestAuxSchedulerLaneRuleRejectsLegacyWriteContractThroughAuthenticatedRoute
 	}`)
 	require.Equal(t, http.StatusBadRequest, legacyCreate.Code)
 
+	mixedCreate := post(`{
+	  "name":"mixed write","enabled":true,"model_names":["gpt-5","o3"],"lanes":[[1],[2]],
+	  "maximum_auto_lane":2,"primary_account_ids":[1],"backup_account_ids":[2]
+	}`)
+	require.Equal(t, http.StatusBadRequest, mixedCreate.Code)
+
 	createReq := httptest.NewRequest(http.MethodPost, "/api/admin/aux-scheduler/rules", strings.NewReader(`{
 	  "name":"new rule","enabled":true,"model_names":["gpt-5","o3"],"lanes":[[1],[2]],"maximum_auto_lane":2
 	}`))
@@ -327,6 +333,16 @@ func TestAuxSchedulerLaneRuleRejectsLegacyWriteContractThroughAuthenticatedRoute
 	legacyUpdateResponse := httptest.NewRecorder()
 	r.ServeHTTP(legacyUpdateResponse, legacyUpdate)
 	require.Equal(t, http.StatusBadRequest, legacyUpdateResponse.Code)
+
+	mixedUpdate := httptest.NewRequest(http.MethodPut, "/api/admin/aux-scheduler/rules/1", strings.NewReader(`{
+	  "name":"mixed update","enabled":true,"model_names":["gpt-5","o3"],"lanes":[[1],[2]],
+	  "maximum_auto_lane":2,"primary_account_ids":[1],"backup_account_ids":[2]
+	}`))
+	mixedUpdate.Header.Set("Authorization", "Bearer "+token)
+	mixedUpdate.Header.Set("Content-Type", "application/json")
+	mixedUpdateResponse := httptest.NewRecorder()
+	r.ServeHTTP(mixedUpdateResponse, mixedUpdate)
+	require.Equal(t, http.StatusBadRequest, mixedUpdateResponse.Code)
 
 	listReq := httptest.NewRequest(http.MethodGet, "/api/admin/aux-scheduler/rules", nil)
 	listReq.Header.Set("Authorization", "Bearer "+token)

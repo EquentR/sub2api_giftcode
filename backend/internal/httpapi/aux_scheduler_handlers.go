@@ -1,6 +1,9 @@
 package httpapi
 
 import (
+	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 
@@ -23,9 +26,30 @@ func (h *Handlers) ListAuxSchedulerRules(c *gin.Context) {
 	writeSuccess(c, items)
 }
 
-func (h *Handlers) CreateAuxSchedulerRule(c *gin.Context) {
+func bindAuxSchedulerRuleRequest(c *gin.Context) (*AuxSchedulerRuleRequest, error) {
+	raw, err := io.ReadAll(c.Request.Body)
+	if err != nil {
+		return nil, err
+	}
+	var body map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &body); err != nil {
+		return nil, err
+	}
+	for _, legacyKey := range []string{"primary_account_ids", "backup_account_ids"} {
+		if _, ok := body[legacyKey]; ok {
+			return nil, fmt.Errorf("旧版 %s 契约已移除，请使用 lanes", legacyKey)
+		}
+	}
 	var req AuxSchedulerRuleRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
+	if err := json.Unmarshal(raw, &req); err != nil {
+		return nil, err
+	}
+	return &req, nil
+}
+
+func (h *Handlers) CreateAuxSchedulerRule(c *gin.Context) {
+	req, err := bindAuxSchedulerRuleRequest(c)
+	if err != nil {
 		writeError(c, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -49,8 +73,8 @@ func (h *Handlers) UpdateAuxSchedulerRule(c *gin.Context) {
 		writeError(c, http.StatusBadRequest, "invalid id")
 		return
 	}
-	var req AuxSchedulerRuleRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
+	req, err := bindAuxSchedulerRuleRequest(c)
+	if err != nil {
 		writeError(c, http.StatusBadRequest, err.Error())
 		return
 	}

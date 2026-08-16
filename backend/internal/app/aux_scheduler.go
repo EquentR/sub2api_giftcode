@@ -784,38 +784,6 @@ func auxAccountSupportedModels(account sub2api.Account) []string {
 	return out
 }
 
-type auxSchedulerOwnerMaps struct {
-	primary map[int64]string
-	backup  map[int64]string
-}
-
-func (s *Service) auxSchedulerAccountOwners(ctx context.Context, excludeRuleID int64) (*auxSchedulerOwnerMaps, error) {
-	rules, err := s.listAuxSchedulerRulesRaw(ctx)
-	if err != nil {
-		return nil, err
-	}
-	owners := &auxSchedulerOwnerMaps{
-		primary: make(map[int64]string),
-		backup:  make(map[int64]string),
-	}
-	for i := range rules {
-		if rules[i].ID == excludeRuleID || !rules[i].Enabled || rules[i].MigrationStatus == AuxSchedulerMigrationStatusNeedsMigration {
-			continue
-		}
-		lanes := auxSchedulerOwnedLaneSlices(rules[i].Lanes, rules[i].PrimaryAccountIDs, rules[i].BackupAccountIDs)
-		for index, lane := range lanes {
-			target := owners.primary
-			if index > 0 {
-				target = owners.backup
-			}
-			for _, id := range lane {
-				target[id] = rules[i].Name
-			}
-		}
-	}
-	return owners, nil
-}
-
 func (s *Service) auxSchedulerLaneOwner(ctx context.Context, lanes [][]int64, excludeRuleID int64) (string, error) {
 	rules, err := s.listAuxSchedulerRulesRaw(ctx)
 	if err != nil {
@@ -922,57 +890,12 @@ func validateAuxSchedulerAccount(id int64, accounts map[int64]sub2api.Account) e
 	return nil
 }
 
-func validateAuxSchedulerBackupAccount(id int64, accounts map[int64]sub2api.Account) (string, error) {
-	if err := validateAuxSchedulerAccount(id, accounts); err != nil {
-		return "", err
-	}
-	account := accounts[id]
-	status := strings.ToLower(strings.TrimSpace(account.Status))
-	if status == "error" {
-		return fmt.Sprintf("备用账号 %s 当前状态为 error，恢复为 active 前不会启用", auxAccountLabel(account.Name, id)), nil
-	}
-	if status != "active" {
-		return "", fmt.Errorf("%w: 备用账号 %s 当前状态必须为 active 或 error，实际状态为 %q", ErrBadRequest, auxAccountLabel(account.Name, id), account.Status)
-	}
-	return "", nil
-}
-
 func auxAccountLabel(name string, id int64) string {
 	name = strings.TrimSpace(name)
 	if name == "" {
 		return fmt.Sprintf("#%d", id)
 	}
 	return fmt.Sprintf("%s (#%d)", name, id)
-}
-
-func deduplicateInt64s(values []int64) []int64 {
-	seen := make(map[int64]struct{}, len(values))
-	out := make([]int64, 0, len(values))
-	for _, value := range values {
-		if value <= 0 {
-			continue
-		}
-		if _, ok := seen[value]; ok {
-			continue
-		}
-		seen[value] = struct{}{}
-		out = append(out, value)
-	}
-	return out
-}
-
-func differenceInt64s(base, exclude []int64) []int64 {
-	excluded := make(map[int64]struct{}, len(exclude))
-	for _, value := range exclude {
-		excluded[value] = struct{}{}
-	}
-	out := make([]int64, 0, len(base))
-	for _, value := range base {
-		if _, ok := excluded[value]; !ok {
-			out = append(out, value)
-		}
-	}
-	return out
 }
 
 type auxSchedulerLaneChange struct {
