@@ -19,6 +19,8 @@ import (
 	"sub2api-giftcode/backend/internal/sub2api"
 )
 
+const walCheckpointInterval = 15 * time.Minute
+
 func main() {
 	var configPath string
 	flag.StringVar(&configPath, "config", "../config.yaml", "path to config file")
@@ -69,6 +71,11 @@ func main() {
 	if cfg.Sync.IntervalSeconds > 0 {
 		go runSyncLoop(runCtx, service, time.Duration(cfg.Sync.IntervalSeconds)*time.Second)
 	}
+	walCheckpointDone := make(chan struct{})
+	go func() {
+		defer close(walCheckpointDone)
+		runWALCheckpointLoop(runCtx, store.CheckpointWAL, walCheckpointInterval)
+	}()
 	concurrencyMonitorDone := make(chan struct{})
 	go func() {
 		defer close(concurrencyMonitorDone)
@@ -106,6 +113,7 @@ func main() {
 	log.Printf("sub2api giftcode backend listening on %s", cfg.App.ListenAddr)
 	listenErr := srv.ListenAndServe()
 	cancel()
+	<-walCheckpointDone
 	<-concurrencyMonitorDone
 	<-resetPeriodMonitorDone
 	<-bonusGrantMonitorDone
@@ -113,6 +121,38 @@ func main() {
 	if listenErr != nil && listenErr != http.ErrServerClosed {
 		log.Fatalf("server error: %v", listenErr)
 	}
+}
+
+func runWALCheckpointLoop(ctx context.Context, checkpoint func(context.Context) (db.WALCheckpointStats, error), interval time.Duration) {
+	if interval <= 0 {
+		return
+	}
+	runWALCheckpoint(ctx, checkpoint)
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			runWALCheckpoint(ctx, checkpoint)
+		}
+	}
+}
+
+func runWALCheckpoint(ctx context.Context, checkpoint func(context.Context) (db.WALCheckpointStats, error)) {
+	stats, err := checkpoint(ctx)
+	if err != nil {
+		log.Printf("sqlite WAL checkpoint failed: %v", err)
+		return
+	}
+	log.Printf(
+		"sqlite WAL checkpoint: busy=%d log_frames=%d checkpointed_frames=%d wal_size_bytes=%d",
+		stats.Busy,
+		stats.LogFrames,
+		stats.CheckpointedFrames,
+		stats.WALSizeBytes,
+	)
 }
 
 func runSyncLoop(ctx context.Context, service *app.Service, interval time.Duration) {

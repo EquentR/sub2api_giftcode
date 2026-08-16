@@ -18,6 +18,95 @@ import (
 	"sub2api-giftcode/backend/internal/sub2api"
 )
 
+func TestUpdateRedeemCodeFromUpstreamSkipsUnchangedRecord(t *testing.T) {
+	store, err := db.Open("sqlite", ":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+	require.NoError(t, store.Migrate(context.Background()))
+
+	createdAt := time.Date(2026, time.August, 16, 10, 0, 0, 0, time.UTC)
+	lastSyncedAt := createdAt.Add(time.Hour)
+	upstreamCodeID := int64(99)
+	groupID := int64(7)
+	usedBy := int64(3)
+	usedAt := createdAt.Add(2 * time.Hour)
+	expiresAt := createdAt.Add(30 * 24 * time.Hour)
+	local := models.RedeemCode{
+		ID:                   1,
+		RequestID:            1,
+		Code:                 "code-1",
+		CodeType:             "subscription",
+		Value:                0,
+		Status:               "used",
+		UsedByUpstreamUserID: &usedBy,
+		UsedAt:               &usedAt,
+		ExpiresAt:            &expiresAt,
+		Sub2APICodeID:        &upstreamCodeID,
+		Sub2APIGroupID:       &groupID,
+		ValidityDays:         30,
+		LastSyncedAt:         &lastSyncedAt,
+		CreatedAt:            createdAt,
+		UpdatedAt:            createdAt,
+	}
+	_, err = store.DB.ExecContext(context.Background(), `
+INSERT INTO redeem_codes (
+  id, request_id, code, code_type, value, status, used_by_upstream_user_id, used_at,
+  expires_at, sub2api_code_id, sub2api_group_id, validity_days, last_synced_at, created_at, updated_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+`,
+		local.ID,
+		local.RequestID,
+		local.Code,
+		local.CodeType,
+		local.Value,
+		local.Status,
+		local.UsedByUpstreamUserID,
+		formatNullableTime(local.UsedAt),
+		formatNullableTime(local.ExpiresAt),
+		local.Sub2APICodeID,
+		local.Sub2APIGroupID,
+		local.ValidityDays,
+		formatNullableTime(local.LastSyncedAt),
+		formatTime(local.CreatedAt),
+		formatTime(local.UpdatedAt),
+	)
+	require.NoError(t, err)
+
+	svc := New(&config.RuntimeConfig{}, store, nil, nil)
+	remote := &sub2api.RedeemCode{
+		ID:           upstreamCodeID,
+		Code:         local.Code,
+		Type:         local.CodeType,
+		Value:        local.Value,
+		Status:       local.Status,
+		UsedBy:       &usedBy,
+		UsedAt:       &usedAt,
+		ExpiresAt:    &expiresAt,
+		GroupID:      &groupID,
+		ValidityDays: local.ValidityDays,
+	}
+
+	changed, err := svc.updateRedeemCodeFromUpstream(context.Background(), local, remote, createdAt.Add(3*time.Hour))
+
+	require.NoError(t, err)
+	require.False(t, changed)
+	var storedLastSyncedAt, storedUpdatedAt string
+	require.NoError(t, store.DB.QueryRowContext(context.Background(), `SELECT last_synced_at, updated_at FROM redeem_codes WHERE id = ?`, local.ID).Scan(&storedLastSyncedAt, &storedUpdatedAt))
+	require.Equal(t, formatTime(lastSyncedAt), storedLastSyncedAt)
+	require.Equal(t, formatTime(createdAt), storedUpdatedAt)
+
+	remote.Status = "expired"
+	changed, err = svc.updateRedeemCodeFromUpstream(context.Background(), local, remote, createdAt.Add(4*time.Hour))
+
+	require.NoError(t, err)
+	require.True(t, changed)
+	var storedStatus string
+	require.NoError(t, store.DB.QueryRowContext(context.Background(), `SELECT status, last_synced_at, updated_at FROM redeem_codes WHERE id = ?`, local.ID).Scan(&storedStatus, &storedLastSyncedAt, &storedUpdatedAt))
+	require.Equal(t, "expired", storedStatus)
+	require.Equal(t, formatTime(lastSyncedAt), storedLastSyncedAt)
+	require.Equal(t, formatTime(createdAt.Add(4*time.Hour)), storedUpdatedAt)
+}
+
 func TestCreateAccessRequestDefaultsFulfillmentModeToDirectCharge(t *testing.T) {
 	store, err := db.Open("sqlite", ":memory:")
 	require.NoError(t, err)
