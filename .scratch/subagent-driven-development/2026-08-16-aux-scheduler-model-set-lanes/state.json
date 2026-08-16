@@ -1,0 +1,636 @@
+{
+  "run_id": "2026-08-16-aux-scheduler-model-set-lanes",
+  "mode": "single-review",
+  "spec": {
+    "path": "docs/superpowers/specs/2026-08-16-aux-scheduler-model-set-lanes-design.md",
+    "contract_sha256": "9c982642714680eea38621836945e3ec5bfe9f91f8c3aa6d78003d082faf7fd7",
+    "source_sha256": "9c982642714680eea38621836945e3ec5bfe9f91f8c3aa6d78003d082faf7fd7"
+  },
+  "plan": {
+    "path": "docs/superpowers/plans/2026-08-16-aux-scheduler-model-set-lanes-implementation.md",
+    "contract_sha256": "a85cc407d1cb952f602e9c21d69d738b8cbb792d039fb725bf9d9dd9d0f318d4",
+    "source_sha256": "a85cc407d1cb952f602e9c21d69d738b8cbb792d039fb725bf9d9dd9d0f318d4"
+  },
+  "run_baseline": "fbdf0f2a76c526399b3744301ae2499a22cff953",
+  "worktree": {
+    "path": ".",
+    "branch": "main",
+    "dirty_before": [
+      "docs/superpowers/plans/2026-07-18-subscription-reset-entitlement-overview-implementation.md"
+    ]
+  },
+  "allowed_skip_priorities": [],
+  "tasks": [
+    {
+      "id": "TASK-AUX-001",
+      "title": "隔离并展示旧版规则迁移状态",
+      "status": "complete",
+      "dependencies": [],
+      "baseline": "fbdf0f2a76c526399b3744301ae2499a22cff953",
+      "implementation_agent": null,
+      "reviewer_agent": null,
+      "commits": [
+        "1e21afe",
+        "b6f59e6",
+        "c9d7ff7",
+        "bbbfc01"
+      ],
+      "review_cycles": [
+        {
+          "baseline": "fbdf0f2a76c526399b3744301ae2499a22cff953",
+          "status": "blocked",
+          "findings": [
+            "S-1",
+            "S-2",
+            "SP-1",
+            "SP-2"
+          ],
+          "repairs": 1,
+          "verification": [
+            "go test ./...",
+            "frontend tests",
+            "vue-tsc",
+            "vite build"
+          ],
+          "result": "fail"
+        },
+        {
+          "baseline": "fbdf0f2a76c526399b3744301ae2499a22cff953",
+          "status": "blocked",
+          "findings": [
+            "S-3",
+            "SP-3"
+          ],
+          "repairs": 1,
+          "verification": [
+            "go test ./...",
+            "frontend tests",
+            "vue-tsc",
+            "vite build"
+          ],
+          "result": "fail"
+        },
+        {
+          "baseline": "fbdf0f2a76c526399b3744301ae2499a22cff953",
+          "status": "passed",
+          "findings": [],
+          "repairs": 1,
+          "verification": [
+            "go test ./...",
+            "frontend tests",
+            "vue-tsc",
+            "vite build"
+          ],
+          "result": "pass"
+        }
+      ],
+      "waivers": [],
+      "verification": [
+        {
+          "commands": [
+            "cd backend && go test ./...",
+            "cd frontend && node --experimental-strip-types --test tests/*.test.ts",
+            "cd frontend && node_modules/.bin/vue-tsc --noEmit",
+            "cd frontend && node_modules/.bin/vite build"
+          ],
+          "result": "pass"
+        }
+      ]
+    },
+    {
+      "id": "TASK-AUX-002",
+      "title": "交付新泳道规则配置与排他所有权",
+      "status": "complete",
+      "dependencies": [
+        "TASK-AUX-001"
+      ],
+      "baseline": "985371c",
+      "implementation_agent": null,
+      "reviewer_agent": null,
+      "commits": [
+        "4bdfc3e",
+        "2b91adb",
+        "97f1c44",
+        "287f991",
+        "9dd6433"
+      ],
+      "review_cycles": [
+        {
+          "baseline": "985371c",
+          "status": "blocked",
+          "findings": [
+            "S-1",
+            "SP-1",
+            "SP-2"
+          ],
+          "repairs": 1,
+          "verification": [
+            "go test ./...",
+            "frontend tests",
+            "vue-tsc",
+            "vite build"
+          ],
+          "result": "fail"
+        },
+        {
+          "baseline": "985371c",
+          "status": "blocked",
+          "findings": [
+            "SP-1",
+            "SP-2"
+          ],
+          "repairs": 1,
+          "verification": [
+            "go test ./...",
+            "frontend tests",
+            "vue-tsc",
+            "vite build"
+          ],
+          "result": "fail"
+        },
+        {
+          "baseline": "985371c",
+          "status": "blocked",
+          "findings": [
+            "S-1",
+            "SP-1"
+          ],
+          "repairs": 1,
+          "verification": [
+            "go test ./...",
+            "frontend tests",
+            "vue-tsc",
+            "vite build"
+          ],
+          "result": "fail"
+        },
+        {
+          "baseline": "985371c",
+          "status": "passed",
+          "findings": [],
+          "repairs": 1,
+          "verification": [
+            "go test ./...",
+            "frontend tests",
+            "vue-tsc",
+            "vite build"
+          ],
+          "result": "pass"
+        }
+      ],
+      "waivers": [],
+      "verification": [
+        {
+          "commands": [
+            "cd backend && go test ./...",
+            "cd frontend && node --experimental-strip-types --test tests/*.test.ts",
+            "cd frontend && node_modules/.bin/vue-tsc --noEmit",
+            "cd frontend && node_modules/.bin/vite build"
+          ],
+          "result": "pass"
+        }
+      ]
+    },
+    {
+      "id": "TASK-AUX-003",
+      "title": "以权威回读协调静态期望前缀",
+      "status": "complete",
+      "dependencies": [
+        "TASK-AUX-002"
+      ],
+      "baseline": "183a88d",
+      "implementation_agent": null,
+      "reviewer_agent": null,
+      "commits": [
+        "e1cff2b",
+        "443445b",
+        "d13cfd7"
+      ],
+      "review_cycles": [
+        {
+          "baseline": "183a88d",
+          "status": "blocked",
+          "findings": [
+            "S-1",
+            "SP-1",
+            "SP-2"
+          ],
+          "repairs": 1,
+          "verification": [
+            "go test ./...",
+            "go test -count=5 executor",
+            "frontend tests",
+            "vue-tsc",
+            "vite build"
+          ],
+          "result": "fail"
+        },
+        {
+          "baseline": "183a88d",
+          "status": "blocked",
+          "findings": [
+            "SP-1"
+          ],
+          "repairs": 1,
+          "verification": [
+            "go test ./...",
+            "go test -count=5 executor",
+            "frontend tests",
+            "vue-tsc",
+            "vite build"
+          ],
+          "result": "fail"
+        },
+        {
+          "baseline": "183a88d",
+          "status": "passed",
+          "findings": [],
+          "repairs": 1,
+          "verification": [
+            "go test ./...",
+            "go test -count=5 executor",
+            "frontend tests",
+            "vue-tsc",
+            "vite build"
+          ],
+          "result": "pass"
+        }
+      ],
+      "waivers": [],
+      "verification": [
+        {
+          "commands": [
+            "cd backend && go test ./...",
+            "cd frontend && node --experimental-strip-types --test tests/*.test.ts",
+            "cd frontend && node_modules/.bin/vue-tsc --noEmit",
+            "cd frontend && node_modules/.bin/vite build",
+            "cd backend && go test -count=5 ./internal/app -run TestAuxSchedulerLaneExecutor"
+          ],
+          "result": "pass",
+          "notes": [
+            "go test -race unavailable: CGO_ENABLED=1 requires gcc not found in PATH; used count=5 stress instead"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "TASK-AUX-004",
+      "title": "根据模型集合联合覆盖逐级升级",
+      "status": "complete",
+      "dependencies": [
+        "TASK-AUX-003"
+      ],
+      "baseline": "c88a82b",
+      "implementation_agent": null,
+      "reviewer_agent": null,
+      "commits": [
+        "2289f84",
+        "c7ced17",
+        "04b7bcf",
+        "7ac4b75"
+      ],
+      "review_cycles": [
+        {
+          "baseline": "c88a82b",
+          "status": "blocked",
+          "findings": [
+            "S-1",
+            "S-2",
+            "S-3",
+            "SP-1",
+            "SP-2"
+          ],
+          "repairs": 1,
+          "verification": [
+            "go test ./...",
+            "go test -count=5 coverage",
+            "frontend tests",
+            "vue-tsc",
+            "vite build"
+          ],
+          "result": "fail"
+        },
+        {
+          "baseline": "c88a82b",
+          "status": "reviewing",
+          "findings": [],
+          "repairs": 0,
+          "verification": [],
+          "result": "pending"
+        }
+      ],
+      "waivers": [],
+      "verification": [
+        {
+          "commands": [
+            "cd backend && go test ./...",
+            "cd frontend && node --experimental-strip-types --test tests/*.test.ts",
+            "cd frontend && node_modules/.bin/vue-tsc --noEmit",
+            "cd frontend && node_modules/.bin/vite build",
+            "cd backend && go test -count=5 ./internal/app -run TestAuxSchedulerLaneCoverage"
+          ],
+          "result": "pass",
+          "notes": [
+            "go test -race unavailable: gcc missing"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "TASK-AUX-005",
+      "title": "稳定恢复到最低充分前缀",
+      "status": "complete",
+      "dependencies": [
+        "TASK-AUX-004"
+      ],
+      "baseline": "7ac4b75",
+      "implementation_agent": null,
+      "reviewer_agent": null,
+      "commits": [
+        "358b4a8",
+        "d177f1a"
+      ],
+      "review_cycles": [
+        {
+          "baseline": "7ac4b75",
+          "status": "blocked",
+          "findings": [
+            "S-1",
+            "S-2",
+            "SP-1"
+          ],
+          "repairs": 1,
+          "verification": [
+            "go test ./...",
+            "go test -count=5 recovery",
+            "frontend tests",
+            "vue-tsc",
+            "vite build"
+          ],
+          "result": "fail"
+        },
+        {
+          "baseline": "7ac4b75",
+          "status": "passed",
+          "findings": [],
+          "repairs": 1,
+          "verification": [
+            "go test ./...",
+            "go test -count=5 recovery+coverage",
+            "frontend tests",
+            "vue-tsc",
+            "vite build"
+          ],
+          "result": "pass"
+        }
+      ],
+      "waivers": [],
+      "verification": [
+        {
+          "commands": [
+            "cd backend && go test ./...",
+            "cd backend && go test -count=5 ./internal/app -run TestAuxSchedulerLaneRecovery",
+            "cd frontend && node --experimental-strip-types --test tests/*.test.ts",
+            "cd frontend && node_modules/.bin/vue-tsc --noEmit",
+            "cd frontend && node_modules/.bin/vite build"
+          ],
+          "result": "pass",
+          "notes": [
+            "go test -race unavailable: gcc missing"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "TASK-AUX-006",
+      "title": "安全处理禁用、删除和成员变更",
+      "status": "complete",
+      "dependencies": [
+        "TASK-AUX-004"
+      ],
+      "baseline": "58f5519",
+      "implementation_agent": null,
+      "reviewer_agent": null,
+      "commits": [
+        "d658764",
+        "b843478",
+        "44b2a50"
+      ],
+      "review_cycles": [
+        {
+          "baseline": "58f5519",
+          "status": "blocked",
+          "findings": [
+            "SP-1"
+          ],
+          "repairs": 1,
+          "verification": [
+            "go test ./...",
+            "go test -count=5 lifecycle",
+            "frontend tests",
+            "vue-tsc",
+            "vite build"
+          ],
+          "result": "fail"
+        },
+        {
+          "baseline": "58f5519",
+          "status": "blocked",
+          "findings": [
+            "SP-1"
+          ],
+          "repairs": 1,
+          "verification": [
+            "go test ./...",
+            "go test -count=5 lifecycle",
+            "frontend tests",
+            "vue-tsc",
+            "vite build"
+          ],
+          "result": "fail"
+        },
+        {
+          "baseline": "58f5519",
+          "status": "passed",
+          "findings": [],
+          "repairs": 1,
+          "verification": [
+            "go test ./...",
+            "go test -count=5 lifecycle",
+            "frontend tests",
+            "vue-tsc",
+            "vite build"
+          ],
+          "result": "pass"
+        }
+      ],
+      "waivers": [],
+      "verification": [
+        {
+          "commands": [
+            "cd backend && go test ./...",
+            "cd backend && go test -count=5 lifecycle tests",
+            "cd frontend && node --experimental-strip-types --test tests/*.test.ts",
+            "cd frontend && node_modules/.bin/vue-tsc --noEmit",
+            "cd frontend && node_modules/.bin/vite build"
+          ],
+          "result": "pass",
+          "notes": [
+            "go test -race unavailable: gcc missing"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "TASK-AUX-007",
+      "title": "完成运行态管理界面与公共契约",
+      "status": "complete",
+      "dependencies": [
+        "TASK-AUX-005",
+        "TASK-AUX-006"
+      ],
+      "baseline": "f61c294",
+      "implementation_agent": null,
+      "reviewer_agent": null,
+      "commits": [
+        "a3a202d",
+        "1b632c7"
+      ],
+      "review_cycles": [],
+      "waivers": [],
+      "verification": [
+        {
+          "commands": [
+            "cd backend && go test ./...",
+            "cd backend && go test -count=5 ./internal/app -run TestAuxSchedulerLane",
+            "cd frontend && node --experimental-strip-types --test tests/*.test.ts",
+            "cd frontend && node_modules/.bin/vue-tsc --noEmit",
+            "cd frontend && node_modules/.bin/vite build",
+            "browser black-box desktop/mobile"
+          ],
+          "result": "pass",
+          "notes": [
+            "go test -race unavailable: gcc missing",
+            "desktop list/manual check and DOM verified; mobile screenshot surface timed out and modal close button starts above mobile viewport, so mobile modal visual/layout evidence is partial"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "TASK-AUX-008",
+      "title": "收缩旧契约并完成全量验收",
+      "status": "complete",
+      "dependencies": [
+        "TASK-AUX-007"
+      ],
+      "baseline": "1b632c7",
+      "implementation_agent": null,
+      "reviewer_agent": null,
+      "commits": [
+        "269d1c1",
+        "45bdead",
+        "220c9e5",
+        "3247991"
+      ],
+      "review_cycles": [
+        {
+          "baseline": "1b632c7",
+          "status": "blocked",
+          "findings": [
+            "S-1",
+            "SP-1"
+          ],
+          "repairs": 1,
+          "verification": [
+            "go test ./...",
+            "go test -count=5 lane",
+            "frontend tests",
+            "vue-tsc",
+            "vite build"
+          ],
+          "result": "fail"
+        },
+        {
+          "baseline": "1b632c7",
+          "status": "blocked",
+          "findings": [
+            "S-1"
+          ],
+          "repairs": 1,
+          "verification": [
+            "go test ./...",
+            "go test -count=5 lane",
+            "frontend tests",
+            "vue-tsc",
+            "vite build"
+          ],
+          "result": "fail"
+        },
+        {
+          "baseline": "1b632c7",
+          "status": "blocked",
+          "findings": [
+            "S-1"
+          ],
+          "repairs": 1,
+          "verification": [
+            "go test ./...",
+            "go test -count=5 lane",
+            "frontend tests",
+            "vue-tsc",
+            "vite build"
+          ],
+          "result": "fail"
+        },
+        {
+          "baseline": "1b632c7",
+          "status": "passed",
+          "findings": [],
+          "repairs": 1,
+          "verification": [
+            "go test ./...",
+            "go test -count=5 lane",
+            "frontend tests",
+            "vue-tsc",
+            "vite build"
+          ],
+          "result": "pass"
+        }
+      ],
+      "waivers": [
+        {
+          "authorization": "用户明确要求移动端适配可以跳过",
+          "timestamp": "2026-08-16",
+          "finding_id": "black-box mobile",
+          "priority": "P2",
+          "risk": "移动端布局与黑盒验收未完成"
+        }
+      ],
+      "verification": [
+        {
+          "commands": [
+            "cd backend && go test ./...",
+            "cd backend && go test -count=5 ./internal/app -run TestAuxSchedulerLane",
+            "cd frontend && node --experimental-strip-types --test tests/*.test.ts",
+            "cd frontend && node_modules/.bin/vue-tsc --noEmit",
+            "cd frontend && node_modules/.bin/vite build",
+            "desktop browser regression"
+          ],
+          "result": "pass",
+          "notes": [
+            "go test -race unavailable: gcc missing",
+            "mobile skipped by explicit user request"
+          ]
+        }
+      ]
+    }
+  ],
+  "final_review": {
+    "baseline": "fbdf0f2a76c526399b3744301ae2499a22cff953",
+    "head": "69c5735",
+    "status": "passed",
+    "standards": "None",
+    "spec": "None"
+  },
+  "status": "complete"
+}

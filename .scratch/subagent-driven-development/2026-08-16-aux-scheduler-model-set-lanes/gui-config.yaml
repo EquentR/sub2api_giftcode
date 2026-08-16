@@ -1,0 +1,26 @@
+app:
+  listen_addr: "127.0.0.1:18082"
+  base_url: "http://127.0.0.1:18082"
+  frontend_url: ""
+  static_dir: "./frontend/dist"
+database:
+  driver: "sqlite"
+  path: "E:/Develop/AI/sub2api_giftcode/.scratch/subagent-driven-development/2026-08-16-aux-scheduler-model-set-lanes/gui.db"
+sub2api:
+  base_url: "http://127.0.0.1:18081"
+  admin_api_key: "mock-admin-key"
+mail:
+  smtp_host: "127.0.0.1"
+  smtp_port: 2525
+  smtp_username: ""
+  smtp_password: ""
+  from_address: "admin@example.com"
+  admin_to_address: "admin@example.com"
+  subject_prefix: "[Test]"
+  approval_ttl_hours: 72
+session:
+  cookie_secret: "gui-test-secret-at-least-16-bytes"
+sync:
+  interval_seconds: 0
+aux_scheduler:
+  interval_seconds: 0
