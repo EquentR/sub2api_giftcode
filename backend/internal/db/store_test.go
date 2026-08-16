@@ -704,6 +704,23 @@ func TestOpenUsesWALForFileBackedSQLite(t *testing.T) {
 	var mode string
 	require.NoError(t, store.DB.QueryRowContext(context.Background(), `PRAGMA journal_mode`).Scan(&mode))
 	require.Equal(t, "wal", mode)
+	var autoCheckpoint int
+	require.NoError(t, store.DB.QueryRowContext(context.Background(), `PRAGMA wal_autocheckpoint`).Scan(&autoCheckpoint))
+	require.Equal(t, walAutoCheckpointPages, autoCheckpoint)
+}
+
+func TestCheckpointWALReturnsStats(t *testing.T) {
+	store, err := Open("sqlite", filepath.Join(t.TempDir(), "checkpoint.sqlite"))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+	require.NoError(t, store.Migrate(context.Background()))
+
+	stats, err := store.CheckpointWAL(context.Background())
+
+	require.NoError(t, err)
+	require.Zero(t, stats.Busy)
+	require.GreaterOrEqual(t, stats.LogFrames, stats.CheckpointedFrames)
+	require.GreaterOrEqual(t, stats.WALSizeBytes, int64(0))
 }
 
 func TestAppendSQLitePragmasKeepsExistingDistinctPragmas(t *testing.T) {
@@ -711,12 +728,14 @@ func TestAppendSQLitePragmasKeepsExistingDistinctPragmas(t *testing.T) {
 		"_pragma=foreign_keys(1)",
 		"_pragma=busy_timeout(5000)",
 		"_pragma=journal_mode(WAL)",
+		"_pragma=wal_autocheckpoint(1000)",
 	})
 
 	require.Contains(t, dsn, "_pragma=busy_timeout(50)")
 	require.NotContains(t, dsn, "_pragma=busy_timeout(5000)")
 	require.Contains(t, dsn, "_pragma=foreign_keys(1)")
 	require.Contains(t, dsn, "_pragma=journal_mode(WAL)")
+	require.Contains(t, dsn, "_pragma=wal_autocheckpoint(1000)")
 }
 
 func TestAppendSQLitePragmasDoesNotDuplicateExistingJournalMode(t *testing.T) {

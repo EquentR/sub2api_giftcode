@@ -161,6 +161,14 @@ Docker 镜像会先构建 `frontend/dist`，再复制到最终镜像的 `/app/pu
 - `sync.interval_seconds`：兑换码同步间隔，默认 300 秒
 - `aux_scheduler.interval_seconds`：辅助调度器扫描间隔，默认 30 秒
 
+### SQLite WAL 运维
+
+文件数据库使用 WAL 模式、单连接池和显式的 `wal_autocheckpoint=1000`。兑换码同步只会在上游业务字段变化时更新对应记录；每次同步完成仍会在 `sync_state` 中记录全局同步时间。
+
+服务启动后会立即执行一次、随后每 15 分钟执行一次非阻塞的 `PRAGMA wal_checkpoint(PASSIVE)`。日志会输出 `busy`、WAL 帧数、已 checkpoint 帧数和 `wal_size_bytes`；应针对 WAL 文件持续增长、`busy != 0` 或 `log_frames - checkpointed_frames` 长期不回落建立告警。SQLite 无法通过 PRAGMA 直接给出最老读事务，出现此类告警时应排查持有数据库文件的外部进程（例如备份、DB Browser 和监控查询）。
+
+备份时必须使用 SQLite online backup API 或 `VACUUM INTO`；不要只复制主 `.db` 文件。定期清理已过期的 `sessions` 记录，以避免主库随使用时间增长。
+
 ## Sub2API 嵌入模式
 
 当 Sub2API 通过自定义菜单打开本应用，并在 URL 中携带 `ui_mode=embedded`、`token`、`user_id` 时，前端会调用 `POST /api/auth/embedded/login` 换取本地会话。换取成功后，前端会清理地址栏中的敏感参数。

@@ -1,17 +1,29 @@
 package db
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"net/url"
+	"os"
 	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
 )
 
+const walAutoCheckpointPages = 1000
+
 type Store struct {
-	DB *sql.DB
+	DB   *sql.DB
+	path string
+}
+
+type WALCheckpointStats struct {
+	Busy               int
+	LogFrames          int
+	CheckpointedFrames int
+	WALSizeBytes       int64
 }
 
 func Open(driver, path string) (*Store, error) {
@@ -33,12 +45,14 @@ func Open(driver, path string) (*Store, error) {
 			"_pragma=foreign_keys(1)",
 			"_pragma=busy_timeout(5000)",
 			"_pragma=journal_mode(WAL)",
+			fmt.Sprintf("_pragma=wal_autocheckpoint(%d)", walAutoCheckpointPages),
 		})
 	default:
 		dsn = appendSQLitePragmas(dsn, []string{
 			"_pragma=foreign_keys(1)",
 			"_pragma=busy_timeout(5000)",
 			"_pragma=journal_mode(WAL)",
+			fmt.Sprintf("_pragma=wal_autocheckpoint(%d)", walAutoCheckpointPages),
 		})
 	}
 
@@ -54,7 +68,7 @@ func Open(driver, path string) (*Store, error) {
 		_ = db.Close()
 		return nil, err
 	}
-	return &Store{DB: db}, nil
+	return &Store{DB: db, path: path}, nil
 }
 
 func appendSQLitePragmas(dsn string, pragmas []string) string {
@@ -106,6 +120,63 @@ func (s *Store) Close() error {
 		return nil
 	}
 	return s.DB.Close()
+}
+
+func (s *Store) CheckpointWAL(ctx context.Context) (WALCheckpointStats, error) {
+	if s == nil || s.DB == nil {
+		return WALCheckpointStats{}, fmt.Errorf("db store is nil")
+	}
+	var stats WALCheckpointStats
+	if err := s.DB.QueryRowContext(ctx, `PRAGMA wal_checkpoint(PASSIVE)`).Scan(
+		&stats.Busy,
+		&stats.LogFrames,
+		&stats.CheckpointedFrames,
+	); err != nil {
+		return WALCheckpointStats{}, err
+	}
+	size, err := s.walSizeBytes()
+	if err != nil {
+		return WALCheckpointStats{}, err
+	}
+	stats.WALSizeBytes = size
+	return stats, nil
+}
+
+func (s *Store) walSizeBytes() (int64, error) {
+	path := sqliteDatabasePath(s.path)
+	if path == "" {
+		return 0, nil
+	}
+	info, err := os.Stat(path + "-wal")
+	if os.IsNotExist(err) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	return info.Size(), nil
+}
+
+func sqliteDatabasePath(dsn string) string {
+	dsn = strings.TrimSpace(dsn)
+	if dsn == "" || dsn == ":memory:" {
+		return ""
+	}
+	if !strings.HasPrefix(dsn, "file:") {
+		return dsn
+	}
+	parsed, err := url.Parse(dsn)
+	if err != nil || parsed.Query().Get("mode") == "memory" {
+		return ""
+	}
+	if parsed.Path != "" {
+		return parsed.Path
+	}
+	path, _, _ := strings.Cut(parsed.Opaque, "?")
+	if path == ":memory:" {
+		return ""
+	}
+	return path
 }
 
 func (s *Store) NowUTC() time.Time {
