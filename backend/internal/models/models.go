@@ -352,6 +352,16 @@ type AuxSchedulerRule struct {
 	UpdatedAt               time.Time                    `json:"updated_at"`
 }
 
+type AuxSchedulerDispatchLog struct {
+	ID        int64     `json:"id"`
+	RuleID    int64     `json:"rule_id"`
+	Event     string    `json:"event"`
+	Detail    string    `json:"detail"`
+	FromLane  int       `json:"from_lane"`
+	ToLane    int       `json:"to_lane"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
 type SyncState struct {
 	Key       string    `json:"key"`
 	Value     string    `json:"value"`

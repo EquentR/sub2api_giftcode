@@ -1013,6 +1013,9 @@ func (s *Service) convergeAuxSchedulerLanePrefix(ctx context.Context, rule *mode
 	if err := s.recordAuxSchedulerLaneStable(ctx, rule.ID, expected, expected, expected, expected, generation, warnings); err != nil {
 		return 0, "", err
 	}
+	// Log the dispatch transition
+	detail := fmt.Sprintf("开启 %d 关闭 %d 账号: %s", len(opens), len(closes), strings.Join(corrected, ", "))
+	_ = s.insertAuxSchedulerDispatchLog(ctx, rule.ID, "transition", detail, observedPrefix, expected)
 	return generation, warnings, nil
 }
 
@@ -1113,6 +1116,9 @@ func (s *Service) reconcileAuxSchedulerLaneCoverage(ctx context.Context, rule *m
 	if err := s.recordAuxSchedulerLaneStable(ctx, rule.ID, nextExpected, nextExpected, nextExpected, nextExpected, nextGeneration, warnings); err != nil {
 		return err
 	}
+	// Log the upgrade
+	detail := fmt.Sprintf("模型缺失触发升级，开启泳道 %d 账号: %s", nextExpected, strings.Join(corrected, ", "))
+	_ = s.insertAuxSchedulerDispatchLog(ctx, rule.ID, "upgrade", detail, expected, nextExpected)
 	now := s.now()
 	return s.updateAuxSchedulerLaneCoverageState(ctx, rule.ID, nextMissing, evidence, "", "stable", "", nextGeneration, &now)
 }
@@ -1247,6 +1253,9 @@ func (s *Service) shrinkAuxSchedulerLanePrefix(ctx context.Context, id int64, cu
 	if err := s.recordAuxSchedulerLaneStable(ctx, id, candidate, candidate, candidate, candidate, nextGeneration, warnings); err != nil {
 		return err
 	}
+	// Log the recovery shrink
+	detail := fmt.Sprintf("恢复收缩，关闭账号: %s", strings.Join(closed, ", "))
+	_ = s.insertAuxSchedulerDispatchLog(ctx, id, "recovery", detail, currentExpected, candidate)
 	now := s.now()
 	return s.updateAuxSchedulerLaneCoverageState(ctx, id, []string{}, map[string]any{}, "", "stable", "", nextGeneration, &now)
 }
@@ -1600,4 +1609,40 @@ WHERE id = ?
 		return errors.Join(err, updateErr)
 	}
 	return err
+}
+
+// Dispatch log functions
+
+func (s *Service) insertAuxSchedulerDispatchLog(ctx context.Context, ruleID int64, event, detail string, fromLane, toLane int) error {
+	now := formatTime(s.now())
+	_, err := s.db().ExecContext(ctx, `
+INSERT INTO aux_scheduler_dispatch_logs (rule_id, event, detail, from_lane, to_lane, created_at)
+VALUES (?, ?, ?, ?, ?, ?)
+`, ruleID, event, detail, fromLane, toLane, now)
+	return err
+}
+
+func (s *Service) ListAuxSchedulerDispatchLogs(ctx context.Context, ruleID int64) ([]models.AuxSchedulerDispatchLog, error) {
+	rows, err := s.db().QueryContext(ctx, `
+SELECT id, rule_id, event, detail, from_lane, to_lane, created_at
+FROM aux_scheduler_dispatch_logs
+WHERE rule_id = ?
+ORDER BY id DESC
+LIMIT 10
+`, ruleID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var logs []models.AuxSchedulerDispatchLog
+	for rows.Next() {
+		var l models.AuxSchedulerDispatchLog
+		var createdAt string
+		if err := rows.Scan(&l.ID, &l.RuleID, &l.Event, &l.Detail, &l.FromLane, &l.ToLane, &createdAt); err != nil {
+			return nil, err
+		}
+		l.CreatedAt, _ = time.Parse(time.RFC3339Nano, createdAt)
+		logs = append(logs, l)
+	}
+	return logs, rows.Err()
 }

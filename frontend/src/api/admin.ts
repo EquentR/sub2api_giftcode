@@ -265,6 +265,13 @@ export function checkAuxSchedulerRule(id: number) {
   })
 }
 
+export function listAuxSchedulerDispatchLogs(id: number) {
+  return request<import('./types').AuxSchedulerDispatchLog[] | null>({
+    method: 'GET',
+    url: `/admin/aux-scheduler/rules/${id}/dispatch-logs`,
+  }).then(asArray)
+}
+
 export function createCompensationBatch(payload: {
   subscription_days: number
   balance_amount: number

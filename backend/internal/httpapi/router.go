@@ -68,6 +68,7 @@ func NewRouter(cfg *config.RuntimeConfig, service *app.Service) *gin.Engine {
 			admin.PUT("/aux-scheduler/rules/:id", handlers.UpdateAuxSchedulerRule)
 			admin.DELETE("/aux-scheduler/rules/:id", handlers.DeleteAuxSchedulerRule)
 			admin.POST("/aux-scheduler/rules/:id/check", handlers.CheckAuxSchedulerRule)
+			admin.GET("/aux-scheduler/rules/:id/dispatch-logs", handlers.ListAuxSchedulerDispatchLogs)
 			admin.GET("/redeem-tiers", handlers.ListRedeemTiers)
 			admin.PUT("/redeem-tiers", handlers.UpdateRedeemTiers)
 			admin.GET("/sub2api-subscription-groups", handlers.ListSubscriptionGroups)

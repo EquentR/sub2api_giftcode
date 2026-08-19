@@ -87,6 +87,30 @@
             </div>
           </div>
 
+          <!-- Dispatch Logs (collapsible) -->
+          <div class="rule-card__logs">
+            <div class="logs-toggle" @click="toggleLogs(rule)">
+              <el-icon class="logs-toggle__icon" :class="{ 'logs-toggle__icon--open': expandedLogs[rule.id] }"><ArrowRight /></el-icon>
+              <span class="rule-card__label">调度日志</span>
+              <span class="muted" style="font-size: 12px">近 10 次</span>
+            </div>
+            <transition name="logs-slide">
+              <div v-if="expandedLogs[rule.id]" class="logs-list">
+                <div v-if="logsLoading[rule.id]" class="logs-empty muted">加载中…</div>
+                <div v-else-if="!dispatchLogs[rule.id]?.length" class="logs-empty muted">暂无调度日志</div>
+                <div v-else class="logs-timeline">
+                  <div v-for="log in dispatchLogs[rule.id]" :key="log.id" class="log-entry">
+                    <span class="log-entry__dot" :class="'log-entry__dot--' + log.event" />
+                    <span class="log-entry__time">{{ formatTime(log.created_at) }}</span>
+                    <el-tag :type="logEventTagType(log.event)" size="small" effect="plain">{{ logEventLabel(log.event) }}</el-tag>
+                    <span class="log-entry__lane">泳道 {{ log.from_lane }} → {{ log.to_lane }}</span>
+                    <span class="log-entry__detail muted">{{ log.detail }}</span>
+                  </div>
+                </div>
+              </div>
+            </transition>
+          </div>
+
           <!-- Footer: runtime info -->
           <div class="rule-card__footer">
             <div v-if="rule.missing_models?.length" class="runtime-warning">缺失模型: {{ rule.missing_models.join(' · ') }}</div>
@@ -168,7 +192,7 @@
 
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
-import { Delete, Edit, Plus, Refresh, Search } from '@element-plus/icons-vue'
+import { Delete, Edit, Plus, Refresh, Search, ArrowRight } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import AppLayout from '@/components/AppLayout.vue'
 import {
@@ -176,10 +200,11 @@ import {
   createAuxSchedulerRule,
   deleteAuxSchedulerRule,
   listAuxSchedulerRules,
+  listAuxSchedulerDispatchLogs,
   listOpenAIAccounts,
   updateAuxSchedulerRule,
 } from '@/api/admin'
-import type { AuxSchedulerAccountInfo, AuxSchedulerRule, OpenAIAccount } from '@/api/types'
+import type { AuxSchedulerAccountInfo, AuxSchedulerDispatchLog, AuxSchedulerRule, OpenAIAccount } from '@/api/types'
 
 const rules = ref<AuxSchedulerRule[]>([])
 const accounts = ref<OpenAIAccount[]>([])
@@ -194,6 +219,42 @@ const form = reactive({
   lanes: [[]] as number[][],
   maximum_auto_lane: 2,
 })
+
+const expandedLogs = ref<Record<number, boolean>>({})
+const dispatchLogs = ref<Record<number, AuxSchedulerDispatchLog[]>>({})
+const logsLoading = ref<Record<number, boolean>>({})
+
+async function toggleLogs(rule: AuxSchedulerRule) {
+  const open = !expandedLogs.value[rule.id]
+  expandedLogs.value[rule.id] = open
+  if (open && !dispatchLogs.value[rule.id]) {
+    logsLoading.value[rule.id] = true
+    try {
+      dispatchLogs.value[rule.id] = await listAuxSchedulerDispatchLogs(rule.id)
+    } catch {
+      dispatchLogs.value[rule.id] = []
+    } finally {
+      logsLoading.value[rule.id] = false
+    }
+  }
+}
+
+function logEventLabel(event: string) {
+  switch (event) {
+    case 'transition': return '变更'
+    case 'upgrade': return '升级'
+    case 'recovery': return '收缩'
+    default: return event
+  }
+}
+
+function logEventTagType(event: string) {
+  switch (event) {
+    case 'upgrade': return 'warning'
+    case 'recovery': return 'success'
+    default: return 'primary'
+  }
+}
 
 const accountOptions = computed(() => {
   const type = (value: string) => value?.toLowerCase?.() ?? ''
@@ -670,6 +731,113 @@ onMounted(loadAll)
   border-top: 1px solid #f3f4f6;
   padding-top: 8px;
   line-height: 1.7;
+}
+
+/* Dispatch Logs */
+.rule-card__logs {
+  margin-bottom: 12px;
+}
+
+.logs-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  user-select: none;
+  padding: 4px 0;
+}
+
+.logs-toggle:hover .rule-card__label {
+  color: #374151;
+}
+
+.logs-toggle__icon {
+  transition: transform 0.2s;
+  font-size: 12px;
+  color: #9ca3af;
+}
+
+.logs-toggle__icon--open {
+  transform: rotate(90deg);
+}
+
+.logs-list {
+  padding: 8px 0 0 18px;
+}
+
+.logs-empty {
+  font-size: 12px;
+  padding: 4px 0;
+}
+
+.logs-timeline {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.log-entry {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  line-height: 1.5;
+  flex-wrap: wrap;
+}
+
+.log-entry__dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: #6b7280;
+}
+
+.log-entry__dot--upgrade {
+  background: #f59e0b;
+}
+
+.log-entry__dot--recovery {
+  background: #10b981;
+}
+
+.log-entry__dot--transition {
+  background: #3b82f6;
+}
+
+.log-entry__time {
+  color: #6b7280;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.log-entry__lane {
+  color: #374151;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.log-entry__detail {
+  font-size: 11px;
+  word-break: break-word;
+}
+
+.logs-slide-enter-active,
+.logs-slide-leave-active {
+  transition: all 0.2s ease;
+  overflow: hidden;
+}
+
+.logs-slide-enter-from,
+.logs-slide-leave-to {
+  opacity: 0;
+  max-height: 0;
+}
+
+.logs-slide-enter-to,
+.logs-slide-leave-from {
+  opacity: 1;
+  max-height: 400px;
 }
 
 .rule-card__meta {
