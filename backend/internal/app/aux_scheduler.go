@@ -1641,7 +1641,9 @@ LIMIT 10
 		if err := rows.Scan(&l.ID, &l.RuleID, &l.Event, &l.Detail, &l.FromLane, &l.ToLane, &createdAt); err != nil {
 			return nil, err
 		}
-		l.CreatedAt, _ = time.Parse(time.RFC3339Nano, createdAt)
+		if t, err := time.Parse(time.RFC3339Nano, createdAt); err == nil {
+			l.CreatedAt = t
+		}
 		logs = append(logs, l)
 	}
 	return logs, rows.Err()

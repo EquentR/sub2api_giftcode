@@ -227,12 +227,13 @@ const logsLoading = ref<Record<number, boolean>>({})
 async function toggleLogs(rule: AuxSchedulerRule) {
   const open = !expandedLogs.value[rule.id]
   expandedLogs.value[rule.id] = open
-  if (open && !dispatchLogs.value[rule.id]) {
+  if (open && dispatchLogs.value[rule.id] === undefined) {
     logsLoading.value[rule.id] = true
     try {
       dispatchLogs.value[rule.id] = await listAuxSchedulerDispatchLogs(rule.id)
     } catch {
-      dispatchLogs.value[rule.id] = []
+      // Leave undefined so retry is possible on next open
+      expandedLogs.value[rule.id] = false
     } finally {
       logsLoading.value[rule.id] = false
     }
@@ -763,6 +764,8 @@ onMounted(loadAll)
 
 .logs-list {
   padding: 8px 0 0 18px;
+  max-height: 400px;
+  overflow-y: auto;
 }
 
 .logs-empty {
