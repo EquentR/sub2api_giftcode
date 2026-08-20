@@ -385,7 +385,7 @@ INSERT INTO compensation_batches (
   total_users, excluded_users, subscription_compensated_users, balance_compensated_users,
   skipped_zero_balance_users, failed_users, detail_count, upstream_error,
   created_at, updated_at, completed_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `,
 		batch.BatchKey,
 		boolToInt(batch.CompensateSubscriptions),
