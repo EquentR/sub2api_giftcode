@@ -373,6 +373,7 @@ type CompensationBatch struct {
 	BatchKey                     string     `json:"batch_key"`
 	CompensateSubscriptions      bool       `json:"compensate_subscriptions"`
 	CompensateBalance            bool       `json:"compensate_balance"`
+	CompensateNonPositiveBalance bool       `json:"compensate_non_positive_balance"`
 	SubscriptionDays             int        `json:"subscription_days"`
 	BalanceAmount                float64    `json:"balance_amount"`
 	ExcludedDomains              []string   `json:"excluded_domains"`

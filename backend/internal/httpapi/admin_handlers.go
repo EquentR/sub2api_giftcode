@@ -162,12 +162,13 @@ func (h *Handlers) CreateCompensationBatch(c *gin.Context) {
 		return
 	}
 	batch, err := h.service.RunCompensationBatch(c.Request.Context(), sessionUser, app.CompensationBatchInput{
-		CompensateSubscriptions: req.CompensateSubscriptions,
-		CompensateBalance:       req.CompensateBalance,
-		SubscriptionDays:        req.SubscriptionDays,
-		BalanceAmount:           req.BalanceAmount,
-		ExcludedDomains:         req.ExcludedDomains,
-		Note:                    req.Note,
+		CompensateSubscriptions:      req.CompensateSubscriptions,
+		CompensateBalance:            req.CompensateBalance,
+		CompensateNonPositiveBalance: req.CompensateNonPositiveBalance,
+		SubscriptionDays:             req.SubscriptionDays,
+		BalanceAmount:                req.BalanceAmount,
+		ExcludedDomains:              req.ExcludedDomains,
+		Note:                         req.Note,
 	})
 	if err != nil {
 		status, msg, reason := statusForError(err)
