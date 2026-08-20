@@ -275,6 +275,7 @@ export function listAuxSchedulerDispatchLogs(id: number) {
 export function createCompensationBatch(payload: {
   compensate_subscriptions: boolean
   compensate_balance: boolean
+  compensate_non_positive_balance: boolean
   subscription_days: number
   balance_amount: number
   excluded_domains: string[]

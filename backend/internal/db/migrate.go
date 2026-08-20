@@ -379,6 +379,7 @@ CREATE TABLE IF NOT EXISTS compensation_batches (
   batch_key TEXT NOT NULL UNIQUE,
   compensate_subscriptions INTEGER NOT NULL DEFAULT 1,
   compensate_balance INTEGER NOT NULL DEFAULT 1,
+  compensate_non_positive_balance INTEGER NOT NULL DEFAULT 0,
   subscription_days INTEGER NOT NULL,
   balance_amount REAL NOT NULL,
   excluded_domains_json TEXT NOT NULL DEFAULT '[]',
@@ -549,8 +550,9 @@ func (s *Store) Migrate(ctx context.Context) error {
 
 func (s *Store) ensureCompensationBatchModeColumns(ctx context.Context) error {
 	return s.ensureColumns(ctx, "compensation_batches", map[string]string{
-		"compensate_subscriptions": "INTEGER NOT NULL DEFAULT 1",
-		"compensate_balance":       "INTEGER NOT NULL DEFAULT 1",
+		"compensate_subscriptions":        "INTEGER NOT NULL DEFAULT 1",
+		"compensate_balance":              "INTEGER NOT NULL DEFAULT 1",
+		"compensate_non_positive_balance": "INTEGER NOT NULL DEFAULT 0",
 	})
 }
 

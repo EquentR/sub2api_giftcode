@@ -206,7 +206,7 @@ func TestCompensationExtensionEventExtendsResetEntitlements(t *testing.T) {
 	require.Equal(t, formatTime(beforeExpires.Add(5*24*time.Hour)), currentEnd)
 }
 
-func TestRunCompensationBatchBalanceOnlyCompensatesSubscribedUsers(t *testing.T) {
+func TestRunCompensationBatchBalanceOnlyOptionCompensatesNonPositiveBalances(t *testing.T) {
 	var subscriptionLookups, balanceUpdates int
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -222,7 +222,7 @@ func TestRunCompensationBatchBalanceOnlyCompensatesSubscribedUsers(t *testing.T)
 		case "/api/v1/admin/subscriptions":
 			subscriptionLookups++
 			writeEnvelope(w, map[string]any{"items": []sub2api.Subscription{{ID: 101, UserID: 11, Status: "active"}}, "total": 1, "page": 1, "page_size": 100, "pages": 1})
-		case "/api/v1/admin/users/11/balance", "/api/v1/admin/users/12/balance":
+		case "/api/v1/admin/users/11/balance", "/api/v1/admin/users/12/balance", "/api/v1/admin/users/13/balance":
 			balanceUpdates++
 			writeEnvelope(w, sub2api.User{Balance: 15})
 		default:
@@ -238,16 +238,32 @@ func TestRunCompensationBatchBalanceOnlyCompensatesSubscribedUsers(t *testing.T)
 	svc := New(&config.RuntimeConfig{}, store, sub2api.NewClient(upstream.URL, "admin-key"), nil)
 	operator := &SessionUser{User: sub2api.User{ID: 900}, IsAdmin: true}
 	batch, err := svc.RunCompensationBatch(context.Background(), operator, CompensationBatchInput{
-		CompensateBalance: true,
-		BalanceAmount:     5,
+		CompensateBalance:            true,
+		CompensateNonPositiveBalance: true,
+		BalanceAmount:                5,
 	})
 	require.NoError(t, err)
 	require.False(t, batch.CompensateSubscriptions)
 	require.True(t, batch.CompensateBalance)
+	require.True(t, batch.CompensateNonPositiveBalance)
 	require.Equal(t, 0, subscriptionLookups)
-	require.Equal(t, 2, balanceUpdates)
-	require.Equal(t, 2, batch.BalanceCompensatedUsers)
-	require.Equal(t, 1, batch.SkippedZeroBalanceUsers)
+	require.Equal(t, 3, balanceUpdates)
+	require.Equal(t, 3, batch.BalanceCompensatedUsers)
+	require.Equal(t, 0, batch.SkippedZeroBalanceUsers)
+
+	details, err := svc.ListCompensationBatchDetails(context.Background(), batch.ID)
+	require.NoError(t, err)
+	require.Equal(t, "non_positive_balance", details[2].DecisionType)
+	require.Equal(t, "success", details[2].Status)
+}
+
+func TestRunCompensationBatchIgnoresNonPositiveBalanceOptionWhenSubscriptionsAreCompensated(t *testing.T) {
+	input := normalizeCompensationBatchInput(CompensationBatchInput{
+		CompensateSubscriptions:      true,
+		CompensateBalance:            true,
+		CompensateNonPositiveBalance: true,
+	})
+	require.False(t, input.CompensateNonPositiveBalance)
 }
 
 func TestSubscriptionExtensionAppliedAfterOriginalBonusExpiryIsIdempotentAndSkipsLaterGrant(t *testing.T) {

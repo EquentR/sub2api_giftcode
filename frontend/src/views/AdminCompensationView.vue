@@ -30,6 +30,9 @@
         <el-form-item label="余额补偿金额">
           <el-input-number v-model="form.balance_amount" :min="0.01" :step="1" :disabled="!form.compensate_balance" />
         </el-form-item>
+        <el-form-item v-if="form.compensate_balance && !form.compensate_subscriptions" label="非正余额用户">
+          <el-checkbox v-model="form.compensate_non_positive_balance">补偿余额小于或等于 0 的用户</el-checkbox>
+        </el-form-item>
         <el-form-item label="排除邮箱域名">
           <el-input
             v-model="excludedDomainsText"
@@ -67,8 +70,11 @@
             <StatusTag :status="row.status" />
           </template>
         </el-table-column>
-        <el-table-column label="订阅/余额" min-width="160">
-          <template #default="{ row }">{{ row.subscription_days }} 天 / {{ row.balance_amount }}</template>
+        <el-table-column label="订阅/余额" min-width="190">
+          <template #default="{ row }">
+            {{ row.subscription_days }} 天 / {{ row.balance_amount }}
+            {{ row.compensate_non_positive_balance ? '（含非正余额）' : '' }}
+          </template>
         </el-table-column>
         <el-table-column label="排除域名" min-width="220">
           <template #default="{ row }">{{ row.excluded_domains?.join(', ') || '-' }}</template>
@@ -133,6 +139,7 @@ const excludedDomainsText = ref('')
 const form = reactive({
   compensate_subscriptions: true,
   compensate_balance: true,
+  compensate_non_positive_balance: false,
   subscription_days: 30,
   balance_amount: 10,
   note: '',
@@ -179,6 +186,7 @@ async function submitBatch() {
     const created = await createCompensationBatch({
       compensate_subscriptions: form.compensate_subscriptions,
       compensate_balance: form.compensate_balance,
+      compensate_non_positive_balance: form.compensate_non_positive_balance,
       subscription_days: form.subscription_days,
       balance_amount: form.balance_amount,
       excluded_domains: parseExcludedDomains(excludedDomainsText.value),
