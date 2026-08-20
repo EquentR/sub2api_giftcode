@@ -13,6 +13,7 @@ import (
 
 	"sub2api-giftcode/backend/internal/config"
 	"sub2api-giftcode/backend/internal/db"
+	"sub2api-giftcode/backend/internal/models"
 	"sub2api-giftcode/backend/internal/sub2api"
 )
 
@@ -253,8 +254,16 @@ func TestRunCompensationBatchBalanceOnlyOptionCompensatesNonPositiveBalances(t *
 
 	details, err := svc.ListCompensationBatchDetails(context.Background(), batch.ID)
 	require.NoError(t, err)
-	require.Equal(t, "non_positive_balance", details[2].DecisionType)
-	require.Equal(t, "success", details[2].Status)
+	var nonPositiveBalanceDetail *models.CompensationBatchDetail
+	for i := range details {
+		if details[i].UpstreamUserID == 13 {
+			nonPositiveBalanceDetail = &details[i]
+			break
+		}
+	}
+	require.NotNil(t, nonPositiveBalanceDetail)
+	require.Equal(t, "non_positive_balance", nonPositiveBalanceDetail.DecisionType)
+	require.Equal(t, "success", nonPositiveBalanceDetail.Status)
 }
 
 func TestRunCompensationBatchIgnoresNonPositiveBalanceOptionWhenSubscriptionsAreCompensated(t *testing.T) {
