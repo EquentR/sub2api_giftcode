@@ -79,7 +79,7 @@ func TestCompensationHandlersCreateListAndDetails(t *testing.T) {
 
 	createRecorder := httptest.NewRecorder()
 	createCtx, _ := gin.CreateTestContext(createRecorder)
-	createCtx.Request = httptest.NewRequest(http.MethodPost, "/api/admin/compensation-batches", strings.NewReader(`{"subscription_days":30,"balance_amount":10,"excluded_domains":["blocked.com"],"note":"ops note"}`))
+	createCtx.Request = httptest.NewRequest(http.MethodPost, "/api/admin/compensation-batches", strings.NewReader(`{"compensate_subscriptions":true,"compensate_balance":true,"subscription_days":30,"balance_amount":10,"excluded_domains":["blocked.com"],"note":"ops note"}`))
 	createCtx.Request.Header.Set("Content-Type", "application/json")
 	withSessionUser(createCtx, sessionUser)
 	handlers.CreateCompensationBatch(createCtx)

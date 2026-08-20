@@ -361,6 +361,8 @@ type SyncState struct {
 type CompensationBatch struct {
 	ID                           int64      `json:"id"`
 	BatchKey                     string     `json:"batch_key"`
+	CompensateSubscriptions      bool       `json:"compensate_subscriptions"`
+	CompensateBalance            bool       `json:"compensate_balance"`
 	SubscriptionDays             int        `json:"subscription_days"`
 	BalanceAmount                float64    `json:"balance_amount"`
 	ExcludedDomains              []string   `json:"excluded_domains"`

@@ -4,7 +4,7 @@
       <div class="toolbar">
         <div>
           <div style="font-weight: 700">执行补偿</div>
-          <div class="muted">有效订阅补天数，无有效订阅且余额大于 0 补余额，支持排除邮箱域名。</div>
+          <div class="muted">可单独选择补订阅或补余额；仅补余额时，有效订阅用户也会获得余额补偿。</div>
         </div>
         <div style="display: flex; gap: 8px">
           <el-button :icon="Refresh" :loading="loading" @click="loadBatches">刷新批次</el-button>
@@ -20,11 +20,15 @@
       />
 
       <el-form :model="form" label-position="top" class="batch-form">
+        <el-form-item label="补偿类型">
+          <el-checkbox v-model="form.compensate_subscriptions">补订阅</el-checkbox>
+          <el-checkbox v-model="form.compensate_balance">补余额</el-checkbox>
+        </el-form-item>
         <el-form-item label="订阅补偿天数">
-          <el-input-number v-model="form.subscription_days" :min="1" :step="1" />
+          <el-input-number v-model="form.subscription_days" :min="1" :step="1" :disabled="!form.compensate_subscriptions" />
         </el-form-item>
         <el-form-item label="余额补偿金额">
-          <el-input-number v-model="form.balance_amount" :min="0.01" :step="1" />
+          <el-input-number v-model="form.balance_amount" :min="0.01" :step="1" :disabled="!form.compensate_balance" />
         </el-form-item>
         <el-form-item label="排除邮箱域名">
           <el-input
@@ -127,6 +131,8 @@ const details = ref<CompensationBatchDetail[]>([])
 const selectedBatchId = ref<number | null>(null)
 const excludedDomainsText = ref('')
 const form = reactive({
+  compensate_subscriptions: true,
+  compensate_balance: true,
   subscription_days: 30,
   balance_amount: 10,
   note: '',
@@ -166,7 +172,13 @@ async function loadDetails(batchId: number) {
 async function submitBatch() {
   submitting.value = true
   try {
+    if (!form.compensate_subscriptions && !form.compensate_balance) {
+      ElMessage.error('请至少选择一种补偿类型')
+      return
+    }
     const created = await createCompensationBatch({
+      compensate_subscriptions: form.compensate_subscriptions,
+      compensate_balance: form.compensate_balance,
       subscription_days: form.subscription_days,
       balance_amount: form.balance_amount,
       excluded_domains: parseExcludedDomains(excludedDomainsText.value),

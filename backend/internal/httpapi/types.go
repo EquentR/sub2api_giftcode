@@ -102,10 +102,12 @@ type AuxSchedulerRuleRequest struct {
 }
 
 type CompensationBatchCreateRequest struct {
-	SubscriptionDays int      `json:"subscription_days" binding:"required,gt=0"`
-	BalanceAmount    float64  `json:"balance_amount" binding:"required,gt=0"`
-	ExcludedDomains  []string `json:"excluded_domains"`
-	Note             string   `json:"note"`
+	CompensateSubscriptions bool     `json:"compensate_subscriptions"`
+	CompensateBalance       bool     `json:"compensate_balance"`
+	SubscriptionDays        int      `json:"subscription_days"`
+	BalanceAmount           float64  `json:"balance_amount"`
+	ExcludedDomains         []string `json:"excluded_domains"`
+	Note                    string   `json:"note"`
 }
 
 type SubscriptionResetBonusPreviewRequest struct {
