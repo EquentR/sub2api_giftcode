@@ -20,10 +20,12 @@ const (
 )
 
 type CompensationBatchInput struct {
-	SubscriptionDays int      `json:"subscription_days"`
-	BalanceAmount    float64  `json:"balance_amount"`
-	ExcludedDomains  []string `json:"excluded_domains"`
-	Note             string   `json:"note"`
+	CompensateSubscriptions bool     `json:"compensate_subscriptions"`
+	CompensateBalance       bool     `json:"compensate_balance"`
+	SubscriptionDays        int      `json:"subscription_days"`
+	BalanceAmount           float64  `json:"balance_amount"`
+	ExcludedDomains         []string `json:"excluded_domains"`
+	Note                    string   `json:"note"`
 }
 
 type balanceUpdateResult struct {
@@ -43,7 +45,9 @@ func (s *Service) RunCompensationBatch(ctx context.Context, operator *SessionUse
 		return nil, ErrForbidden
 	}
 	input = normalizeCompensationBatchInput(input)
-	if input.SubscriptionDays <= 0 || input.BalanceAmount <= 0 {
+	if (!input.CompensateSubscriptions && !input.CompensateBalance) ||
+		(input.CompensateSubscriptions && input.SubscriptionDays <= 0) ||
+		(input.CompensateBalance && input.BalanceAmount <= 0) {
 		return nil, ErrBadRequest
 	}
 
@@ -53,17 +57,19 @@ func (s *Service) RunCompensationBatch(ctx context.Context, operator *SessionUse
 		return nil, err
 	}
 	batch := models.CompensationBatch{
-		BatchKey:               batchKey,
-		SubscriptionDays:       input.SubscriptionDays,
-		BalanceAmount:          input.BalanceAmount,
-		ExcludedDomains:        input.ExcludedDomains,
-		Note:                   input.Note,
-		OperatorUpstreamUserID: operator.User.ID,
-		OperatorEmail:          strings.TrimSpace(operator.User.Email),
-		OperatorUsername:       strings.TrimSpace(operator.User.Username),
-		Status:                 compensationBatchStatusRunning,
-		CreatedAt:              now,
-		UpdatedAt:              now,
+		BatchKey:                batchKey,
+		CompensateSubscriptions: input.CompensateSubscriptions,
+		CompensateBalance:       input.CompensateBalance,
+		SubscriptionDays:        input.SubscriptionDays,
+		BalanceAmount:           input.BalanceAmount,
+		ExcludedDomains:         input.ExcludedDomains,
+		Note:                    input.Note,
+		OperatorUpstreamUserID:  operator.User.ID,
+		OperatorEmail:           strings.TrimSpace(operator.User.Email),
+		OperatorUsername:        strings.TrimSpace(operator.User.Username),
+		Status:                  compensationBatchStatusRunning,
+		CreatedAt:               now,
+		UpdatedAt:               now,
 	}
 	batchID, err := s.insertCompensationBatch(ctx, batch)
 	if err != nil {
@@ -122,28 +128,30 @@ func (s *Service) RunCompensationBatch(ctx context.Context, operator *SessionUse
 			}
 		}
 
-		subscriptions, err := s.upstream.ListActiveUserSubscriptions(ctx, user.ID)
-		if err != nil {
-			detail.DecisionType = "active_subscription_lookup"
-			detail.ActionType = "lookup"
-			detail.Status = "failed"
-			detail.ResultReason = err.Error()
-			batch.FailedUsers++
-			if err := s.insertCompensationBatchDetail(ctx, detail); err != nil {
-				return nil, err
+		if input.CompensateSubscriptions {
+			subscriptions, err := s.upstream.ListActiveUserSubscriptions(ctx, user.ID)
+			if err != nil {
+				detail.DecisionType = "active_subscription_lookup"
+				detail.ActionType = "lookup"
+				detail.Status = "failed"
+				detail.ResultReason = err.Error()
+				batch.FailedUsers++
+				if err := s.insertCompensationBatchDetail(ctx, detail); err != nil {
+					return nil, err
+				}
+				batch.DetailCount++
+				continue
 			}
-			batch.DetailCount++
-			continue
-		}
 
-		detail.HasActiveSubscriptions = len(subscriptions) > 0
-		detail.ActiveSubscriptionCount = len(subscriptions)
-		detail.ActiveSubscriptionIDs = make([]int64, 0, len(subscriptions))
-		for _, subscription := range subscriptions {
-			detail.ActiveSubscriptionIDs = append(detail.ActiveSubscriptionIDs, subscription.ID)
-		}
-
-		if len(subscriptions) > 0 {
+			detail.HasActiveSubscriptions = len(subscriptions) > 0
+			detail.ActiveSubscriptionCount = len(subscriptions)
+			detail.ActiveSubscriptionIDs = make([]int64, 0, len(subscriptions))
+			for _, subscription := range subscriptions {
+				detail.ActiveSubscriptionIDs = append(detail.ActiveSubscriptionIDs, subscription.ID)
+			}
+			if len(subscriptions) == 0 {
+				goto compensateBalance
+			}
 			detail.DecisionType = "active_subscription"
 			detail.ActionType = "subscription"
 			extendedIDs := make([]int64, 0, len(subscriptions))
@@ -186,7 +194,8 @@ func (s *Service) RunCompensationBatch(ctx context.Context, operator *SessionUse
 			continue
 		}
 
-		if user.Balance > 0 {
+	compensateBalance:
+		if input.CompensateBalance && user.Balance > 0 {
 			detail.DecisionType = "positive_balance"
 			detail.ActionType = "balance"
 			detail.RemarkRequested = input.Note != ""
@@ -213,11 +222,16 @@ func (s *Service) RunCompensationBatch(ctx context.Context, operator *SessionUse
 			continue
 		}
 
-		detail.DecisionType = "non_positive_balance"
+		if !input.CompensateBalance {
+			detail.DecisionType = "balance_compensation_disabled"
+			detail.ResultReason = "balance compensation is disabled"
+		} else {
+			detail.DecisionType = "non_positive_balance"
+			detail.ResultReason = "no active subscriptions and balance <= 0"
+			batch.SkippedZeroBalanceUsers++
+		}
 		detail.ActionType = "skip"
 		detail.Status = "skipped"
-		detail.ResultReason = "no active subscriptions and balance <= 0"
-		batch.SkippedZeroBalanceUsers++
 		if err := s.insertCompensationBatchDetail(ctx, detail); err != nil {
 			return nil, err
 		}
@@ -251,7 +265,7 @@ func compensationErrorMessage(err error) string {
 
 func (s *Service) ListCompensationBatches(ctx context.Context) ([]models.CompensationBatch, error) {
 	rows, err := s.db().QueryContext(ctx, `
-SELECT id, batch_key, subscription_days, balance_amount, excluded_domains_json, note,
+SELECT id, batch_key, compensate_subscriptions, compensate_balance, subscription_days, balance_amount, excluded_domains_json, note,
        operator_upstream_user_id, operator_email, operator_username, status,
        total_users, excluded_users, subscription_compensated_users, balance_compensated_users,
        skipped_zero_balance_users, failed_users, detail_count, upstream_error,
@@ -279,7 +293,7 @@ func (s *Service) GetCompensationBatch(ctx context.Context, batchID int64) (*mod
 		return nil, ErrBadRequest
 	}
 	row := s.db().QueryRowContext(ctx, `
-SELECT id, batch_key, subscription_days, balance_amount, excluded_domains_json, note,
+SELECT id, batch_key, compensate_subscriptions, compensate_balance, subscription_days, balance_amount, excluded_domains_json, note,
        operator_upstream_user_id, operator_email, operator_username, status,
        total_users, excluded_users, subscription_compensated_users, balance_compensated_users,
        skipped_zero_balance_users, failed_users, detail_count, upstream_error,
@@ -366,14 +380,16 @@ func compensationSubscriptionExtensionIdempotencyKey(batchKey string, userID, su
 func (s *Service) insertCompensationBatch(ctx context.Context, batch models.CompensationBatch) (int64, error) {
 	result, err := s.db().ExecContext(ctx, `
 INSERT INTO compensation_batches (
-  batch_key, subscription_days, balance_amount, excluded_domains_json, note,
+  batch_key, compensate_subscriptions, compensate_balance, subscription_days, balance_amount, excluded_domains_json, note,
   operator_upstream_user_id, operator_email, operator_username, status,
   total_users, excluded_users, subscription_compensated_users, balance_compensated_users,
   skipped_zero_balance_users, failed_users, detail_count, upstream_error,
   created_at, updated_at, completed_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `,
 		batch.BatchKey,
+		boolToInt(batch.CompensateSubscriptions),
+		boolToInt(batch.CompensateBalance),
 		batch.SubscriptionDays,
 		batch.BalanceAmount,
 		marshalJSON(batch.ExcludedDomains),
@@ -465,15 +481,19 @@ func scanCompensationBatchRow(scanner interface {
 	Scan(dest ...any) error
 }) (*models.CompensationBatch, error) {
 	var (
-		out             models.CompensationBatch
-		excludedDomains string
-		createdAt       string
-		updatedAt       string
-		completedAt     sql.NullString
+		out                     models.CompensationBatch
+		compensateSubscriptions int
+		compensateBalance       int
+		excludedDomains         string
+		createdAt               string
+		updatedAt               string
+		completedAt             sql.NullString
 	)
 	if err := scanner.Scan(
 		&out.ID,
 		&out.BatchKey,
+		&compensateSubscriptions,
+		&compensateBalance,
 		&out.SubscriptionDays,
 		&out.BalanceAmount,
 		&excludedDomains,
@@ -496,6 +516,8 @@ func scanCompensationBatchRow(scanner interface {
 	); err != nil {
 		return nil, err
 	}
+	out.CompensateSubscriptions = compensateSubscriptions != 0
+	out.CompensateBalance = compensateBalance != 0
 	if strings.TrimSpace(excludedDomains) != "" {
 		if err := json.Unmarshal([]byte(excludedDomains), &out.ExcludedDomains); err != nil {
 			return nil, fmt.Errorf("decode excluded_domains_json: %w", err)

@@ -528,6 +528,8 @@ export interface SubscriptionConcurrencyMonitorDetail {
 export interface CompensationBatch {
   id: number
   batch_key: string
+  compensate_subscriptions: boolean
+  compensate_balance: boolean
   subscription_days: number
   balance_amount: number
   excluded_domains: string[]

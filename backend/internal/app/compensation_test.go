@@ -92,10 +92,12 @@ func TestRunCompensationBatchRecordsSummaryAndDetails(t *testing.T) {
 	}
 
 	batch, err := svc.RunCompensationBatch(context.Background(), operator, CompensationBatchInput{
-		SubscriptionDays: 15,
-		BalanceAmount:    10,
-		ExcludedDomains:  []string{"blocked.com"},
-		Note:             "bulk compensation",
+		CompensateSubscriptions: true,
+		CompensateBalance:       true,
+		SubscriptionDays:        15,
+		BalanceAmount:           10,
+		ExcludedDomains:         []string{"blocked.com"},
+		Note:                    "bulk compensation",
 	})
 	require.NoError(t, err)
 	require.Equal(t, compensationBatchStatusCompleted, batch.Status)
@@ -153,6 +155,7 @@ func TestCompensationExtensionEventExtendsResetEntitlements(t *testing.T) {
 		default:
 			http.NotFound(w, r)
 		}
+
 	}))
 	t.Cleanup(upstream.Close)
 	store, err := db.Open("sqlite", ":memory:")
@@ -168,7 +171,7 @@ func TestCompensationExtensionEventExtendsResetEntitlements(t *testing.T) {
 	svc.nowFunc = func() time.Time { return now }
 	operator := &SessionUser{User: sub2api.User{ID: 900, Email: "admin@example.com"}, IsAdmin: true}
 
-	batch, err := svc.RunCompensationBatch(context.Background(), operator, CompensationBatchInput{SubscriptionDays: 5, BalanceAmount: 10, Note: "incident"})
+	batch, err := svc.RunCompensationBatch(context.Background(), operator, CompensationBatchInput{CompensateSubscriptions: true, CompensateBalance: true, SubscriptionDays: 5, BalanceAmount: 10, Note: "incident"})
 	require.NoError(t, err)
 	require.Equal(t, compensationBatchStatusCompleted, batch.Status)
 	var eventStatus, resolution, beforeRaw, afterRaw string
@@ -201,6 +204,50 @@ func TestCompensationExtensionEventExtendsResetEntitlements(t *testing.T) {
 	require.Equal(t, 1, eventCount, "a live extension event must not be migrated again as legacy")
 	require.NoError(t, store.DB.QueryRow(`SELECT period_end FROM subscription_reset_periods WHERE id = 1`).Scan(&currentEnd))
 	require.Equal(t, formatTime(beforeExpires.Add(5*24*time.Hour)), currentEnd)
+}
+
+func TestRunCompensationBatchBalanceOnlyCompensatesSubscribedUsers(t *testing.T) {
+	var subscriptionLookups, balanceUpdates int
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/admin/users":
+			writeEnvelope(w, map[string]any{
+				"items": []sub2api.User{
+					{ID: 11, Email: "sub@example.com", Status: "active", Balance: 10},
+					{ID: 12, Email: "balance@example.com", Status: "active", Balance: 5},
+					{ID: 13, Email: "zero@example.com", Status: "active", Balance: 0},
+				},
+				"total": 3, "page": 1, "page_size": 100, "pages": 1,
+			})
+		case "/api/v1/admin/subscriptions":
+			subscriptionLookups++
+			writeEnvelope(w, map[string]any{"items": []sub2api.Subscription{{ID: 101, UserID: 11, Status: "active"}}, "total": 1, "page": 1, "page_size": 100, "pages": 1})
+		case "/api/v1/admin/users/11/balance", "/api/v1/admin/users/12/balance":
+			balanceUpdates++
+			writeEnvelope(w, sub2api.User{Balance: 15})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(upstream.Close)
+	store, err := db.Open("sqlite", ":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+	require.NoError(t, store.Migrate(context.Background()))
+
+	svc := New(&config.RuntimeConfig{}, store, sub2api.NewClient(upstream.URL, "admin-key"), nil)
+	operator := &SessionUser{User: sub2api.User{ID: 900}, IsAdmin: true}
+	batch, err := svc.RunCompensationBatch(context.Background(), operator, CompensationBatchInput{
+		CompensateBalance: true,
+		BalanceAmount:     5,
+	})
+	require.NoError(t, err)
+	require.False(t, batch.CompensateSubscriptions)
+	require.True(t, batch.CompensateBalance)
+	require.Equal(t, 0, subscriptionLookups)
+	require.Equal(t, 2, balanceUpdates)
+	require.Equal(t, 2, batch.BalanceCompensatedUsers)
+	require.Equal(t, 1, batch.SkippedZeroBalanceUsers)
 }
 
 func TestSubscriptionExtensionAppliedAfterOriginalBonusExpiryIsIdempotentAndSkipsLaterGrant(t *testing.T) {
@@ -381,9 +428,11 @@ func TestRunCompensationBatchRetriesBalanceWithoutRemarkWhenUpstreamRejectsNotes
 	}
 
 	batch, err := svc.RunCompensationBatch(context.Background(), operator, CompensationBatchInput{
-		SubscriptionDays: 15,
-		BalanceAmount:    10,
-		Note:             "bulk compensation",
+		CompensateSubscriptions: true,
+		CompensateBalance:       true,
+		SubscriptionDays:        15,
+		BalanceAmount:           10,
+		Note:                    "bulk compensation",
 	})
 	require.NoError(t, err)
 	require.Equal(t, compensationBatchStatusCompleted, batch.Status)
@@ -468,9 +517,11 @@ func TestRunCompensationBatchMarksPartialSubscriptionExtensionFailures(t *testin
 	}
 
 	batch, err := svc.RunCompensationBatch(context.Background(), operator, CompensationBatchInput{
-		SubscriptionDays: 15,
-		BalanceAmount:    10,
-		Note:             "bulk compensation",
+		CompensateSubscriptions: true,
+		CompensateBalance:       true,
+		SubscriptionDays:        15,
+		BalanceAmount:           10,
+		Note:                    "bulk compensation",
 	})
 	require.NoError(t, err)
 	require.Equal(t, compensationBatchStatusCompletedWithFailures, batch.Status)

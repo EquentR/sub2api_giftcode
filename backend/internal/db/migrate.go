@@ -377,6 +377,8 @@ CREATE TABLE IF NOT EXISTS sync_state (
 CREATE TABLE IF NOT EXISTS compensation_batches (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   batch_key TEXT NOT NULL UNIQUE,
+  compensate_subscriptions INTEGER NOT NULL DEFAULT 1,
+  compensate_balance INTEGER NOT NULL DEFAULT 1,
   subscription_days INTEGER NOT NULL,
   balance_amount REAL NOT NULL,
   excluded_domains_json TEXT NOT NULL DEFAULT '[]',
@@ -523,10 +525,20 @@ func (s *Store) Migrate(ctx context.Context) error {
 	if err := s.ensureAuxSchedulerLaneColumns(ctx); err != nil {
 		return err
 	}
+	if err := s.ensureCompensationBatchModeColumns(ctx); err != nil {
+		return err
+	}
 	if err := s.migrateAuxSchedulerLegacyLanes(ctx); err != nil {
 		return err
 	}
 	return s.backfillDirectChargeRedeemCodes(ctx)
+}
+
+func (s *Store) ensureCompensationBatchModeColumns(ctx context.Context) error {
+	return s.ensureColumns(ctx, "compensation_batches", map[string]string{
+		"compensate_subscriptions": "INTEGER NOT NULL DEFAULT 1",
+		"compensate_balance":       "INTEGER NOT NULL DEFAULT 1",
+	})
 }
 
 func (s *Store) ensureSubscriptionResetColumns(ctx context.Context) error {
