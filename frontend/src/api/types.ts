@@ -197,6 +197,16 @@ export interface AuxSchedulerRule {
   upstream_error?: string
 }
 
+export interface AuxSchedulerDispatchLog {
+  id: number
+  rule_id: number
+  event: string
+  detail: string
+  from_lane: number
+  to_lane: number
+  created_at: string
+}
+
 export interface UserSummary {
   upstream_user_id: number
   email: string

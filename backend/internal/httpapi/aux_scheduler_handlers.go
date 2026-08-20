@@ -122,3 +122,17 @@ func (h *Handlers) CheckAuxSchedulerRule(c *gin.Context) {
 	}
 	writeSuccess(c, rule)
 }
+
+func (h *Handlers) ListAuxSchedulerDispatchLogs(c *gin.Context) {
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil {
+		writeError(c, http.StatusBadRequest, "invalid id")
+		return
+	}
+	logs, err := h.service.ListAuxSchedulerDispatchLogs(c.Request.Context(), id)
+	if err != nil {
+		writeServiceError(c, err)
+		return
+	}
+	writeSuccess(c, logs)
+}

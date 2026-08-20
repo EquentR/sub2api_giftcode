@@ -471,6 +471,19 @@ CREATE TABLE IF NOT EXISTS aux_scheduler_rules (
 
 CREATE INDEX IF NOT EXISTS idx_aux_scheduler_rules_enabled
   ON aux_scheduler_rules(enabled, id);
+
+CREATE TABLE IF NOT EXISTS aux_scheduler_dispatch_logs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  rule_id INTEGER NOT NULL,
+  event TEXT NOT NULL,
+  detail TEXT NOT NULL DEFAULT '',
+  from_lane INTEGER NOT NULL DEFAULT 0,
+  to_lane INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_aux_scheduler_dispatch_logs_rule_id
+  ON aux_scheduler_dispatch_logs(rule_id, id DESC);
 `
 
 func (s *Store) Migrate(ctx context.Context) error {
